@@ -1,0 +1,7 @@
+# Logs & Temp files
+*.log
+*.tmp
+test_cookie.txt
+data/test_cookie.txt
+.DS_Store
+Thumbs.db
