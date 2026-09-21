@@ -238,8 +238,8 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                 <span style="font-size:11px;color:#64748b;">Schedule for today or any future date/time</span>
               </div>
               <form id="formQuickAddLead" class="quick-add-form" onsubmit="app.handleQuickAddSubmit(event)">
-                <input type="text" id="quickAddName" class="form-control" placeholder="Name (e.g. Hawi)" required style="flex:1;min-width:120px;">
-                <input type="tel" id="quickAddPhone" class="form-control" placeholder="Phone (e.g. 0939777880)" required style="flex:1.2;min-width:140px;">
+                <input type="text" id="quickAddName" class="form-control" placeholder="Name (e.g. Helen Tesfaye)" required style="flex:1;min-width:120px;">
+                <input type="tel" id="quickAddPhone" class="form-control" placeholder="Phone (e.g. 0911223344)" required style="flex:1.2;min-width:140px;">
                 <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
                   <select id="quickAddTimePreset" class="form-control" style="font-size:12px;min-width:125px;" onchange="app.handleTimePresetChange(this.value)">
                     <option value="immediate" selected>Immediate</option>
@@ -697,11 +697,11 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
         <div class="modal-body">
           <div class="form-group" style="margin-bottom:12px;">
             <label class="form-label" style="font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;display:block;">Customer Name</label>
-            <input type="text" id="modalAddName" class="form-control" placeholder="e.g. Hawi" required>
+            <input type="text" id="modalAddName" class="form-control" placeholder="e.g. Helen Tesfaye" required>
           </div>
           <div class="form-group" style="margin-bottom:12px;">
             <label class="form-label" style="font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;display:block;">Phone Number</label>
-            <input type="tel" id="modalAddPhone" class="form-control" placeholder="e.g. 0939777880 or +251939777880" required>
+            <input type="tel" id="modalAddPhone" class="form-control" placeholder="e.g. 0911223344 or +251911223344" required>
           </div>
           <div class="form-group" style="margin-bottom:12px;">
             <label class="form-label" style="font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;display:block;">Scheduled Call Time &amp; Date</label>
@@ -757,7 +757,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
           </div>
           <div style="margin-top:12px;font-size:11.5px;color:#64748b;background:#f8fafc;padding:8px 12px;border-radius:6px;border:1px solid #e2e8f0;">
             Format: <code>Customer Name, Phone Number, Call Time, Notes</code><br>
-            Example: <code>Hawi, 0939777880, 12:00 PM, Verified Lead</code>
+            Example: <code>Helen Tesfaye, 0911223344, 12:00 PM, VIP Customer</code>
           </div>
         </div>
         <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;">
@@ -781,9 +781,9 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             Enter numbers and call times (one per line):
           </p>
           <div class="form-group">
-            <textarea id="manualLeadsText" class="form-control" rows="7" placeholder="0939777880, Hawi, 11:30 AM, VIP Customer
-0912345678, Customer 2, 11:45 AM, Delivery Followup
-+251913456789, Customer 3, 12:00 PM"></textarea>
+            <textarea id="manualLeadsText" class="form-control" rows="7" placeholder="0911223344, Helen Tesfaye, 11:30 AM, VIP Customer
+0922334455, Dawit Haile, 11:45 AM, Delivery Followup
++251933778899, Bethlehem Mengistu, 12:00 PM"></textarea>
           </div>
         </div>
         <div class="modal-footer">
