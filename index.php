@@ -110,6 +110,9 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
           <div class="s-opt" onclick="openSipSettingsModal()">
             <span class="opt-dot" style="background:#0047AB"></span> ⚙️ SIP Settings
           </div>
+          <div class="s-opt" onclick="openChangePasswordModal()">
+            <span class="opt-dot" style="background:#10b981"></span> 🔒 Change Password
+          </div>
           <div class="s-opt logout" onclick="window.location.href='logout.php'">
             <span class="opt-dot" style="background:#ef4444"></span> Sign Out
           </div>
@@ -132,6 +135,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
     <div class="sb-footer">
       <button class="sb-item phone-settings-btn" onclick="openSipSettingsModal()" style="border:none;background:none;width:100%;text-align:left;cursor:pointer;font-family:inherit;">Phone Settings</button>
+      <button class="sb-item" onclick="openChangePasswordModal()" style="border:none;background:none;width:100%;text-align:left;cursor:pointer;font-family:inherit;color:#334155;">Change Password</button>
       <a class="sb-item signout" href="logout.php">Sign Out</a>
     </div>
   </div>
@@ -857,6 +861,37 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
     </div>
   </div>
 
+  <!-- ── MODAL: CHANGE ACCOUNT PASSWORD ────────────────────── -->
+  <div id="modalChangePassword" class="modal-backdrop">
+    <div class="modal-dialog" style="max-width:400px;">
+      <div class="modal-header">
+        <h3>Change Account Password</h3>
+        <button type="button" class="btn-close-modal" onclick="closeChangePasswordModal()" style="background:none;border:none;color:#888;font-size:20px;cursor:pointer;">✕</button>
+      </div>
+      <form id="formChangePassword" onsubmit="handleChangePasswordSubmit(event)">
+        <div class="modal-body">
+          <div id="changePassAlert" style="display:none;padding:10px 12px;border-radius:6px;font-size:12px;margin-bottom:14px;line-height:1.4;"></div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;display:block;">Current Password</label>
+            <input type="password" id="cpCurrentPassword" class="form-control" placeholder="Enter current password" required autocomplete="current-password">
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;display:block;">New Password</label>
+            <input type="password" id="cpNewPassword" class="form-control" placeholder="Enter new password (min. 4 chars)" required minlength="4" autocomplete="new-password">
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;display:block;">Confirm New Password</label>
+            <input type="password" id="cpConfirmPassword" class="form-control" placeholder="Re-type new password" required minlength="4" autocomplete="new-password">
+          </div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;">
+          <button type="button" class="btn btn-secondary" onclick="closeChangePasswordModal()">Cancel</button>
+          <button type="submit" id="btnSubmitChangePass" class="btn btn-primary">Update Password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Toast Container -->
   <div id="toastContainer" class="toast-container"></div>
 
@@ -924,6 +959,75 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
   function closeSipSettingsModal() {
     document.getElementById('settingsModal').classList.remove('show');
+  }
+
+  function openChangePasswordModal() {
+    document.getElementById('cpCurrentPassword').value = '';
+    document.getElementById('cpNewPassword').value = '';
+    document.getElementById('cpConfirmPassword').value = '';
+    const alertEl = document.getElementById('changePassAlert');
+    if (alertEl) { alertEl.style.display = 'none'; alertEl.textContent = ''; }
+    document.getElementById('modalChangePassword')?.classList.add('open');
+    document.getElementById('statusDropMenu')?.classList.remove('open');
+  }
+
+  function closeChangePasswordModal() {
+    document.getElementById('modalChangePassword')?.classList.remove('open');
+  }
+
+  async function handleChangePasswordSubmit(e) {
+    e.preventDefault();
+    const currentPass = document.getElementById('cpCurrentPassword')?.value || '';
+    const newPass = document.getElementById('cpNewPassword')?.value || '';
+    const confirmPass = document.getElementById('cpConfirmPassword')?.value || '';
+    const alertEl = document.getElementById('changePassAlert');
+    const btn = document.getElementById('btnSubmitChangePass');
+
+    if (newPass !== confirmPass) {
+      if (alertEl) {
+        alertEl.style.display = 'block';
+        alertEl.style.background = '#fee2e2';
+        alertEl.style.color = '#b91c1c';
+        alertEl.style.border = '1px solid #fecaca';
+        alertEl.textContent = 'New password and confirm password do not match.';
+      }
+      return;
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Updating...'; }
+
+    try {
+      const formData = new FormData();
+      formData.append('current_password', currentPass);
+      formData.append('new_password', newPass);
+      formData.append('confirm_password', confirmPass);
+
+      const res = await fetch('api.php?action=change_password', { method: 'POST', body: formData });
+      const data = await res.json();
+
+      if (data.success) {
+        if (window.app) window.app.showToast(data.message || 'Password changed successfully!', 'success');
+        closeChangePasswordModal();
+      } else {
+        if (alertEl) {
+          alertEl.style.display = 'block';
+          alertEl.style.background = '#fee2e2';
+          alertEl.style.color = '#b91c1c';
+          alertEl.style.border = '1px solid #fecaca';
+          alertEl.textContent = data.error || 'Failed to change password.';
+        }
+      }
+    } catch(err) {
+      if (alertEl) {
+        alertEl.style.display = 'block';
+        alertEl.style.background = '#fee2e2';
+        alertEl.style.color = '#b91c1c';
+        alertEl.style.border = '1px solid #fecaca';
+        alertEl.textContent = 'Network error updating password.';
+      }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Update Password'; }
+    }
   }
 
   async function saveSipSettings() {
