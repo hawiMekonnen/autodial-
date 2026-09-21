@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  autodialer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: skykin_autodialer
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:80"
+    environment:
+      - ESL_HOST=${ESL_HOST:-127.0.0.1}
+      - ESL_PORT=${ESL_PORT:-8021}
+      - ESL_PASSWORD=${ESL_PASSWORD:-ClueCon}
+    volumes:
+      - dialer_data:/var/www/html/data
+      - dialer_audio:/var/www/html/assets/audio
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/login.php"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  dialer_data:
+    driver: local
+  dialer_audio:
+    driver: local

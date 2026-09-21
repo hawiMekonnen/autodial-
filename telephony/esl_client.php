@@ -21,11 +21,11 @@ class ESLClient {
     }
 
     public static function fromEnv(): self {
-        $env_file = __DIR__ . '/../../cc-test/.env';
-        $host = '127.0.0.1';
-        $port = 8021;
-        $pass = 'ClueCon';
+        $host = getenv('ESL_HOST') ?: '127.0.0.1';
+        $port = (int)(getenv('ESL_PORT') ?: 8021);
+        $pass = getenv('ESL_PASSWORD') ?: 'ClueCon';
 
+        $env_file = __DIR__ . '/../.env';
         if (file_exists($env_file)) {
             $lines = file($env_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
             foreach ($lines as $line) {
