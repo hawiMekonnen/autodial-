@@ -524,7 +524,7 @@ class SkyKinDialerApp {
     try {
       const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
       const audioCtx = new AudioCtxClass();
-      if (audioCtx.state === 'suspended') {
+      if (audioCtx.state !== 'running') {
         try { await audioCtx.resume(); } catch(e) {}
       }
       lineObj.audioCtx = audioCtx;
@@ -537,25 +537,41 @@ class SkyKinDialerApp {
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
 
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1.0;
+
       const destination = audioCtx.createMediaStreamDestination();
-      source.connect(destination);
+      source.connect(gainNode);
+      gainNode.connect(destination);
 
       const ivrTrack = destination.stream.getAudioTracks()[0];
       if (ivrTrack) {
         ivrTrack.enabled = true;
       }
 
+      // Robust sender attachment with retry loop to ensure track is replaced even if sender initializes asynchronously
       if (pc && ivrTrack) {
-        const senders = pc.getSenders ? pc.getSenders() : [];
-        let audioSender = senders.find(s => s.track && s.track.kind === 'audio');
-        if (!audioSender && senders.length > 0) {
-          audioSender = senders[0];
+        let attached = false;
+        for (let attempt = 0; attempt < 15; attempt++) {
+          const senders = pc.getSenders ? pc.getSenders() : [];
+          let audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+          if (!audioSender && senders.length > 0) {
+            audioSender = senders.find(s => !s.track || (s.track && s.track.kind === 'audio')) || senders[0];
+          }
+          if (audioSender && audioSender.replaceTrack) {
+            try {
+              await audioSender.replaceTrack(ivrTrack);
+              console.log(`[Line ${lineNum}] IVR Audio track replaced on sender (attempt ${attempt + 1})`);
+              attached = true;
+              break;
+            } catch(e) {
+              console.warn(`[Line ${lineNum}] replaceTrack error on attempt ${attempt + 1}:`, e);
+            }
+          }
+          await new Promise(r => setTimeout(r, 100));
         }
-        if (audioSender && audioSender.replaceTrack) {
-          await audioSender.replaceTrack(ivrTrack);
-          console.log(`[Line ${lineNum}] IVR Audio track attached to WebRTC`);
-        } else {
-          console.warn(`[Line ${lineNum}] Could not locate audio sender on peerConnection`, senders);
+        if (!attached) {
+          console.warn(`[Line ${lineNum}] Could not attach IVR track to peerConnection senders`);
         }
       }
 
@@ -890,7 +906,7 @@ class SkyKinDialerApp {
           <td>${idx + 1}</td>
           <td><strong>${this.escapeHtml(l.customer_name || 'Customer')}</strong></td>
           <td>
-            <a href="javascript:void(0)" onclick="app.clickToDial('${this.escapeHtml(l.phone_number)}', '${this.escapeHtml(l.customer_name)}')" style="color:#0047AB;font-weight:700;text-decoration:none;" title="Click to Dial Outbound">
+            <a href="javascript:void(0)" onclick="app.dialSingleLeadWithIvr(${l.id})" style="color:#0047AB;font-weight:700;text-decoration:none;" title="Click to Dial Outbound with IVR">
               ${this.escapeHtml(l.phone_number)}
             </a>
           </td>
@@ -898,7 +914,7 @@ class SkyKinDialerApp {
           <td>${stBadge}</td>
           <td>${dur}</td>
           <td>
-            <button class="btn btn-secondary btn-sm" onclick="app.clickToDial('${this.escapeHtml(l.phone_number)}', '${this.escapeHtml(l.customer_name)}')" title="Outbound Call">Call</button>
+            <button class="btn btn-primary btn-sm" onclick="app.dialSingleLeadWithIvr(${l.id})" title="Outbound Call with IVR">Call</button>
             <button class="btn btn-secondary btn-sm" onclick="app.deleteLead(${l.id})" style="color:#ef4444;" title="Delete">Delete</button>
           </td>
         `;
@@ -2261,9 +2277,17 @@ class SkyKinDialerApp {
     }
 
     const lead = await this.handleQuickAddSubmit();
-    if (lead || phone) {
+    if (lead) {
+      this.dialCustomerLead(lead, 1, 2);
+    } else if (phone) {
       this.clickToDial(phone, name);
     }
+  }
+
+  dialSingleLeadWithIvr(leadId) {
+    const lead = this.leads.find(l => Number(l.id) === Number(leadId));
+    if (!lead) return;
+    this.dialCustomerLead(lead, 1, 2);
   }
 
   async handleModalSingleAdd(e) {
