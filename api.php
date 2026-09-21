@@ -494,7 +494,7 @@ if ($action === 'update_lead_status') {
     $stmt = $db->prepare("UPDATE leads SET status = ?, duration_sec = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
     $stmt->execute([$status, $duration, $errMsg, $leadId]);
 
-    if (in_array($status, ['answered', 'ivr_playing', 'ivr_completed', 'completed', 'busy', 'no_answer', 'failed'])) {
+    if (in_array($status, ['completed', 'ivr_completed', 'busy', 'no_answer', 'failed'])) {
         $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch();
         if ($lead) {
             $campaign = $db->query("SELECT * FROM campaigns WHERE id = {$lead['campaign_id']}")->fetch();

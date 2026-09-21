@@ -1543,8 +1543,12 @@ class SkyKinDialerApp {
   startSchedulerLoop() {
     this.stopSchedulerLoop();
     this.schedulerInterval = setInterval(() => {
-      if (this.isRunning && !this.isPaused && this.activeChannels.size === 0) {
-        this.processOutboundQueue();
+      if (this.isRunning && !this.isPaused) {
+        const isL1Free = this.line1.isRegistered && !this.line1.activeChannelId && (!this.line1.session || this.line1.session.state === 'Terminated');
+        const isL2Free = this.line2.enabled && this.line2.isRegistered && !this.line2.activeChannelId && (!this.line2.session || this.line2.session.state === 'Terminated');
+        if (isL1Free || isL2Free) {
+          this.processOutboundQueue();
+        }
       }
     }, 1000); // Check every 1 second for scheduled call arrivals
   }
@@ -1646,70 +1650,102 @@ class SkyKinDialerApp {
   }
 
   async processOutboundQueue() {
-    if (!this.isRunning || this.isPaused) return;
+    if (!this.isRunning || this.isPaused || this._isProcessingQueue) return;
+    this._isProcessingQueue = true;
 
-    const maxConcurrent = parseInt(document.getElementById('maxConcurrentInput')?.value || 2, 10);
-    const pacingDelay = parseInt(document.getElementById('pacingDelayInput')?.value || 2, 10);
+    try {
+      const maxConcurrent = parseInt(document.getElementById('maxConcurrentInput')?.value || 2, 10);
+      const pacingDelay = parseInt(document.getElementById('pacingDelayInput')?.value || 2, 10);
 
-    // Filter today's pending leads
-    const pendingLeads = this.getTodayLeads().filter(l => l.status === 'pending');
-    if (pendingLeads.length === 0 && this.activeChannels.size === 0) {
-      this.stopCampaign();
-      this.showToast('All pending customer leads in queue have been processed!', 'success');
-      await this.loadCampaignData();
-      return;
-    }
+      // Collect currently active lead IDs and normalized phone numbers across both channels
+      const activeLeadIds = new Set();
+      const activePhoneNumbers = new Set();
+      this.activeChannels.forEach(ch => {
+        if (ch.lead?.id) activeLeadIds.add(Number(ch.lead.id));
+        if (ch.lead?.phone_number) {
+          activePhoneNumbers.add(window.skykinNormalizeEtDial(ch.lead.phone_number));
+        }
+      });
 
-    const now = Date.now();
+      // Filter today's pending leads (excluding any lead ID or phone number already in progress)
+      const pendingLeads = this.getTodayLeads().filter(l => {
+        if (l.status !== 'pending') return false;
+        if (activeLeadIds.has(Number(l.id))) return false;
+        const normPhone = window.skykinNormalizeEtDial(l.phone_number);
+        if (activePhoneNumbers.has(normPhone)) return false;
+        return true;
+      });
 
-    // 1. Immediate leads (no scheduled time)
-    const immediateLeads = pendingLeads.filter(l => {
-      const s = String(l.call_time || '').trim().toLowerCase();
-      return !s || s === 'immediate' || s === 'now';
-    });
+      if (pendingLeads.length === 0 && this.activeChannels.size === 0) {
+        this.stopCampaign();
+        this.showToast('All pending customer leads in queue have been processed!', 'success');
+        await this.loadCampaignData();
+        return;
+      }
 
-    // 2. Scheduled leads whose time has arrived (within 60 seconds)
-    const dueScheduledLeads = pendingLeads.filter(l => {
-      const s = String(l.call_time || '').trim().toLowerCase();
-      if (!s || s === 'immediate' || s === 'now') return false;
-      const ts = this.getLeadScheduledTimestamp(l);
-      if (ts <= 0) return false;
-      return (now >= ts) && ((now - ts) <= 60000);
-    });
+      const now = Date.now();
 
-    const dueLeads = [...immediateLeads, ...dueScheduledLeads];
-    dueLeads.sort((a, b) => {
-      const aTime = this.getLeadScheduledTimestamp(a);
-      const bTime = this.getLeadScheduledTimestamp(b);
-      return aTime - bTime;
-    });
+      // 1. Immediate leads (no scheduled time)
+      const immediateLeads = pendingLeads.filter(l => {
+        const s = String(l.call_time || '').trim().toLowerCase();
+        return !s || s === 'immediate' || s === 'now';
+      });
 
-    // Check which lines are free
-    const isLine1Free = !this.line1.activeChannelId && (!this.line1.session || this.line1.session.state === 'Terminated');
-    const isLine2Free = maxConcurrent >= 2 && this.line2.enabled && this.line2.isRegistered && !this.line2.activeChannelId && (!this.line2.session || this.line2.session.state === 'Terminated');
+      // 2. Scheduled leads whose time has arrived (within 60 seconds)
+      const dueScheduledLeads = pendingLeads.filter(l => {
+        const s = String(l.call_time || '').trim().toLowerCase();
+        if (!s || s === 'immediate' || s === 'now') return false;
+        const ts = this.getLeadScheduledTimestamp(l);
+        if (ts <= 0) return false;
+        return (now >= ts) && ((now - ts) <= 60000);
+      });
 
-    let leadIndex = 0;
+      const dueLeads = [...immediateLeads, ...dueScheduledLeads];
+      dueLeads.sort((a, b) => {
+        const aTime = this.getLeadScheduledTimestamp(a);
+        const bTime = this.getLeadScheduledTimestamp(b);
+        return aTime - bTime;
+      });
 
-    // Dispatch Line 1 if free
-    if (isLine1Free && dueLeads.length > leadIndex && this.activeChannels.size < maxConcurrent) {
-      const lead1 = dueLeads[leadIndex];
-      lead1.status = 'calling';
-      leadIndex++;
-      this.renderLeadsTables();
-      this.dialCustomerLead(lead1, 1, pacingDelay);
-    }
+      // Check which lines are free and actually registered
+      const isLine1Free = this.line1.isRegistered && !this.line1.activeChannelId && (!this.line1.session || this.line1.session.state === 'Terminated');
+      const isLine2Free = maxConcurrent >= 2 && this.line2.enabled && this.line2.isRegistered && !this.line2.activeChannelId && (!this.line2.session || this.line2.session.state === 'Terminated');
 
-    // Dispatch Line 2 simultaneously if free and another lead is due
-    if (isLine2Free && dueLeads.length > leadIndex && this.activeChannels.size < maxConcurrent) {
-      const lead2 = dueLeads[leadIndex];
-      lead2.status = 'calling';
-      leadIndex++;
-      this.renderLeadsTables();
-      this.dialCustomerLead(lead2, 2, pacingDelay);
-    }
+      const availableDue = [...dueLeads];
 
-    if (this.activeChannels.size === 0) {
-      this.renderActiveChannels();
+      // Dispatch Line 1 if free
+      if (isLine1Free && availableDue.length > 0 && this.activeChannels.size < maxConcurrent) {
+        const lead1 = availableDue.shift();
+        lead1.status = 'calling';
+        activeLeadIds.add(Number(lead1.id));
+        activePhoneNumbers.add(window.skykinNormalizeEtDial(lead1.phone_number));
+        this.renderLeadsTables();
+        this.updateLeadStatusBackend(lead1.id, 'calling', 0);
+        this.dialCustomerLead(lead1, 1, pacingDelay);
+      }
+
+      // Dispatch Line 2 simultaneously if free and another distinct number is due
+      if (isLine2Free && availableDue.length > 0 && this.activeChannels.size < maxConcurrent) {
+        const l2Idx = availableDue.findIndex(l => {
+          const norm = window.skykinNormalizeEtDial(l.phone_number);
+          return !activeLeadIds.has(Number(l.id)) && !activePhoneNumbers.has(norm);
+        });
+        if (l2Idx !== -1) {
+          const lead2 = availableDue.splice(l2Idx, 1)[0];
+          lead2.status = 'calling';
+          activeLeadIds.add(Number(lead2.id));
+          activePhoneNumbers.add(window.skykinNormalizeEtDial(lead2.phone_number));
+          this.renderLeadsTables();
+          this.updateLeadStatusBackend(lead2.id, 'calling', 0);
+          this.dialCustomerLead(lead2, 2, pacingDelay);
+        }
+      }
+
+      if (this.activeChannels.size === 0) {
+        this.renderActiveChannels();
+      }
+    } finally {
+      this._isProcessingQueue = false;
     }
   }
 
@@ -1787,6 +1823,21 @@ class SkyKinDialerApp {
       lead.duration_sec = durationSec;
       if (errorMsg) lead.error_message = errorMsg;
       this.renderActiveChannels();
+      this.renderLeadsTables();
+
+      // If call completed or answered, deduplicate any duplicate pending entries with identical phone number
+      if (finalStatus === 'completed' || finalStatus === 'ivr_completed' || finalStatus === 'answered') {
+        const currentNormPhone = window.skykinNormalizeEtDial(lead.phone_number);
+        this.leads.forEach(otherLead => {
+          if (Number(otherLead.id) !== Number(lead.id) && otherLead.status === 'pending') {
+            if (window.skykinNormalizeEtDial(otherLead.phone_number) === currentNormPhone) {
+              otherLead.status = 'completed';
+              otherLead.duration_sec = durationSec;
+              this.updateLeadStatusBackend(otherLead.id, 'completed', durationSec, 'Deduplicated (Already Answered)');
+            }
+          }
+        });
+      }
 
       await this.updateLeadStatusBackend(lead.id, finalStatus, durationSec, errorMsg);
       await this.loadCampaignData();
@@ -1821,6 +1872,7 @@ class SkyKinDialerApp {
         lead.status = 'answered';
         this.renderActiveChannels();
         this.renderLeadsTables();
+        this.updateLeadStatusBackend(lead.id, 'answered', 1);
 
         channelData.timerInterval = setInterval(() => {
           callSec++;
