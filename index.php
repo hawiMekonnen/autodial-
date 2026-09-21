@@ -306,16 +306,10 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                 </select>
               </div>
 
-              <div style="background:#ffffff;padding:12px;border-radius:8px;border:1px solid #cbd5e1;margin-bottom:12px;">
+              <div style="background:#ffffff;padding:12px;border-radius:8px;border:1px solid #cbd5e1;">
                 <div style="font-size:12px;font-weight:700;color:#1e293b;margin-bottom:6px;" id="activeAudioTitle">Human Welcome Recording</div>
                 <!-- Native Audio Player for Human Voice -->
                 <audio id="mainAudioPlayer" controls style="width:100%;height:36px;outline:none;" src="assets/audio/welcome_human_voice.wav"></audio>
-              </div>
-
-              <div style="font-size:11.5px;color:#64748b;line-height:1.45;background:#f8fafc;padding:10px;border-radius:6px;border:1px solid #e2e8f0;">
-                <strong>Telephony Engine:</strong><br>
-                Configured as Agent <strong><?php echo $agent_ext; ?></strong> on <code><?php echo $agent_server; ?></code>.<br>
-                When a call is answered, the IVR playback streams through the SIP bridge.
               </div>
             </div>
           </div>
