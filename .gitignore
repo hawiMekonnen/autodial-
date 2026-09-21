@@ -5,3 +5,7 @@ test_cookie.txt
 data/test_cookie.txt
 .DS_Store
 Thumbs.db
+
+# Workspace & IDE files
+*.code-workspace
+.vscode/
