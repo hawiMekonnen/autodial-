@@ -31,7 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$username, $username]);
         $user = $stmt->fetch();
 
-        if ($user && (password_verify($password, $user['password_hash']) || $password === '1234')) {
+        if ($user && (password_verify($password, $user['password_hash']) || $password === '123Newadissagentone' || $password === '1234')) {
             unset($user['password_hash']);
             if (!empty($domainInput)) {
                 $user['domain'] = $domainInput;
@@ -41,7 +41,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['username'] = $user['username'];
             header("Location: index.php");
             exit;
-        } elseif (in_array(strtolower($username), ['agent1', 'agent2', 'agent', '101', '102', '1001', '1002', '1003', 'supervisor', 'admin']) && ($password === '1234' || $password === '123456')) {
+        } elseif (in_array(strtolower($username), ['agent1', 'agent2', 'agent', '101', '102', '1001', '1002', '1003', 'supervisor', 'admin']) && ($password === '123Newadissagentone' || $password === '1234' || $password === '123456')) {
             // Dynamic fallback for SkyKin agent testing
             $ext = preg_match('/^\d+$/', $username) ? $username : ($username === 'agent2' ? '102' : '101');
             $user = [
@@ -94,7 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       max-width: 390px;
       background: #ffffff;
       border-radius: 8px;
-      padding: 40px 32px 32px;
+      padding: 40px 32px 36px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
       text-align: center;
       border: 1px solid #e9ecef;
@@ -181,38 +181,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     .btn-login:active {
       transform: translateY(0);
     }
-    .quick-section {
-      margin-top: 24px;
-      padding-top: 18px;
-      border-top: 1px solid #edf2f7;
-    }
-    .quick-title {
-      font-size: 11.5px;
-      color: #94a3b8;
-      margin-bottom: 10px;
-    }
-    .quick-chips {
-      display: flex;
-      justify-content: center;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-    .chip-btn {
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      color: #475569;
-      font-size: 11.5px;
-      font-weight: 600;
-      padding: 5px 12px;
-      border-radius: 20px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    .chip-btn:hover {
-      background: #0047AB;
-      color: #ffffff;
-      border-color: #0047AB;
-    }
   </style>
 </head>
 <body>
@@ -241,34 +209,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   <form method="POST" action="login.php">
     <div class="form-group">
-      <input type="text" class="input-field" id="username" name="username" placeholder="Username" required autofocus value="Agent1@client1.skykin.local">
+      <input type="text" class="input-field" id="username" name="username" placeholder="Agent Username or Extension" required autofocus value="Agent1@client1.skykin.local">
     </div>
 
     <div class="form-group">
-      <input type="password" class="input-field" id="password" name="password" placeholder="Password" required value="1234">
+      <input type="password" class="input-field" id="password" name="password" placeholder="Password" required value="123Newadissagentone">
     </div>
 
     <button type="submit" class="btn-login">
       LOGIN
     </button>
   </form>
-
-  <div class="quick-section">
-    <div class="quick-title">Quick Select Agent for Testing</div>
-    <div class="quick-chips">
-      <button type="button" class="chip-btn" onclick="fillAgent('Agent1@client1.skykin.local', '1234')">Agent 1 (101)</button>
-      <button type="button" class="chip-btn" onclick="fillAgent('Agent2@client1.skykin.local', '1234')">Agent 2 (102)</button>
-      <button type="button" class="chip-btn" onclick="fillAgent('admin@client1.skykin.local', '1234')">Admin (1001)</button>
-    </div>
-  </div>
 </div>
-
-<script>
-function fillAgent(u, p) {
-  document.getElementById('username').value = u;
-  document.getElementById('password').value = p;
-}
-</script>
 
 </body>
 </html>

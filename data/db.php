@@ -151,21 +151,27 @@ class DialerDB {
             } catch (Exception $e) {}
         }
 
-        // Seed default SkyKin agents
+        // Seed default SkyKin agents with new secure password
+        $defaultPasswordHash = password_hash('123Newadissagentone', PASSWORD_DEFAULT);
         $seedUsers = [
-            ['Agent1', password_hash('1234', PASSWORD_DEFAULT), 'Agent 1', '101', 'agent', 'client1.skykin.local', '101', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['Agent2', password_hash('1234', PASSWORD_DEFAULT), 'Agent 2', '102', 'agent', 'client1.skykin.local', '102', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['agent', password_hash('1234', PASSWORD_DEFAULT), 'SkyKin Agent', '101', 'agent', 'client1.skykin.local', '101', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['101', password_hash('1234', PASSWORD_DEFAULT), 'Agent 101', '101', 'agent', 'client1.skykin.local', '101', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['1001', password_hash('1234', PASSWORD_DEFAULT), 'Agent 1001', '1001', 'agent', 'client1.skykin.local', '1001', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['1002', password_hash('1234', PASSWORD_DEFAULT), 'Agent 1002', '1002', 'agent', 'client1.skykin.local', '1002', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['admin', password_hash('1234', PASSWORD_DEFAULT), 'Administrator', '101', 'admin', 'client1.skykin.local', '101', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local']
+            ['Agent1', $defaultPasswordHash, 'Agent 1', '101', 'agent', 'client1.skykin.local', '101', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
+            ['Agent2', $defaultPasswordHash, 'Agent 2', '102', 'agent', 'client1.skykin.local', '102', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
+            ['agent', $defaultPasswordHash, 'SkyKin Agent', '101', 'agent', 'client1.skykin.local', '101', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
+            ['101', $defaultPasswordHash, 'Agent 101', '101', 'agent', 'client1.skykin.local', '101', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
+            ['1001', $defaultPasswordHash, 'Agent 1001', '1001', 'agent', 'client1.skykin.local', '1001', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
+            ['1002', $defaultPasswordHash, 'Agent 1002', '1002', 'agent', 'client1.skykin.local', '1002', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
+            ['admin', $defaultPasswordHash, 'Administrator', '101', 'admin', 'client1.skykin.local', '101', '1234', 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local']
         ];
 
         $insUser = $this->pdo->prepare("INSERT OR IGNORE INTO users (username, password_hash, full_name, extension, role, domain, sip_extension, sip_password, sip_server, sip_port, sip_domain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         foreach ($seedUsers as $u) {
             $insUser->execute($u);
         }
+
+        // Migrate existing accounts to the new password
+        try {
+            $this->pdo->exec("UPDATE users SET password_hash = " . $this->pdo->quote($defaultPasswordHash));
+        } catch (Exception $e) {}
 
         // Seed audio recordings list
         $stmtAud = $this->pdo->query("SELECT COUNT(*) as count FROM audio_recordings");

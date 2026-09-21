@@ -43,7 +43,9 @@ class SkyKinDialerApp {
       reg: null,
       isRegistered: false,
       session: null,
-      activeChannelId: null
+      activeChannelId: null,
+      audioCtx: null,
+      ivrSource: null
     };
     this.line2 = {
       num: 2,
@@ -54,9 +56,12 @@ class SkyKinDialerApp {
       reg: null,
       isRegistered: false,
       session: null,
-      activeChannelId: null
+      activeChannelId: null,
+      audioCtx: null,
+      ivrSource: null
     };
 
+    this.cachedAudioMap = new Map();
     this.manualTimerInterval = null;
     this.manualStartTime = null;
     this.isMuted = false;
@@ -479,55 +484,88 @@ class SkyKinDialerApp {
   /* ─────────────────────────────────────────────────────────
      IVR In-Call Audio Stream Injection (Streams into Phone Call)
      ───────────────────────────────────────────────────────── */
-  async playIvrAudioIntoPeerConnection(audioUrl, pc, onEnded) {
+  async getAudioArrayBuffer(audioUrl) {
+    if (this.cachedAudioMap.has(audioUrl)) {
+      const cached = this.cachedAudioMap.get(audioUrl);
+      return cached.slice(0);
+    }
+    try {
+      const response = await fetch(audioUrl);
+      const buf = await response.arrayBuffer();
+      this.cachedAudioMap.set(audioUrl, buf);
+      return buf.slice(0);
+    } catch(fetchErr) {
+      console.warn('Could not fetch audioUrl directly, trying relative path:', fetchErr);
+      const response = await fetch(audioUrl.replace(/^assets\//, 'assets/'));
+      const buf = await response.arrayBuffer();
+      this.cachedAudioMap.set(audioUrl, buf);
+      return buf.slice(0);
+    }
+  }
+
+  async playIvrAudioIntoPeerConnection(audioUrl, pc, onEnded, lineNum = 1) {
     if (!audioUrl) {
       if (onEnded) onEnded();
       return;
     }
 
+    const lineObj = lineNum === 2 ? this.line2 : this.line1;
+
+    // Clean up previous IVR audio context for this line
+    if (lineObj.ivrSource) {
+      try { lineObj.ivrSource.stop(); } catch(e) {}
+      lineObj.ivrSource = null;
+    }
+    if (lineObj.audioCtx) {
+      try { lineObj.audioCtx.close(); } catch(e) {}
+      lineObj.audioCtx = null;
+    }
+
     try {
-      if (!this.ivrAudioCtx) {
-        this.ivrAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AudioCtxClass();
+      if (audioCtx.state === 'suspended') {
+        try { await audioCtx.resume(); } catch(e) {}
       }
-      if (this.ivrAudioCtx.state === 'suspended') {
-        try { await this.ivrAudioCtx.resume(); } catch(e) {}
-      }
+      lineObj.audioCtx = audioCtx;
 
-      let arrayBuffer;
-      try {
-        const response = await fetch(audioUrl);
-        arrayBuffer = await response.arrayBuffer();
-      } catch(fetchErr) {
-        console.warn('Could not fetch audioUrl directly, trying relative path:', fetchErr);
-        const response = await fetch(audioUrl.replace(/^assets\//, 'assets/'));
-        arrayBuffer = await response.arrayBuffer();
-      }
-
-      const audioBuffer = await this.ivrAudioCtx.decodeAudioData(arrayBuffer);
+      // Get cloned ArrayBuffer for clean decoding without detaching issues
+      const arrayBuffer = await this.getAudioArrayBuffer(audioUrl);
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
       const durationSec = Math.max(2, audioBuffer.duration || 5);
 
-      const source = this.ivrAudioCtx.createBufferSource();
+      const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
 
-      const destination = this.ivrAudioCtx.createMediaStreamDestination();
+      const destination = audioCtx.createMediaStreamDestination();
       source.connect(destination);
 
       const ivrTrack = destination.stream.getAudioTracks()[0];
+      if (ivrTrack) {
+        ivrTrack.enabled = true;
+      }
+
       if (pc && ivrTrack) {
-        const senders = pc.getSenders();
-        const audioSender = senders.find(s => s.track && s.track.kind === 'audio') || senders[0];
-        if (audioSender) {
+        const senders = pc.getSenders ? pc.getSenders() : [];
+        let audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+        if (!audioSender && senders.length > 0) {
+          audioSender = senders[0];
+        }
+        if (audioSender && audioSender.replaceTrack) {
           await audioSender.replaceTrack(ivrTrack);
+          console.log(`[Line ${lineNum}] IVR Audio track attached to WebRTC`);
+        } else {
+          console.warn(`[Line ${lineNum}] Could not locate audio sender on peerConnection`, senders);
         }
       }
 
-      this.currentIvrSource = source;
+      lineObj.ivrSource = source;
 
       let finished = false;
       const finishPlayback = () => {
         if (finished) return;
         finished = true;
-        this.currentIvrSource = null;
+        lineObj.ivrSource = null;
         // Wait 1.5 seconds after audio finishes so customer hears the entire message completely
         setTimeout(() => {
           if (onEnded) onEnded();
@@ -544,7 +582,7 @@ class SkyKinDialerApp {
 
       return { source, duration: durationSec };
     } catch (err) {
-      console.error('Error in playIvrAudioIntoPeerConnection:', err);
+      console.error(`[Line ${lineNum}] Error in playIvrAudioIntoPeerConnection:`, err);
       // Wait 8 seconds before hangup if audio decode had an issue so call isn't dropped instantly
       setTimeout(() => {
         if (onEnded) onEnded();
@@ -554,9 +592,26 @@ class SkyKinDialerApp {
   }
 
   stopCurrentIvrAudio(lineNum = null) {
-    if (this.currentIvrSource) {
-      try { this.currentIvrSource.stop(); } catch(e) {}
-      this.currentIvrSource = null;
+    const stopLineAudio = (lineObj) => {
+      if (lineObj) {
+        if (lineObj.ivrSource) {
+          try { lineObj.ivrSource.stop(); } catch(e) {}
+          lineObj.ivrSource = null;
+        }
+        if (lineObj.audioCtx) {
+          try { lineObj.audioCtx.close(); } catch(e) {}
+          lineObj.audioCtx = null;
+        }
+      }
+    };
+
+    if (lineNum === 1) {
+      stopLineAudio(this.line1);
+    } else if (lineNum === 2) {
+      stopLineAudio(this.line2);
+    } else {
+      stopLineAudio(this.line1);
+      stopLineAudio(this.line2);
     }
   }
 
@@ -1780,7 +1835,7 @@ class SkyKinDialerApp {
             this.sipHangup(lineNum);
             finishCall('completed', callSec || 1);
           }, 500);
-        });
+        }, lineNum);
       },
       onTerminated: () => {
         finishCall(callSec > 0 ? 'completed' : 'no_answer', callSec);
