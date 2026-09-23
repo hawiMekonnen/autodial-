@@ -176,7 +176,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
     <div class="full-section">
       <div class="tab-bar">
         <button class="tab-btn active" id="tabBtnLiveRoom" onclick="switchTab('tabLiveRoom')">Auto-Dialer Dashboard</button>
-        <button class="tab-btn" id="tabBtnLeadManager" onclick="switchTab('tabLeadManager')">Today's List (<span id="badgePendingCount">0</span>)</button>
+        <button class="tab-btn" id="tabBtnLeadManager" onclick="switchTab('tabLeadManager')">Lead Manager (<span id="badgePendingCount">0</span>)</button>
         <button class="tab-btn" id="tabBtnUnanswered" onclick="switchTab('tabUnanswered')">Unanswered (<span id="badgeUnansweredCount">0</span>)</button>
         <button class="tab-btn" id="tabBtnIVRStudio" onclick="switchTab('tabIVRStudio')">Human IVR Audio</button>
         <button class="tab-btn" id="tabBtnCallLogs" onclick="switchTab('tabCallLogs')">Call Logs</button>
