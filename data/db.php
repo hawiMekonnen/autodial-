@@ -18,6 +18,13 @@ class DialerDB {
         $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $this->pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
         
+        // High-concurrency enterprise SQLite optimization pragmas
+        try {
+            $this->pdo->exec("PRAGMA journal_mode = WAL;");
+            $this->pdo->exec("PRAGMA synchronous = NORMAL;");
+            $this->pdo->exec("PRAGMA busy_timeout = 5000;");
+        } catch (Exception $e) {}
+
         $this->initSchema();
     }
 
@@ -118,6 +125,13 @@ class DialerDB {
         foreach ($queries as $q) {
             $this->pdo->exec($q);
         }
+
+        // Performance Indexes for Fast High-Volume Concurrent Dialing
+        try {
+            $this->pdo->exec("CREATE INDEX IF NOT EXISTS idx_leads_camp_status ON leads (campaign_id, status)");
+            $this->pdo->exec("CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads (phone_number)");
+            $this->pdo->exec("CREATE INDEX IF NOT EXISTS idx_logs_campaign ON call_logs (campaign_id)");
+        } catch (Exception $e) {}
 
         // Add call_time column if older table exists
         try {
