@@ -201,26 +201,11 @@ class DialerDB {
             }
         }
 
-        // Seed default Campaign if none exists
+        // Seed default Campaign if none exists (starts completely clean with 0 leads)
         $stmt = $this->pdo->query("SELECT COUNT(*) as count FROM campaigns");
         if ((int)$stmt->fetchColumn() === 0) {
-            $this->pdo->exec("INSERT INTO campaigns (name, status, caller_id_name, caller_id_number, ivr_audio_name, ivr_audio_file, fusionpbx_ivr_path, pacing_delay_sec, max_concurrent) 
-                VALUES ('Outbound Customer Calls', 'idle', 'SkyKin Support', '+251911002233', 'Human Customer Greeting (WAV)', 'assets/audio/welcome_human_voice.wav', '/var/lib/freeswitch/recordings/welcome_human_voice.wav', 2, 2)");
-            
-            $campaignId = $this->pdo->lastInsertId();
-
-            $leads = [
-                [$campaignId, 'Helen Tesfaye', '+251911456789', '10:30 AM', 'VIP Customer', 'pending'],
-                [$campaignId, 'Dawit Haile', '+251922334455', '11:00 AM', 'Delivery follow-up', 'pending'],
-                [$campaignId, 'Bethlehem Mengistu', '+251933778899', '11:30 AM', 'Account renewal', 'pending'],
-                [$campaignId, 'Yonas Kebede', '+251944112233', '12:00 PM', 'Feedback inquiry', 'pending'],
-                [$campaignId, 'Aster Bekele', '+251955667788', '12:30 PM', 'Callback request', 'pending']
-            ];
-            $insLead = $this->pdo->prepare("INSERT INTO leads (campaign_id, customer_name, phone_number, call_time, notes, status) VALUES (?, ?, ?, ?, ?, ?)");
-            foreach ($leads as $l) {
-                $insLead->execute($l);
-            }
-            $this->pdo->exec("UPDATE campaigns SET total_leads = 5 WHERE id = {$campaignId}");
+            $this->pdo->exec("INSERT INTO campaigns (name, status, caller_id_name, caller_id_number, ivr_audio_name, ivr_audio_file, fusionpbx_ivr_path, pacing_delay_sec, max_concurrent, total_leads, completed_leads) 
+                VALUES ('Outbound Customer Calls', 'idle', 'SkyKin Support', '+251911002233', 'Human Customer Greeting (WAV)', 'assets/audio/welcome_human_voice.wav', '/var/lib/freeswitch/recordings/welcome_human_voice.wav', 2, 2, 0, 0)");
         }
     }
 }

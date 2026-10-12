@@ -883,9 +883,13 @@ class SkyKinDialerApp {
         const rolloverBtn = this.remainingCount > 0
           ? `<div style="margin-top:12px;"><button class="btn btn-primary btn-sm" onclick="app.bulkRolloverRemainingToToday()">Roll Over ${this.remainingCount} Unanswered Calls from Previous Days</button></div>`
           : '';
-        tbodyEl.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#64748b;padding:28px;">
-          <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:4px;">No calls in Today's List</div>
-          <div style="font-size:12px;color:#64748b;">Upload today's Excel file, quick-add contacts, or roll over past unanswered calls from History.</div>
+        tbodyEl.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#64748b;padding:36px 16px;">
+          <div style="font-size:15px;font-weight:700;color:#1e293b;margin-bottom:6px;">No leads in queue</div>
+          <div style="font-size:12.5px;color:#64748b;max-width:420px;margin:0 auto 14px auto;">The queue is currently empty. Upload a CSV file or use Bulk Write Numbers to load phone numbers.</div>
+          <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+            <button class="btn btn-primary btn-sm" onclick="app.openModal('modalUpload')">Upload CSV File</button>
+            <button class="btn btn-secondary btn-sm" onclick="app.openModal('modalManual')">Bulk Write Numbers</button>
+          </div>
           ${rolloverBtn}
         </td></tr>`;
         return;
@@ -2115,6 +2119,24 @@ class SkyKinDialerApp {
       this.updateLocalStats();
       this.renderActiveChannels();
       this.showToast('Could not delete lead from server', 'error');
+    }
+  }
+
+  async clearAllLeads() {
+    if (!confirm('Are you sure you want to clear all leads from the queue? This cannot be undone.')) return;
+    this.leads = [];
+    this.renderLeadsTables();
+    this.renderUnansweredTable();
+    this.updateLocalStats();
+    this.renderActiveChannels();
+    try {
+      const formData = new FormData();
+      formData.append('campaign_id', this.campaign?.id || 1);
+      await fetch('api.php?action=clear_all_leads', { method: 'POST', body: formData });
+      this.showToast('All leads cleared from queue', 'info');
+      await this.fetchCampaignData();
+    } catch (e) {
+      this.showToast('Failed to clear leads from server', 'error');
     }
   }
 

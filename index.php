@@ -269,6 +269,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
               <div style="display:flex;gap:8px;">
                 <button class="btn btn-primary btn-sm" onclick="app.openModal('modalUpload')">Upload CSV File</button>
                 <button class="btn btn-secondary btn-sm" onclick="app.openModal('modalManual')">Bulk Write Numbers</button>
+                <button class="btn btn-secondary btn-sm" onclick="app.clearAllLeads()" style="color:#ef4444;border-color:#fecaca;" title="Clear all leads from queue">Clear Queue</button>
               </div>
             </div>
 
@@ -337,6 +338,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <button class="btn btn-primary" onclick="app.openModal('modalSingleAdd')">Quick Add Contact</button>
             <button class="btn btn-secondary" onclick="app.openModal('modalUpload')">Upload CSV File</button>
             <button class="btn btn-secondary" onclick="app.openModal('modalManual')">Bulk Write Numbers</button>
+            <button class="btn btn-secondary" onclick="app.clearAllLeads()" style="color:#ef4444;border-color:#fecaca;" title="Clear all leads">Clear All Leads</button>
           </div>
         </div>
 
