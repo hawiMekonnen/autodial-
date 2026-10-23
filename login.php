@@ -207,13 +207,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
   <?php endif; ?>
 
-  <form method="POST" action="login.php">
+  <form method="POST" action="login.php" autocomplete="off">
     <div class="form-group">
-      <input type="text" class="input-field" id="username" name="username" placeholder="Agent Username or Extension" required autofocus value="Agent1@client1.skykin.local">
+      <input type="text" class="input-field" id="username" name="username" placeholder="Agent Username or Extension" required autofocus autocomplete="off" value="<?php echo htmlspecialchars($rawUsername ?? ''); ?>">
     </div>
 
     <div class="form-group">
-      <input type="password" class="input-field" id="password" name="password" placeholder="Password" required value="123Newadissagentone">
+      <input type="password" class="input-field" id="password" name="password" placeholder="Password" required autocomplete="new-password">
     </div>
 
     <button type="submit" class="btn-login">
