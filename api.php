@@ -245,6 +245,89 @@ if ($action === 'get_campaign_data') {
     ]);
 }
 
+function normalizeScheduledTime(string $rawTime): string {
+    $s = trim($rawTime);
+    if (empty($s) || in_array(strtolower($s), ['immediate', 'now', 'none', '-'])) {
+        return 'Immediate';
+    }
+
+    // 1. Numeric Excel serial time / date
+    if (is_numeric($s)) {
+        $num = (float)$s;
+        if ($num > 0 && $num < 1) {
+            $totalSec = (int)round($num * 86400);
+            $hrs = (int)floor($totalSec / 3600);
+            $mins = (int)floor(($totalSec % 3600) / 60);
+            return sprintf('%02d:%02d', $hrs, $mins);
+        }
+        if ($num >= 30000 && $num < 70000) {
+            $ts = ($num - 25569) * 86400;
+            return gmdate('Y-m-d H:i', (int)round($ts));
+        }
+    }
+
+    // 2. Full Date + Time: "2026-10-26 09:10 AM", "2026-10-28 05:00 PM", "2026-10-26 14:30"
+    if (preg_match('/^(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})\s+(\d{1,2})[:.](\d{2})(?:[:.]\d{2})?\s*(AM|PM)?/i', $s, $m)) {
+        $datePart = str_replace('/', '-', $m[1]);
+        $hrs = (int)$m[2];
+        $mins = (int)$m[3];
+        $ampm = isset($m[4]) ? strtoupper($m[4]) : '';
+        if ($ampm === 'PM' && $hrs < 12) $hrs += 12;
+        if ($ampm === 'AM' && $hrs === 12) $hrs = 0;
+        return sprintf('%s %02d:%02d', $datePart, $hrs, $mins);
+    }
+
+    // 3. Format: "DD/MM/YYYY HH:MM AM/PM"
+    if (preg_match('/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})\s+(\d{1,2})[:.](\d{2})(?:[:.]\d{2})?\s*(AM|PM)?/i', $s, $m)) {
+        $hrs = (int)$m[4];
+        $mins = (int)$m[5];
+        $ampm = isset($m[6]) ? strtoupper($m[6]) : '';
+        if ($ampm === 'PM' && $hrs < 12) $hrs += 12;
+        if ($ampm === 'AM' && $hrs === 12) $hrs = 0;
+        return sprintf('%04d-%02d-%02d %02d:%02d', (int)$m[3], (int)$m[2], (int)$m[1], $hrs, $mins);
+    }
+
+    // 4. Format: "02:30 PM", "2:30 PM", "09:15 AM"
+    if (preg_match('/^(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*(AM|PM)$/i', $s, $m)) {
+        $hrs = (int)$m[1];
+        $mins = (int)$m[2];
+        $ampm = strtoupper($m[4]);
+        if ($ampm === 'PM' && $hrs < 12) $hrs += 12;
+        if ($ampm === 'AM' && $hrs === 12) $hrs = 0;
+        return sprintf('%02d:%02d', $hrs, $mins);
+    }
+
+    // 5. Format: "14:30" or "14:30:00" or "9:15"
+    if (preg_match('/^(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?$/', $s, $m)) {
+        return sprintf('%02d:%02d', (int)$m[1], (int)$m[2]);
+    }
+
+    // 6. Today / Tomorrow prefix: "Today, 14:30", "Today 02:30 PM"
+    if (preg_match('/^(Today|Tomorrow)[,\s]+(.*)$/i', $s, $m)) {
+        $sub = normalizeScheduledTime($m[2]);
+        if ($sub !== 'Immediate') {
+            return ucfirst(strtolower($m[1])) . ', ' . $sub;
+        }
+    }
+
+    // 7. Relative: "+5 mins", "+10 min"
+    if (preg_match('/^\+(\d+)\s*(mins?|minutes?|hours?|hrs?)$/i', $s)) {
+        return $s;
+    }
+
+    // 8. Fallback parse
+    $parsed = strtotime($s);
+    if ($parsed !== false && $parsed > 0) {
+        if (preg_match('/\b20\d{2}\b/', $s)) {
+            return date('Y-m-d H:i', $parsed);
+        } else {
+            return date('H:i', $parsed);
+        }
+    }
+
+    return $s;
+}
+
 function extractRowsFromUploadedFile(string $filePath, string $origName): array {
     $ext = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
 
@@ -432,8 +515,9 @@ if ($action === 'upload_leads') {
             $name = 'Customer (' . substr($phone, -4) . ')';
         }
 
-        $callTime = trim($cols[$timeIdx] ?? 'Immediate');
-        if (empty($callTime) || $timeIdx === $usedPhoneIdx) $callTime = 'Immediate';
+        $rawCallTime = trim($cols[$timeIdx] ?? 'Immediate');
+        if (empty($rawCallTime) || $timeIdx === $usedPhoneIdx) $rawCallTime = 'Immediate';
+        $callTime = normalizeScheduledTime($rawCallTime);
         $notes = trim($cols[$notesIdx] ?? 'Imported');
 
         $stmtInsert->execute([$campaignId, $name, $phone, $callTime, $notes]);
@@ -487,7 +571,7 @@ if ($action === 'save_manual_leads') {
         }
 
         $name = !empty($parts[1]) ? $parts[1] : 'Customer (' . substr($phone, -4) . ')';
-        $callTime = !empty($parts[2]) ? $parts[2] : date('h:i A');
+        $callTime = !empty($parts[2]) ? normalizeScheduledTime($parts[2]) : date('h:i A');
         $notes = !empty($parts[3]) ? $parts[3] : 'Manual Entry';
 
         $stmtCheck->execute([$campaignId, $phone]);
