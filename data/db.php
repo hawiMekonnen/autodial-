@@ -70,6 +70,10 @@ class DialerDB {
                 fusionpbx_ivr_path TEXT DEFAULT '/var/lib/freeswitch/recordings/welcome_human_voice.wav',
                 pacing_delay_sec INTEGER DEFAULT 2,
                 max_concurrent INTEGER DEFAULT 2,
+                max_retries INTEGER DEFAULT 2,
+                retry_delay_min INTEGER DEFAULT 15,
+                retry_date_mode TEXT DEFAULT 'same_day',
+                retry_custom_date TEXT DEFAULT '',
                 total_leads INTEGER DEFAULT 0,
                 completed_leads INTEGER DEFAULT 0,
                 created_by TEXT DEFAULT 'Agent1',
@@ -148,6 +152,18 @@ class DialerDB {
             $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN ivr_audio_file TEXT DEFAULT 'assets/audio/welcome_human_voice.wav'");
             $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN fusionpbx_ivr_path TEXT DEFAULT '/var/lib/freeswitch/recordings/welcome_human_voice.wav'");
         } catch (Exception $e) {}
+
+        // Add Retry and Schedule policy columns to campaigns
+        foreach ([
+            'max_retries'       => "2",
+            'retry_delay_min'   => "15",
+            'retry_date_mode'   => "'same_day'",
+            'retry_custom_date' => "''"
+        ] as $col => $def) {
+            try {
+                $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN {$col} " . (is_numeric($def) ? "INTEGER" : "TEXT") . " DEFAULT {$def}");
+            } catch (Exception $e) {}
+        }
 
         // Add SIP settings columns if upgrading existing DB
         foreach ([

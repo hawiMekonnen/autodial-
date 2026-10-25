@@ -68,6 +68,7 @@ class SkyKinDialerApp {
     this.isHeld = false;
     this.ringbackCtx = null;
     this.ringbackInterval = null;
+    this.liveEvents = [];
 
     this.initElements();
     this.initEventListeners();
@@ -98,6 +99,21 @@ class SkyKinDialerApp {
     this.audioPlayerElement = document.getElementById('mainAudioPlayer');
     this.tabAudioPlayer = document.getElementById('tabAudioPlayer');
     this.activeAudioTitle = document.getElementById('activeAudioTitle');
+
+    // Real-Time Monitor elements
+    this.badgeActiveCalls = document.getElementById('badgeActiveCalls');
+    this.monCampaignStatusBadge = document.getElementById('monCampaignStatusBadge');
+    this.monBtnStart = document.getElementById('monBtnStart');
+    this.monBtnPause = document.getElementById('monBtnPause');
+    this.monBtnStop = document.getElementById('monBtnStop');
+    this.monActiveCallsVal = document.getElementById('monActiveCallsVal');
+    this.monQueueRemainingVal = document.getElementById('monQueueRemainingVal');
+    this.monCompletedCallsVal = document.getElementById('monCompletedCallsVal');
+    this.monAnswerRateVal = document.getElementById('monAnswerRateVal');
+    this.monAvgDurationVal = document.getElementById('monAvgDurationVal');
+    this.monChannelsContainer = document.getElementById('monChannelsContainer');
+    this.monLiveEventLog = document.getElementById('monLiveEventLog');
+    this.monUpcomingTableBody = document.getElementById('monUpcomingTableBody');
 
     // KPI fields
     this.kpiTotal = document.getElementById('kpiTotalLeads');
@@ -898,13 +914,23 @@ class SkyKinDialerApp {
       filtered.forEach((l, idx) => {
         const tr = document.createElement('tr');
         const stBadge = this.getStatusBadge(l.status);
+        const retryBadge = (l.retry_count && Number(l.retry_count) > 0)
+          ? `<span style="font-size:10px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:10px;margin-left:4px;font-weight:700;" title="Automated Retry #${l.retry_count}">Retry #${l.retry_count}</span>`
+          : '';
         const callTime = l.call_time || 'Immediate';
         const dur = l.duration_sec ? `${l.duration_sec}s` : '-';
-        const isImmediate = !l.call_time || l.call_time.toLowerCase() === 'immediate';
+        const isImmediate = !l.call_time || l.call_time.toLowerCase() === 'immediate' || l.call_time.toLowerCase() === 'now';
         const isDue = this.isLeadDueForCall(l);
         const timeBadgeStyle = (isImmediate || isDue)
           ? 'background:#e0f2fe;color:#0369a1;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:700;'
           : 'background:#f8fafc;color:#475569;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;border:1px solid #e2e8f0;';
+
+        const op = this.verifyNumber(l.phone_number);
+        const opBadge = op.valid
+          ? (op.operator === 'Ethio Telecom'
+              ? `<span style="font-size:10px;background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:10px;margin-left:4px;font-weight:600;">Ethio</span>`
+              : `<span style="font-size:10px;background:#ecfdf5;color:#047857;padding:1px 6px;border-radius:10px;margin-left:4px;font-weight:600;">Safari</span>`)
+          : `<span style="font-size:10px;background:#fef2f2;color:#dc2626;padding:1px 6px;border-radius:10px;margin-left:4px;font-weight:600;" title="${op.reason}">⚠️ Invalid</span>`;
 
         tr.innerHTML = `
           <td>${idx + 1}</td>
@@ -913,9 +939,10 @@ class SkyKinDialerApp {
             <a href="javascript:void(0)" onclick="app.dialSingleLeadWithIvr(${l.id})" style="color:#0047AB;font-weight:700;text-decoration:none;" title="Click to Dial Outbound with IVR">
               ${this.escapeHtml(l.phone_number)}
             </a>
+            ${opBadge}
           </td>
           <td><span style="${timeBadgeStyle}" title="${isDue ? 'Ready to Call' : 'Scheduled for future'}">${this.escapeHtml(callTime)}</span></td>
-          <td>${stBadge}</td>
+          <td>${stBadge} ${retryBadge}</td>
           <td>${dur}</td>
           <td>
             <button class="btn btn-primary btn-sm" onclick="app.dialSingleLeadWithIvr(${l.id})" title="Outbound Call with IVR">Call</button>
@@ -1450,15 +1477,7 @@ class SkyKinDialerApp {
     const scheduledTs = this.getLeadScheduledTimestamp(lead);
     if (scheduledTs <= 0) return true;
 
-    const now = Date.now();
-    // If time is in the future -> WAIT
-    if (now < scheduledTs) {
-      return false;
-    }
-
-    // If scheduled time has arrived within the current active window (<= 3 minutes after scheduled time) -> DUE NOW
-    const diffSec = (now - scheduledTs) / 1000;
-    return diffSec <= 180;
+    return Date.now() >= scheduledTs;
   }
 
   getLeadScheduledTimestamp(lead) {
@@ -1595,6 +1614,19 @@ class SkyKinDialerApp {
       return;
     }
 
+    // Pre-Call Number Verification Check
+    const invalidPending = pendingLeads.filter(l => !this.verifyNumber(l.phone_number).valid);
+    if (invalidPending.length > 0) {
+      const confirmMsg = `Pre-Call Number Verification Alert:\n\n${invalidPending.length} invalid phone numbers were detected in the queue (e.g. "${invalidPending[0].phone_number}").\n\nClick OK to auto-remove invalid numbers and start dialing, or Cancel to review the list.`;
+      if (confirm(confirmMsg)) {
+        await this.executeQueueClean('remove_invalid', false);
+        await this.loadCampaignData();
+      } else {
+        this.openVerificationModal();
+        return;
+      }
+    }
+
     // Ensure at least Line 1 is registered
     const l1Registered = this.line1.isRegistered;
     const l2Registered = this.line2.enabled && this.line2.isRegistered;
@@ -1614,6 +1646,7 @@ class SkyKinDialerApp {
     this.renderCampaignHeader();
     const lineMode = (this.line2.enabled && l2Registered) ? 'Dual-Line (2 Concurrent Numbers)' : 'Single Line';
     this.showToast(`Auto-Dialer active [${lineMode}]: Monitoring queue...`, 'success');
+    this.logLiveEvent(`Campaign started [${lineMode}]. Scheduler loop active.`, 'info');
     this.startSchedulerLoop();
     this.processOutboundQueue();
   }
@@ -1625,6 +1658,7 @@ class SkyKinDialerApp {
     this.btnPause.className = this.isPaused ? 'btn btn-success' : 'btn btn-warning';
     this.renderCampaignHeader();
     this.showToast(this.isPaused ? 'Auto-Dialer Paused' : 'Auto-Dialer Resumed', 'info');
+    this.logLiveEvent(this.isPaused ? 'Auto-Dialer paused by agent.' : 'Auto-Dialer resumed by agent.', this.isPaused ? 'warning' : 'info');
 
     if (!this.isPaused) {
       this.startSchedulerLoop();
@@ -1656,6 +1690,8 @@ class SkyKinDialerApp {
       try { this.activeAudioPlayer.pause(); } catch(e) {}
       this.activeAudioPlayer = null;
     }
+
+    this.logLiveEvent('Auto-Dialer stopped. Telephony channels released.', 'danger');
 
     this.activeChannels.forEach(ch => {
       if (ch.timerInterval) clearInterval(ch.timerInterval);
@@ -1711,13 +1747,12 @@ class SkyKinDialerApp {
         return !s || s === 'immediate' || s === 'now';
       });
 
-      // 2. Scheduled leads whose time has arrived (within 60 seconds)
+      // 2. Scheduled leads whose time has arrived (scheduled time <= current time)
       const dueScheduledLeads = pendingLeads.filter(l => {
         const s = String(l.call_time || '').trim().toLowerCase();
         if (!s || s === 'immediate' || s === 'now') return false;
         const ts = this.getLeadScheduledTimestamp(l);
-        if (ts <= 0) return false;
-        return (now >= ts) && ((now - ts) <= 60000);
+        return ts > 0 && now >= ts;
       });
 
       const dueLeads = [...immediateLeads, ...dueScheduledLeads];
@@ -1859,7 +1894,19 @@ class SkyKinDialerApp {
         });
       }
 
-      await this.updateLeadStatusBackend(lead.id, finalStatus, durationSec, errorMsg);
+      const updRes = await this.updateLeadStatusBackend(lead.id, finalStatus, durationSec, errorMsg);
+      if (updRes && updRes.retry_scheduled) {
+        lead.status = 'pending';
+        lead.call_time = updRes.next_retry_time;
+        lead.retry_count = updRes.retry_count;
+        this.logLiveEvent(`[Line ${lineNum}] Call unanswered (${finalStatus}). Auto-Retry #${updRes.retry_count} scheduled for ${updRes.next_retry_time}`, 'warning');
+        this.showToast(`Retry #${updRes.retry_count} queued for ${updRes.next_retry_time}`, 'info');
+      } else if (finalStatus === 'completed' || finalStatus === 'ivr_completed') {
+        this.logLiveEvent(`[Line ${lineNum}] Call completed successfully with ${lead.phone_number} (${durationSec}s). Channel released.`, 'success');
+      } else {
+        this.logLiveEvent(`[Line ${lineNum}] Call ended with ${lead.phone_number} (${finalStatus}). Max retries reached or retries disabled.`, 'danger');
+      }
+
       await this.loadCampaignData();
 
       // Proceed to the next customer in the queue for this line
@@ -1879,17 +1926,21 @@ class SkyKinDialerApp {
       return;
     }
 
+    this.logLiveEvent(`[Line ${lineNum}] Dialing ${lead.phone_number} (${lead.customer_name || 'Customer'})...`, 'info');
+
     let callSec = 0;
     this.sipMakeCall(lead.phone_number, dom, {
       onEstablishing: () => {
         channelData.status = 'ringing';
         lead.status = 'calling';
+        this.logLiveEvent(`[Line ${lineNum}] Ringing destination: ${lead.phone_number}...`, 'info');
         this.renderActiveChannels();
         this.renderLeadsTables();
       },
       onEstablished: async (pc) => {
         channelData.status = 'answered';
         lead.status = 'answered';
+        this.logLiveEvent(`[Line ${lineNum}] Call ANSWERED by ${lead.phone_number}! Streaming IVR greeting: "${this.campaign?.ivr_audio_name || 'Human Greeting'}".`, 'success');
         this.renderActiveChannels();
         this.renderLeadsTables();
         this.updateLeadStatusBackend(lead.id, 'answered', 1);
@@ -1913,15 +1964,18 @@ class SkyKinDialerApp {
         finishCall(callSec > 0 ? 'completed' : 'no_answer', callSec);
       },
       onError: (err) => {
+        this.logLiveEvent(`[Line ${lineNum}] Telephony error dialing ${lead.phone_number}: ${err?.message || 'Call Failed'}`, 'danger');
         finishCall('failed', 0, err?.message || 'Call Failed');
       },
       onReject: (resp) => {
+        this.logLiveEvent(`[Line ${lineNum}] Call declined or busy: ${lead.phone_number} (${resp?.reasonPhrase || 'Declined / Busy'}).`, 'warning');
         finishCall('no_answer', 0, resp?.reasonPhrase || 'Declined / Busy');
       }
     }, lineNum);
   }
 
   renderActiveChannels() {
+    this.renderRealtimeMonitor();
     if (!this.channelsContainer) return;
 
     if (this._displayCountdownTimer) {
@@ -2061,17 +2115,21 @@ class SkyKinDialerApp {
     }
   }
 
-  async updateLeadStatusBackend(leadId, status, duration) {
+  async updateLeadStatusBackend(leadId, status, duration, errorMsg = '') {
     try {
       const formData = new FormData();
       formData.append('lead_id', leadId);
       formData.append('status', status);
       formData.append('duration_sec', duration);
+      formData.append('error_message', errorMsg || '');
       formData.append('audio_played', this.campaign?.ivr_audio_name || 'Human Welcome Audio');
 
-      await fetch('api.php?action=update_lead_status', { method: 'POST', body: formData });
+      const res = await fetch('api.php?action=update_lead_status', { method: 'POST', body: formData });
+      const data = await res.json();
+      return data;
     } catch (e) {
       console.error(e);
+      return null;
     }
   }
 
@@ -2574,6 +2632,401 @@ class SkyKinDialerApp {
     const ext = localStorage.getItem('sip_ext') || '101';
     this.updateSipStatus('registered', `Registered (${ext})`);
     this.showToast('Call ended', 'info');
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     Ethiopian Telecom Format Verification Engine
+     ───────────────────────────────────────────────────────── */
+  verifyNumber(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return { valid: false, formatted: '', operator: 'Unknown', reason: 'Empty number' };
+    const digits = s.replace(/\D/g, '');
+    let norm = digits;
+    if (norm.startsWith('00251') && norm.length >= 12) norm = norm.slice(5);
+    else if (norm.startsWith('251') && norm.length >= 12) norm = norm.slice(3);
+    else if (norm.startsWith('0') && norm.length === 10) norm = norm.slice(1);
+
+    if (norm.length === 9) {
+      if (norm.startsWith('9')) {
+        return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Ethio Telecom', type: 'Mobile' };
+      }
+      if (norm.startsWith('7')) {
+        return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Safaricom Ethiopia', type: 'Mobile' };
+      }
+      if (norm.startsWith('11') || norm.startsWith('1')) {
+        return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Ethio Telecom', type: 'Fixed Line' };
+      }
+      return { valid: false, formatted: s, operator: 'Invalid Prefix', reason: `Unknown prefix 0${norm.slice(0, 2)}` };
+    }
+
+    if (s.startsWith('+') && digits.length >= 7 && digits.length <= 15) {
+      return { valid: true, formatted: '+' + digits, national: '+' + digits, operator: 'International', type: 'International' };
+    }
+
+    return { valid: false, formatted: s, operator: 'Invalid Length', reason: `Invalid digits length (${digits.length})` };
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     Real-Time Campaign Monitor Engine
+     ───────────────────────────────────────────────────────── */
+  renderRealtimeMonitor() {
+    // 1. Sync header tags & buttons
+    if (this.monCampaignStatusBadge) {
+      this.monCampaignStatusBadge.textContent = this.isRunning ? (this.isPaused ? 'PAUSED' : 'RUNNING') : 'IDLE';
+      this.monCampaignStatusBadge.className = `campaign-status-tag ${this.isRunning ? (this.isPaused ? 'paused' : 'running') : 'idle'}`;
+    }
+    if (this.monBtnStart) this.monBtnStart.disabled = this.isRunning && !this.isPaused;
+    if (this.monBtnPause) {
+      this.monBtnPause.disabled = !this.isRunning;
+      this.monBtnPause.textContent = this.isPaused ? '▶ Resume' : '⏸ Pause';
+    }
+    if (this.monBtnStop) this.monBtnStop.disabled = !this.isRunning;
+
+    // 2. Tab badge and Sub-metrics
+    const activeCount = this.activeChannels.size;
+    if (this.badgeActiveCalls) {
+      this.badgeActiveCalls.textContent = activeCount;
+      this.badgeActiveCalls.style.display = activeCount > 0 ? 'inline-block' : 'none';
+    }
+
+    const maxConcurrent = document.getElementById('maxConcurrentInput')?.value || 2;
+    if (this.monActiveCallsVal) this.monActiveCallsVal.textContent = `${activeCount} / ${maxConcurrent}`;
+
+    const todayLeads = this.getTodayLeads();
+    let pendingCount = 0;
+    let completedCount = 0;
+    todayLeads.forEach(l => {
+      if (l.status === 'pending') pendingCount++;
+      else if (['answered', 'ivr_playing', 'ivr_completed', 'completed'].includes(l.status)) completedCount++;
+    });
+
+    if (this.monQueueRemainingVal) this.monQueueRemainingVal.textContent = pendingCount;
+    if (this.monCompletedCallsVal) this.monCompletedCallsVal.textContent = completedCount;
+    if (this.monAnswerRateVal) this.monAnswerRateVal.textContent = `${this.stats.answer_rate || 0}%`;
+    if (this.monAvgDurationVal) this.monAvgDurationVal.textContent = `${this.stats.avg_duration || 0}s`;
+
+    // 3. Render Channels in Monitor (Line 1 & Line 2)
+    if (this.monChannelsContainer) {
+      this.monChannelsContainer.innerHTML = '';
+      
+      const lines = [
+        { num: 1, obj: this.line1 },
+        { num: 2, obj: this.line2 }
+      ];
+
+      lines.forEach(({ num, obj }) => {
+        if (num === 2 && !obj.enabled) return;
+
+        // Find active channel on this line
+        let activeCh = null;
+        this.activeChannels.forEach(ch => {
+          if (ch.lineNum === num) activeCh = ch;
+        });
+
+        const card = document.createElement('div');
+        card.style.background = '#ffffff';
+        card.style.border = activeCh ? (activeCh.status === 'answered' ? '1.5px solid #22c55e' : '1.5px solid #f59e0b') : '1px solid #e2e8f0';
+        card.style.borderRadius = '10px';
+        card.style.padding = '14px 16px';
+        card.style.boxShadow = activeCh ? '0 4px 12px rgba(0,0,0,0.08)' : '0 1px 3px rgba(0,0,0,0.03)';
+        card.style.transition = 'all 0.2s ease';
+
+        const lineStatusText = !obj.isRegistered
+          ? 'Offline / Unregistered'
+          : (activeCh
+              ? (activeCh.status === 'answered' ? 'IVR Playing (Connected)' : 'Ringing / Outbound Dialing...')
+              : (this.isRunning ? (this.isPaused ? 'Paused' : 'Monitoring Queue...') : 'Idle (Ready)'));
+
+        const statusColor = !obj.isRegistered ? '#94a3b8' : (activeCh ? (activeCh.status === 'answered' ? '#15803d' : '#b45309') : '#64748b');
+        const statusBg = !obj.isRegistered ? '#f1f5f9' : (activeCh ? (activeCh.status === 'answered' ? '#dcfce7' : '#fef3c7') : '#f8fafc');
+
+        const mins = activeCh ? Math.floor(activeCh.duration / 60) : 0;
+        const secs = activeCh ? (activeCh.duration % 60) : 0;
+        const durStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+        let waveAnimationHtml = '';
+        if (activeCh && activeCh.status === 'answered') {
+          waveAnimationHtml = `
+            <div class="audio-wave-bars" style="display:flex;align-items:center;gap:3px;height:18px;">
+              <span class="wave-bar" style="width:3px;height:6px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.1s;"></span>
+              <span class="wave-bar" style="width:3px;height:14px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.2s;"></span>
+              <span class="wave-bar" style="width:3px;height:18px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.3s;"></span>
+              <span class="wave-bar" style="width:3px;height:10px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.4s;"></span>
+              <span class="wave-bar" style="width:3px;height:16px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.5s;"></span>
+            </div>
+          `;
+        }
+
+        let channelBodyHtml = '';
+        if (activeCh) {
+          const v = this.verifyNumber(activeCh.lead.phone_number);
+          channelBodyHtml = `
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:10px;">
+              <div>
+                <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:2px;">
+                  ${this.escapeHtml(activeCh.lead.customer_name || 'Customer')}
+                </div>
+                <div style="font-size:13px;font-family:monospace;font-weight:700;color:#0047AB;display:flex;align-items:center;gap:6px;">
+                  <span>${this.escapeHtml(activeCh.lead.phone_number)}</span>
+                  <span style="font-size:10px;background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-family:sans-serif;font-weight:600;">${v.operator || 'Mobile'}</span>
+                </div>
+                <div style="font-size:11.5px;color:#64748b;margin-top:4px;">
+                  Audio: <em>${this.escapeHtml(this.campaign?.ivr_audio_name || 'Human Audio')}</em>
+                </div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:20px;font-weight:800;color:#0047AB;font-family:monospace;">${durStr}</div>
+                <div style="margin-top:4px;display:flex;justify-content:flex-end;">
+                  ${waveAnimationHtml}
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="app.sipHangup(${num})" style="margin-top:6px;padding:3px 10px;font-size:11px;color:#dc2626;border-color:#fecaca;">
+                  Disconnect
+                </button>
+              </div>
+            </div>
+          `;
+        } else {
+          channelBodyHtml = `
+            <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;color:#94a3b8;font-size:12.5px;">
+              <span>No call currently active on Line ${num}</span>
+              <span style="font-size:11px;background:#f8fafc;padding:3px 8px;border-radius:6px;border:1px solid #e2e8f0;">Waiting for next lead</span>
+            </div>
+          `;
+        }
+
+        card.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #f1f5f9;padding-bottom:8px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <strong style="font-size:13px;color:#1e293b;">Telephony Channel ${num}</strong>
+              <span style="font-size:11px;color:#64748b;font-family:monospace;">Ext: ${obj.ext || ('10' + num)}</span>
+            </div>
+            <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;background:${statusBg};color:${statusColor};display:inline-flex;align-items:center;gap:5px;">
+              <span style="width:6px;height:6px;border-radius:50%;background:${statusColor};display:inline-block;"></span>
+              ${lineStatusText}
+            </span>
+          </div>
+          ${channelBodyHtml}
+        `;
+
+        this.monChannelsContainer.appendChild(card);
+      });
+    }
+
+    // 4. Render Upcoming Queue in Monitor
+    if (this.monUpcomingTableBody) {
+      this.monUpcomingTableBody.innerHTML = '';
+      const pending = todayLeads.filter(l => l.status === 'pending');
+      if (pending.length === 0) {
+        this.monUpcomingTableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:24px;">No upcoming calls in queue. All leads processed!</td></tr>`;
+      } else {
+        const preview = pending.slice(0, 8);
+        const now = Date.now();
+        preview.forEach((l, idx) => {
+          const v = this.verifyNumber(l.phone_number);
+          const opBadge = v.valid
+            ? (v.operator === 'Ethio Telecom'
+                ? `<span style="font-size:10px;background:#e0f2fe;color:#0369a1;padding:2px 6px;border-radius:8px;font-weight:600;">Ethio</span>`
+                : `<span style="font-size:10px;background:#ecfdf5;color:#047857;padding:2px 6px;border-radius:8px;font-weight:600;">Safari</span>`)
+            : `<span style="font-size:10px;background:#fef2f2;color:#dc2626;padding:2px 6px;border-radius:8px;font-weight:600;">⚠️ Invalid</span>`;
+
+          const ts = this.getLeadScheduledTimestamp(l);
+          const isImmediate = !l.call_time || l.call_time.toLowerCase() === 'immediate' || l.call_time.toLowerCase() === 'now';
+          const isDue = this.isLeadDueForCall(l);
+          
+          let readinessBadge = '';
+          if (isImmediate || isDue) {
+            readinessBadge = `<span style="background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;">Ready to Dial</span>`;
+          } else {
+            const diffSec = Math.max(0, Math.round((ts - now) / 1000));
+            const mm = Math.floor(diffSec / 60);
+            const ss = diffSec % 60;
+            readinessBadge = `<span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">in ${mm}m ${ss}s</span>`;
+          }
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${idx + 1}</td>
+            <td><strong>${this.escapeHtml(l.customer_name || 'Customer')}</strong></td>
+            <td style="font-family:monospace;font-weight:600;">${this.escapeHtml(l.phone_number)}</td>
+            <td>${opBadge}</td>
+            <td><span style="font-size:11.5px;color:#334155;">${this.escapeHtml(l.call_time || 'Immediate')}</span></td>
+            <td>${readinessBadge}</td>
+            <td>
+              <button class="btn btn-primary btn-sm" onclick="app.dialSingleLeadWithIvr(${l.id})" style="padding:2px 8px;font-size:11px;">Dial Now</button>
+            </td>
+          `;
+          this.monUpcomingTableBody.appendChild(tr);
+        });
+      }
+    }
+  }
+
+  logLiveEvent(msg, type = 'info') {
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    this.liveEvents.unshift({ time: timeStr, msg, type });
+    if (this.liveEvents.length > 60) this.liveEvents.pop();
+
+    if (this.monLiveEventLog) {
+      const colorMap = {
+        info: '#38bdf8',
+        success: '#4ade80',
+        warning: '#fbbf24',
+        danger: '#f87171'
+      };
+      const items = this.liveEvents.map(e => {
+        const c = colorMap[e.type] || '#e2e8f0';
+        return `<div><span style="color:#64748b;">[${e.time}]</span> <span style="color:${c};font-weight:600;">${this.escapeHtml(e.msg)}</span></div>`;
+      });
+      this.monLiveEventLog.innerHTML = items.join('');
+    }
+  }
+
+  clearLiveEventLog() {
+    this.liveEvents = [];
+    if (this.monLiveEventLog) {
+      this.monLiveEventLog.innerHTML = '<div style="color:#64748b;font-style:italic;">[System Ready] Live telephony activity log cleared.</div>';
+    }
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     Pre-Call List Verification & Queue Cleaning Modal
+     ───────────────────────────────────────────────────────── */
+  async openVerificationModal() {
+    this.openModal('modalVerifyList');
+    const content = document.getElementById('verifyDetailsContent');
+    if (content) content.innerHTML = '<div style="color:#64748b;text-align:center;padding:14px;">Analyzing queue phone numbers...</div>';
+
+    try {
+      const res = await fetch(`api.php?action=verify_leads_list&campaign_id=${this.campaign?.id || 1}`);
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Verification failed');
+
+      if (document.getElementById('verifyTotalCount')) document.getElementById('verifyTotalCount').textContent = data.total;
+      if (document.getElementById('verifyValidEthioCount')) document.getElementById('verifyValidEthioCount').textContent = data.ethio_telecom;
+      if (document.getElementById('verifyValidSafariCount')) document.getElementById('verifyValidSafariCount').textContent = data.safaricom;
+      if (document.getElementById('verifyDuplicatesCount')) document.getElementById('verifyDuplicatesCount').textContent = data.duplicates.length;
+      if (document.getElementById('verifyInvalidCount')) document.getElementById('verifyInvalidCount').textContent = data.invalid.length;
+
+      let detailHtml = '';
+      if (data.invalid.length === 0 && data.duplicates.length === 0) {
+        detailHtml = '<div style="text-align:center;color:#16a34a;font-weight:700;padding:12px;">✅ All phone numbers in the queue are valid and verified!</div>';
+      } else {
+        if (data.invalid.length > 0) {
+          detailHtml += `<div style="font-weight:700;color:#dc2626;margin-bottom:4px;">❌ Invalid Numbers (${data.invalid.length}):</div>`;
+          data.invalid.slice(0, 10).forEach(inv => {
+            detailHtml += `<div style="padding:2px 0;color:#b91c1c;">• <strong>${this.escapeHtml(inv.phone_number)}</strong> (${this.escapeHtml(inv.customer_name || 'Customer')}): ${this.escapeHtml(inv.reason)}</div>`;
+          });
+          if (data.invalid.length > 10) detailHtml += `<div style="color:#64748b;font-style:italic;">...and ${data.invalid.length - 10} more invalid</div>`;
+        }
+        if (data.duplicates.length > 0) {
+          detailHtml += `<div style="font-weight:700;color:#b45309;margin-top:8px;margin-bottom:4px;">⚠️ Duplicate Numbers (${data.duplicates.length}):</div>`;
+          data.duplicates.slice(0, 10).forEach(dup => {
+            detailHtml += `<div style="padding:2px 0;color:#92400e;">• <strong>${this.escapeHtml(dup.phone_number)}</strong> (${this.escapeHtml(dup.customer_name || 'Customer')}) - appears multiple times</div>`;
+          });
+          if (data.duplicates.length > 10) detailHtml += `<div style="color:#64748b;font-style:italic;">...and ${data.duplicates.length - 10} more duplicates</div>`;
+        }
+      }
+      if (content) content.innerHTML = detailHtml;
+    } catch(err) {
+      if (content) content.innerHTML = `<div style="color:#dc2626;padding:10px;">Error verifying numbers: ${this.escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  async executeQueueClean(cleanType, notify = true) {
+    try {
+      const formData = new FormData();
+      formData.append('campaign_id', this.campaign?.id || 1);
+      formData.append('clean_type', cleanType);
+
+      const res = await fetch('api.php?action=clean_invalid_leads', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.success) {
+        if (notify) this.showToast(data.message, 'success');
+        await this.loadCampaignData();
+        const modal = document.getElementById('modalVerifyList');
+        if (modal && modal.classList.contains('open')) {
+          this.openVerificationModal();
+        }
+      } else {
+        if (notify) this.showToast(data.error || 'Clean action failed', 'error');
+      }
+    } catch(e) {
+      if (notify) this.showToast('Error cleaning list', 'error');
+    }
+  }
+
+  closeVerificationAndStart() {
+    this.closeAllModals();
+    this.startCampaign();
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     Retry Policy & Scheduling Modal Configuration
+     ───────────────────────────────────────────────────────── */
+  openRetrySettingsModal() {
+    if (this.campaign) {
+      const maxRetriesEl = document.getElementById('cfgMaxRetries');
+      const modeEl = document.getElementById('cfgRetryDateMode');
+      const delayEl = document.getElementById('cfgRetryDelayMin');
+      const customDateEl = document.getElementById('cfgRetryCustomDate');
+
+      if (maxRetriesEl) maxRetriesEl.value = (this.campaign.max_retries !== undefined && this.campaign.max_retries !== null) ? this.campaign.max_retries : 2;
+      if (modeEl) modeEl.value = this.campaign.retry_date_mode || 'same_day';
+      if (delayEl) delayEl.value = this.campaign.retry_delay_min || 15;
+      if (customDateEl) customDateEl.value = this.campaign.retry_custom_date || '';
+
+      this.handleRetryModeChange(modeEl?.value || 'same_day');
+    }
+    this.openModal('modalRetrySettings');
+  }
+
+  handleRetryModeChange(mode) {
+    const delayWrap = document.getElementById('cfgRetryDelayWrap');
+    const customWrap = document.getElementById('cfgRetryCustomDateWrap');
+    if (delayWrap) delayWrap.style.display = (mode === 'same_day') ? 'block' : 'none';
+    if (customWrap) {
+      customWrap.style.display = (mode === 'custom_date') ? 'block' : 'none';
+      if (mode === 'custom_date') {
+        const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+        const dateInput = document.getElementById('cfgRetryCustomDate');
+        if (dateInput && !dateInput.value) dateInput.value = tomorrow;
+      }
+    }
+  }
+
+  async handleSaveRetrySettings(e) {
+    if (e) e.preventDefault();
+    const maxRetries = document.getElementById('cfgMaxRetries')?.value || 2;
+    const retryMode = document.getElementById('cfgRetryDateMode')?.value || 'same_day';
+    const retryDelay = document.getElementById('cfgRetryDelayMin')?.value || 15;
+    const customDate = document.getElementById('cfgRetryCustomDate')?.value || '';
+
+    try {
+      const formData = new FormData();
+      formData.append('campaign_id', this.campaign?.id || 1);
+      formData.append('max_retries', maxRetries);
+      formData.append('retry_date_mode', retryMode);
+      formData.append('retry_delay_min', retryDelay);
+      formData.append('retry_custom_date', customDate);
+
+      const res = await fetch('api.php?action=save_campaign_settings', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.success) {
+        if (this.campaign) {
+          this.campaign.max_retries = parseInt(maxRetries, 10);
+          this.campaign.retry_date_mode = retryMode;
+          this.campaign.retry_delay_min = parseInt(retryDelay, 10);
+          this.campaign.retry_custom_date = customDate;
+        }
+        this.closeAllModals();
+        this.showToast('Retry policy and schedule rules saved!', 'success');
+        this.logLiveEvent(`Retry policy updated: Max ${maxRetries} retries, mode: ${retryMode}${retryMode === 'same_day' ? ` (+${retryDelay}m)` : ''}`, 'info');
+      } else {
+        this.showToast(data.error || 'Failed to save retry rules', 'error');
+      }
+    } catch(err) {
+      this.showToast('Error saving retry settings', 'error');
+    }
   }
 
   escapeHtml(str) {

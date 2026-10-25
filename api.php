@@ -34,6 +34,73 @@ function sanitizePhone(string $raw): string {
     return $cleaned;
 }
 
+function validatePhoneNumberInfo(string $raw): array {
+    $cleaned = preg_replace('/[^\d+]/', '', trim($raw));
+    if (empty($cleaned)) {
+        return ['valid' => false, 'error' => 'Empty phone number', 'operator' => 'Unknown', 'formatted' => ''];
+    }
+
+    // Ethiopian Mobile Formats:
+    // 09xxxxxxxx or 07xxxxxxxx -> +2519xxxxxxxx / +2517xxxxxxxx
+    if (preg_match('/^0([97]\d{8})$/', $cleaned, $m)) {
+        $prefix = substr($m[1], 0, 1);
+        return [
+            'valid' => true,
+            'operator' => $prefix === '9' ? 'Ethio Telecom' : 'Safaricom',
+            'formatted' => '+251' . $m[1],
+            'type' => 'Mobile'
+        ];
+    }
+    // 2519xxxxxxxx or 2517xxxxxxxx
+    if (preg_match('/^251([97]\d{8})$/', $cleaned, $m)) {
+        $prefix = substr($m[1], 0, 1);
+        return [
+            'valid' => true,
+            'operator' => $prefix === '9' ? 'Ethio Telecom' : 'Safaricom',
+            'formatted' => '+251' . $m[1],
+            'type' => 'Mobile'
+        ];
+    }
+    // +2519xxxxxxxx or +2517xxxxxxxx
+    if (preg_match('/^\+251([97]\d{8})$/', $cleaned, $m)) {
+        $prefix = substr($m[1], 0, 1);
+        return [
+            'valid' => true,
+            'operator' => $prefix === '9' ? 'Ethio Telecom' : 'Safaricom',
+            'formatted' => '+251' . $m[1],
+            'type' => 'Mobile'
+        ];
+    }
+    // Ethiopian Landline (011xxxxxxx)
+    if (preg_match('/^011(\d{7})$/', $cleaned, $m) || preg_match('/^\+?25111(\d{7})$/', $cleaned, $m)) {
+        return [
+            'valid' => true,
+            'operator' => 'Ethio Telecom (Fixed)',
+            'formatted' => '+25111' . $m[1],
+            'type' => 'Landline'
+        ];
+    }
+    // Standard E.164 International Number (+ followed by 7-15 digits)
+    if (preg_match('/^\+[1-9]\d{6,14}$/', $cleaned)) {
+        return [
+            'valid' => true,
+            'operator' => 'International',
+            'formatted' => $cleaned,
+            'type' => 'International'
+        ];
+    }
+
+    $digitCount = strlen(preg_replace('/\D/', '', $cleaned));
+    if ($digitCount < 9) {
+        return ['valid' => false, 'error' => "Number is too short ({$digitCount} digits, expected 9-10)", 'operator' => 'Invalid', 'formatted' => $cleaned];
+    }
+    if ($digitCount > 15) {
+        return ['valid' => false, 'error' => "Number is too long ({$digitCount} digits)", 'operator' => 'Invalid', 'formatted' => $cleaned];
+    }
+
+    return ['valid' => false, 'error' => 'Unrecognized mobile prefix (expected 09... or 07...)', 'operator' => 'Invalid', 'formatted' => $cleaned];
+}
+
 function extractLeadDate(?string $callTime, ?string $createdAt): string {
     $timeStr = trim((string)$callTime);
     // 1. ISO date: YYYY-MM-DD
@@ -491,13 +558,56 @@ if ($action === 'update_lead_status') {
         jsonOut(['success' => false, 'error' => 'Invalid lead ID.'], 400);
     }
 
-    $stmt = $db->prepare("UPDATE leads SET status = ?, duration_sec = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
-    $stmt->execute([$status, $duration, $errMsg, $leadId]);
+    $retryScheduled = false;
+    $nextRetryTime = '';
+    $finalRetryCount = 0;
 
-    if (in_array($status, ['completed', 'ivr_completed', 'busy', 'no_answer', 'failed'])) {
-        $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch();
-        if ($lead) {
-            $campaign = $db->query("SELECT * FROM campaigns WHERE id = {$lead['campaign_id']}")->fetch();
+    $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch();
+    if ($lead) {
+        $campaign = $db->query("SELECT * FROM campaigns WHERE id = {$lead['campaign_id']}")->fetch();
+        $maxRetries = (int)($campaign['max_retries'] ?? 2);
+        $retryDelayMin = (int)($campaign['retry_delay_min'] ?? 15);
+        $retryDateMode = $campaign['retry_date_mode'] ?? 'same_day';
+        $retryCustomDate = $campaign['retry_custom_date'] ?? '';
+        $currentRetries = (int)($lead['retry_count'] ?? 0);
+
+        // Check if call failed or was not answered, and retries are enabled
+        if (in_array($status, ['no_answer', 'busy', 'failed']) && $maxRetries > 0) {
+            if ($currentRetries < $maxRetries) {
+                $finalRetryCount = $currentRetries + 1;
+                if ($retryDateMode === 'next_day') {
+                    $nextRetryTime = 'Tomorrow, ' . date('h:i A');
+                } elseif ($retryDateMode === 'custom_date' && !empty($retryCustomDate)) {
+                    $nextRetryTime = $retryCustomDate . ' ' . date('h:i A');
+                } else {
+                    $delaySec = max(60, $retryDelayMin * 60);
+                    $nextRetryTime = 'Today, ' . date('h:i A', time() + $delaySec);
+                }
+
+                $retryNote = "Attempt {$finalRetryCount} of {$maxRetries}: {$status}. Next retry scheduled for {$nextRetryTime}";
+                if (!empty($errMsg)) $retryNote .= " ({$errMsg})";
+
+                // Re-queue lead as pending with new scheduled time
+                $stmt = $db->prepare("UPDATE leads SET status = 'pending', retry_count = ?, call_time = ?, duration_sec = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+                $stmt->execute([$finalRetryCount, $nextRetryTime, $duration, $retryNote, $leadId]);
+                $retryScheduled = true;
+                $statusForLog = "{$status} (Retry #{$finalRetryCount}/{$maxRetries} scheduled for {$nextRetryTime})";
+            } else {
+                $maxExceededMsg = "Exceeded max retries ({$maxRetries}) - {$status}";
+                $stmt = $db->prepare("UPDATE leads SET status = ?, duration_sec = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+                $stmt->execute([$status, $duration, $maxExceededMsg, $leadId]);
+                $statusForLog = "{$status} (Max Retries Exceeded)";
+                $finalRetryCount = $currentRetries;
+            }
+        } else {
+            // Normal status update (calling, ringing, answered, completed)
+            $stmt = $db->prepare("UPDATE leads SET status = ?, duration_sec = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+            $stmt->execute([$status, $duration, $errMsg, $leadId]);
+            $statusForLog = $status;
+            $finalRetryCount = $currentRetries;
+        }
+
+        if (in_array($status, ['completed', 'ivr_completed', 'busy', 'no_answer', 'failed'])) {
             $insLog = $db->prepare("INSERT INTO call_logs (lead_id, campaign_id, customer_name, phone_number, call_time, agent_extension, status, duration_sec, audio_played) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $insLog->execute([
                 $leadId,
@@ -506,14 +616,22 @@ if ($action === 'update_lead_status') {
                 $lead['phone_number'],
                 $lead['call_time'] ?? date('h:i A'),
                 $_SESSION['dialer_user']['sip_extension'] ?? $_SESSION['dialer_user']['extension'] ?? '101',
-                $status,
+                $statusForLog,
                 $duration,
                 $campaign['ivr_audio_name'] ?? 'Human Voice Audio'
             ]);
         }
+    } else {
+        $stmt = $db->prepare("UPDATE leads SET status = ?, duration_sec = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+        $stmt->execute([$status, $duration, $errMsg, $leadId]);
     }
 
-    jsonOut(['success' => true]);
+    jsonOut([
+        'success' => true,
+        'retry_scheduled' => $retryScheduled,
+        'next_retry_time' => $nextRetryTime,
+        'retry_count' => $finalRetryCount
+    ]);
 }
 
 // 5. Upload Human Audio File (.wav / .mp3 / audio formats)
@@ -896,6 +1014,182 @@ if ($action === 'change_password') {
         'success' => true,
         'message' => 'Password updated successfully!'
     ]);
+}
+
+// 16. Save Campaign Pacing & Retry Rules
+if ($action === 'save_campaign_settings') {
+    $campaignId = (int)($_POST['campaign_id'] ?? 1);
+    $pacingDelay = max(1, (int)($_POST['pacing_delay_sec'] ?? 2));
+    $maxConcurrent = max(1, min(2, (int)($_POST['max_concurrent'] ?? 2)));
+    $maxRetries = max(0, min(10, (int)($_POST['max_retries'] ?? 2)));
+    $retryDelayMin = max(1, (int)($_POST['retry_delay_min'] ?? 15));
+    $retryDateMode = trim($_POST['retry_date_mode'] ?? 'same_day');
+    $retryCustomDate = trim($_POST['retry_custom_date'] ?? '');
+
+    $stmt = $db->prepare("UPDATE campaigns SET pacing_delay_sec = ?, max_concurrent = ?, max_retries = ?, retry_delay_min = ?, retry_date_mode = ?, retry_custom_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+    $stmt->execute([$pacingDelay, $maxConcurrent, $maxRetries, $retryDelayMin, $retryDateMode, $retryCustomDate, $campaignId]);
+
+    $stmtCamp = $db->prepare("SELECT * FROM campaigns WHERE id = ?");
+    $stmtCamp->execute([$campaignId]);
+    $updatedCamp = $stmtCamp->fetch();
+
+    jsonOut([
+        'success' => true,
+        'message' => 'Campaign dialing and retry settings saved successfully!',
+        'campaign' => $updatedCamp
+    ]);
+}
+
+// 17. Verify Phone Numbers in Lead List
+if ($action === 'verify_leads_list') {
+    $campaignId = (int)($_REQUEST['campaign_id'] ?? 1);
+    $scope = trim($_REQUEST['scope'] ?? 'pending');
+
+    $sql = "SELECT id, customer_name, phone_number, call_time, status, notes FROM leads WHERE campaign_id = ?";
+    if ($scope === 'pending') {
+        $sql .= " AND status = 'pending'";
+    }
+    $sql .= " ORDER BY id ASC";
+
+    $stmt = $db->prepare($sql);
+    $stmt->execute([$campaignId]);
+    $leads = $stmt->fetchAll();
+
+    $valid = [];
+    $invalid = [];
+    $duplicates = [];
+    $seenPhones = [];
+
+    $ethioCount = 0;
+    $safariCount = 0;
+    $otherCount = 0;
+
+    foreach ($leads as $l) {
+        $raw = $l['phone_number'];
+        $valInfo = validatePhoneNumberInfo($raw);
+        $norm = $valInfo['formatted'] ?: preg_replace('/[^\d+]/', '', $raw);
+
+        $entry = [
+            'id' => (int)$l['id'],
+            'customer_name' => $l['customer_name'],
+            'original_phone' => $raw,
+            'formatted_phone' => $norm,
+            'call_time' => $l['call_time'],
+            'status' => $l['status'],
+            'operator' => $valInfo['operator'],
+            'is_valid' => $valInfo['valid']
+        ];
+
+        // Check Duplicates
+        if (isset($seenPhones[$norm])) {
+            $entry['duplicate_of'] = $seenPhones[$norm];
+            $duplicates[] = $entry;
+        } else {
+            $seenPhones[$norm] = (int)$l['id'];
+        }
+
+        if ($valInfo['valid']) {
+            $valid[] = $entry;
+            if ($valInfo['operator'] === 'Ethio Telecom') $ethioCount++;
+            elseif ($valInfo['operator'] === 'Safaricom') $safariCount++;
+            else $otherCount++;
+        } else {
+            $entry['reason'] = $valInfo['error'];
+            $invalid[] = $entry;
+        }
+    }
+
+    jsonOut([
+        'success' => true,
+        'total' => count($leads),
+        'valid_count' => count($valid),
+        'invalid_count' => count($invalid),
+        'duplicate_count' => count($duplicates),
+        'operator_breakdown' => [
+            'ethio_telecom' => $ethioCount,
+            'safaricom' => $safariCount,
+            'other' => $otherCount
+        ],
+        'ethio_telecom' => $ethioCount,
+        'safaricom' => $safariCount,
+        'valid' => $valid,
+        'invalid' => $invalid,
+        'duplicates' => $duplicates
+    ]);
+}
+
+// 18. Clean or Fix Invalid / Duplicate Leads in Queue
+if ($action === 'clean_invalid_leads') {
+    $campaignId = (int)($_POST['campaign_id'] ?? 1);
+    $cleanType = trim($_POST['clean_type'] ?? 'remove_invalid'); // 'remove_invalid', 'remove_duplicates', 'auto_format'
+
+    $stmt = $db->prepare("SELECT id, customer_name, phone_number FROM leads WHERE campaign_id = ? AND status = 'pending' ORDER BY id ASC");
+    $stmt->execute([$campaignId]);
+    $pendingLeads = $stmt->fetchAll();
+
+    $affectedCount = 0;
+
+    if ($cleanType === 'remove_invalid') {
+        $toDelete = [];
+        foreach ($pendingLeads as $l) {
+            $val = validatePhoneNumberInfo($l['phone_number']);
+            if (!$val['valid']) {
+                $toDelete[] = (int)$l['id'];
+            }
+        }
+        if (!empty($toDelete)) {
+            $inList = implode(',', $toDelete);
+            $db->exec("DELETE FROM leads WHERE id IN ({$inList})");
+            $affectedCount = count($toDelete);
+        }
+        $msg = "Removed {$affectedCount} invalid phone numbers from calling queue.";
+    } elseif ($cleanType === 'remove_duplicates') {
+        $seen = [];
+        $toDelete = [];
+        foreach ($pendingLeads as $l) {
+            $norm = window_normalize_or_clean($l['phone_number']);
+            if (isset($seen[$norm])) {
+                $toDelete[] = (int)$l['id'];
+            } else {
+                $seen[$norm] = true;
+            }
+        }
+        if (!empty($toDelete)) {
+            $inList = implode(',', $toDelete);
+            $db->exec("DELETE FROM leads WHERE id IN ({$inList})");
+            $affectedCount = count($toDelete);
+        }
+        $msg = "Removed {$affectedCount} duplicate phone numbers from queue.";
+    } elseif ($cleanType === 'auto_format') {
+        $upd = $db->prepare("UPDATE leads SET phone_number = ? WHERE id = ?");
+        foreach ($pendingLeads as $l) {
+            $val = validatePhoneNumberInfo($l['phone_number']);
+            if ($val['valid'] && !empty($val['formatted']) && $val['formatted'] !== $l['phone_number']) {
+                $upd->execute([$val['formatted'], $l['id']]);
+                $affectedCount++;
+            }
+        }
+        $msg = "Standardized format for {$affectedCount} phone numbers to (+251) E.164 format.";
+    } else {
+        jsonOut(['success' => false, 'error' => 'Unknown clean_type'], 400);
+    }
+
+    $db->prepare("UPDATE campaigns SET total_leads = (SELECT COUNT(*) FROM leads WHERE campaign_id = ?) WHERE id = ?")
+       ->execute([$campaignId, $campaignId]);
+
+    jsonOut([
+        'success' => true,
+        'affected_count' => $affectedCount,
+        'message' => $msg
+    ]);
+}
+
+function window_normalize_or_clean(string $p): string {
+    $c = preg_replace('/[^\d+]/', '', trim($p));
+    if (preg_match('/^0([97]\d{8})$/', $c, $m)) return '+251' . $m[1];
+    if (preg_match('/^251([97]\d{8})$/', $c, $m)) return '+251' . $m[1];
+    if (strlen($c) > 0 && $c[0] !== '+') return '+' . $c;
+    return $c;
 }
 
 jsonOut(['error' => 'Unknown action'], 400);
