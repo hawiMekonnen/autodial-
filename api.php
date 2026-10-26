@@ -1,4 +1,5 @@
 <?php
+date_default_timezone_set(getenv('APP_TIMEZONE') ?: 'Africa/Addis_Ababa');
 /**
  * SkyKin Automatic Dialer - Backend API
  */
