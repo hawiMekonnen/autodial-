@@ -84,6 +84,7 @@ class SkyKinDialerApp {
     this.btnStart = document.getElementById('btnStartCampaign');
     this.btnPause = document.getElementById('btnPauseCampaign');
     this.btnStop = document.getElementById('btnStopCampaign');
+    this.syncDialerControlButtons();
     this.btnReset = document.getElementById('btnResetLeads');
     this.btnExportLogs = document.getElementById('btnExportLogs');
 
@@ -821,8 +822,34 @@ class SkyKinDialerApp {
     return this.leads.filter(l => l.is_past || (l.effective_date && l.effective_date < today));
   }
 
+  
+  syncDialerControlButtons() {
+    if (!this.btnStart || !this.btnPause || !this.btnStop) return;
+
+    if (this.isRunning && !this.isPaused) {
+      this.btnStart.disabled = true;
+      this.btnPause.disabled = false;
+      this.btnPause.textContent = 'Pause';
+      this.btnPause.className = 'btn btn-warning';
+      this.btnStop.disabled = false;
+    } else if (this.isRunning && this.isPaused) {
+      this.btnStart.disabled = true;
+      this.btnPause.disabled = false;
+      this.btnPause.textContent = 'Resume';
+      this.btnPause.className = 'btn btn-success';
+      this.btnStop.disabled = false;
+    } else {
+      this.btnStart.disabled = false;
+      this.btnPause.disabled = true;
+      this.btnPause.textContent = 'Pause';
+      this.btnPause.className = 'btn btn-warning';
+      this.btnStop.disabled = true;
+    }
+  }
+
   renderCampaignHeader() {
     if (!this.campaign) return;
+    this.syncDialerControlButtons();
     if (this.campaignTitleText) this.campaignTitleText.textContent = this.campaign.name || 'Outbound Customer Calls';
     
     if (this.campaignStatusTag) {
