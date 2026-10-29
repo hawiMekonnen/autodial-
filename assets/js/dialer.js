@@ -101,21 +101,6 @@ class SkyKinDialerApp {
     this.tabAudioPlayer = document.getElementById('tabAudioPlayer');
     this.activeAudioTitle = document.getElementById('activeAudioTitle');
 
-    // Real-Time Monitor elements
-    this.badgeActiveCalls = document.getElementById('badgeActiveCalls');
-    this.monCampaignStatusBadge = document.getElementById('monCampaignStatusBadge');
-    this.monBtnStart = document.getElementById('monBtnStart');
-    this.monBtnPause = document.getElementById('monBtnPause');
-    this.monBtnStop = document.getElementById('monBtnStop');
-    this.monActiveCallsVal = document.getElementById('monActiveCallsVal');
-    this.monQueueRemainingVal = document.getElementById('monQueueRemainingVal');
-    this.monCompletedCallsVal = document.getElementById('monCompletedCallsVal');
-    this.monAnswerRateVal = document.getElementById('monAnswerRateVal');
-    this.monAvgDurationVal = document.getElementById('monAvgDurationVal');
-    this.monChannelsContainer = document.getElementById('monChannelsContainer');
-    this.monLiveEventLog = document.getElementById('monLiveEventLog');
-    this.monUpcomingTableBody = document.getElementById('monUpcomingTableBody');
-
     // KPI fields
     this.kpiTotal = document.getElementById('kpiTotalLeads');
     this.kpiPending = document.getElementById('kpiPendingLeads');
@@ -2002,7 +1987,6 @@ class SkyKinDialerApp {
   }
 
   renderActiveChannels() {
-    this.renderRealtimeMonitor();
     if (!this.channelsContainer) return;
 
     if (this._displayCountdownTimer) {
@@ -2693,226 +2677,15 @@ class SkyKinDialerApp {
     return { valid: false, formatted: s, operator: 'Invalid Length', reason: `Invalid digits length (${digits.length})` };
   }
 
-  /* ─────────────────────────────────────────────────────────
-     Real-Time Campaign Monitor Engine
-     ───────────────────────────────────────────────────────── */
-  renderRealtimeMonitor() {
-    // 1. Sync header tags & buttons
-    if (this.monCampaignStatusBadge) {
-      this.monCampaignStatusBadge.textContent = this.isRunning ? (this.isPaused ? 'PAUSED' : 'RUNNING') : 'IDLE';
-      this.monCampaignStatusBadge.className = `campaign-status-tag ${this.isRunning ? (this.isPaused ? 'paused' : 'running') : 'idle'}`;
-    }
-    if (this.monBtnStart) this.monBtnStart.disabled = this.isRunning && !this.isPaused;
-    if (this.monBtnPause) {
-      this.monBtnPause.disabled = !this.isRunning;
-      this.monBtnPause.textContent = this.isPaused ? '▶ Resume' : '⏸ Pause';
-    }
-    if (this.monBtnStop) this.monBtnStop.disabled = !this.isRunning;
-
-    // 2. Tab badge and Sub-metrics
-    const activeCount = this.activeChannels.size;
-    if (this.badgeActiveCalls) {
-      this.badgeActiveCalls.textContent = activeCount;
-      this.badgeActiveCalls.style.display = activeCount > 0 ? 'inline-block' : 'none';
-    }
-
-    const maxConcurrent = document.getElementById('maxConcurrentInput')?.value || 2;
-    if (this.monActiveCallsVal) this.monActiveCallsVal.textContent = `${activeCount} / ${maxConcurrent}`;
-
-    const todayLeads = this.getTodayLeads();
-    let pendingCount = 0;
-    let completedCount = 0;
-    todayLeads.forEach(l => {
-      if (l.status === 'pending') pendingCount++;
-      else if (['answered', 'ivr_playing', 'ivr_completed', 'completed'].includes(l.status)) completedCount++;
-    });
-
-    if (this.monQueueRemainingVal) this.monQueueRemainingVal.textContent = pendingCount;
-    if (this.monCompletedCallsVal) this.monCompletedCallsVal.textContent = completedCount;
-    if (this.monAnswerRateVal) this.monAnswerRateVal.textContent = `${this.stats.answer_rate || 0}%`;
-    if (this.monAvgDurationVal) this.monAvgDurationVal.textContent = `${this.stats.avg_duration || 0}s`;
-
-    // 3. Render Channels in Monitor (Line 1 & Line 2)
-    if (this.monChannelsContainer) {
-      this.monChannelsContainer.innerHTML = '';
-      
-      const lines = [
-        { num: 1, obj: this.line1 },
-        { num: 2, obj: this.line2 }
-      ];
-
-      lines.forEach(({ num, obj }) => {
-        if (num === 2 && !obj.enabled) return;
-
-        // Find active channel on this line
-        let activeCh = null;
-        this.activeChannels.forEach(ch => {
-          if (ch.lineNum === num) activeCh = ch;
-        });
-
-        const card = document.createElement('div');
-        card.style.background = '#ffffff';
-        card.style.border = activeCh ? (activeCh.status === 'answered' ? '1.5px solid #22c55e' : '1.5px solid #f59e0b') : '1px solid #e2e8f0';
-        card.style.borderRadius = '10px';
-        card.style.padding = '14px 16px';
-        card.style.boxShadow = activeCh ? '0 4px 12px rgba(0,0,0,0.08)' : '0 1px 3px rgba(0,0,0,0.03)';
-        card.style.transition = 'all 0.2s ease';
-
-        const lineStatusText = !obj.isRegistered
-          ? 'Offline / Unregistered'
-          : (activeCh
-              ? (activeCh.status === 'answered' ? 'IVR Playing (Connected)' : 'Ringing / Outbound Dialing...')
-              : (this.isRunning ? (this.isPaused ? 'Paused' : 'Monitoring Queue...') : 'Idle (Ready)'));
-
-        const statusColor = !obj.isRegistered ? '#94a3b8' : (activeCh ? (activeCh.status === 'answered' ? '#15803d' : '#b45309') : '#64748b');
-        const statusBg = !obj.isRegistered ? '#f1f5f9' : (activeCh ? (activeCh.status === 'answered' ? '#dcfce7' : '#fef3c7') : '#f8fafc');
-
-        const mins = activeCh ? Math.floor(activeCh.duration / 60) : 0;
-        const secs = activeCh ? (activeCh.duration % 60) : 0;
-        const durStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-
-        let waveAnimationHtml = '';
-        if (activeCh && activeCh.status === 'answered') {
-          waveAnimationHtml = `
-            <div class="audio-wave-bars" style="display:flex;align-items:center;gap:3px;height:18px;">
-              <span class="wave-bar" style="width:3px;height:6px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.1s;"></span>
-              <span class="wave-bar" style="width:3px;height:14px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.2s;"></span>
-              <span class="wave-bar" style="width:3px;height:18px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.3s;"></span>
-              <span class="wave-bar" style="width:3px;height:10px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.4s;"></span>
-              <span class="wave-bar" style="width:3px;height:16px;background:#22c55e;border-radius:2px;animation:wave 1s infinite 0.5s;"></span>
-            </div>
-          `;
-        }
-
-        let channelBodyHtml = '';
-        if (activeCh) {
-          const v = this.verifyNumber(activeCh.lead.phone_number);
-          channelBodyHtml = `
-            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:10px;">
-              <div>
-                <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:2px;">
-                  ${this.escapeHtml(activeCh.lead.customer_name || 'Customer')}
-                </div>
-                <div style="font-size:13px;font-family:monospace;font-weight:700;color:#0047AB;display:flex;align-items:center;gap:6px;">
-                  <span>${this.escapeHtml(activeCh.lead.phone_number)}</span>
-                  <span style="font-size:10px;background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-family:sans-serif;font-weight:600;">${v.operator || 'Mobile'}</span>
-                </div>
-                <div style="font-size:11.5px;color:#64748b;margin-top:4px;">
-                  Audio: <em>${this.escapeHtml(this.campaign?.ivr_audio_name || 'Human Audio')}</em>
-                </div>
-              </div>
-              <div style="text-align:right;">
-                <div style="font-size:20px;font-weight:800;color:#0047AB;font-family:monospace;">${durStr}</div>
-                <div style="margin-top:4px;display:flex;justify-content:flex-end;">
-                  ${waveAnimationHtml}
-                </div>
-                <button class="btn btn-secondary btn-sm" onclick="app.sipHangup(${num})" style="margin-top:6px;padding:3px 10px;font-size:11px;color:#dc2626;border-color:#fecaca;">
-                  Disconnect
-                </button>
-              </div>
-            </div>
-          `;
-        } else {
-          channelBodyHtml = `
-            <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;color:#94a3b8;font-size:12.5px;">
-              <span>No call currently active on Line ${num}</span>
-              <span style="font-size:11px;background:#f8fafc;padding:3px 8px;border-radius:6px;border:1px solid #e2e8f0;">Waiting for next lead</span>
-            </div>
-          `;
-        }
-
-        card.innerHTML = `
-          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #f1f5f9;padding-bottom:8px;">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <strong style="font-size:13px;color:#1e293b;">Telephony Channel ${num}</strong>
-              <span style="font-size:11px;color:#64748b;font-family:monospace;">Ext: ${obj.ext || ('10' + num)}</span>
-            </div>
-            <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;background:${statusBg};color:${statusColor};display:inline-flex;align-items:center;gap:5px;">
-              <span style="width:6px;height:6px;border-radius:50%;background:${statusColor};display:inline-block;"></span>
-              ${lineStatusText}
-            </span>
-          </div>
-          ${channelBodyHtml}
-        `;
-
-        this.monChannelsContainer.appendChild(card);
-      });
-    }
-
-    // 4. Render Upcoming Queue in Monitor
-    if (this.monUpcomingTableBody) {
-      this.monUpcomingTableBody.innerHTML = '';
-      const pending = todayLeads.filter(l => l.status === 'pending');
-      if (pending.length === 0) {
-        this.monUpcomingTableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:24px;">No upcoming calls in queue. All leads processed!</td></tr>`;
-      } else {
-        const preview = pending.slice(0, 8);
-        const now = Date.now();
-        preview.forEach((l, idx) => {
-          const v = this.verifyNumber(l.phone_number);
-          const opBadge = v.valid
-            ? (v.operator === 'Ethio Telecom'
-                ? `<span style="font-size:10px;background:#e0f2fe;color:#0369a1;padding:2px 6px;border-radius:8px;font-weight:600;">Ethio</span>`
-                : `<span style="font-size:10px;background:#ecfdf5;color:#047857;padding:2px 6px;border-radius:8px;font-weight:600;">Safari</span>`)
-            : `<span style="font-size:10px;background:#fef2f2;color:#dc2626;padding:2px 6px;border-radius:8px;font-weight:600;">⚠️ Invalid</span>`;
-
-          const ts = this.getLeadScheduledTimestamp(l);
-          const isImmediate = !l.call_time || l.call_time.toLowerCase() === 'immediate' || l.call_time.toLowerCase() === 'now';
-          const isDue = this.isLeadDueForCall(l);
-          
-          let readinessBadge = '';
-          if (isImmediate || isDue) {
-            readinessBadge = `<span style="background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700;">Ready to Dial</span>`;
-          } else {
-            const diffSec = Math.max(0, Math.round((ts - now) / 1000));
-            const mm = Math.floor(diffSec / 60);
-            const ss = diffSec % 60;
-            readinessBadge = `<span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;">in ${mm}m ${ss}s</span>`;
-          }
-
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${idx + 1}</td>
-            <td><strong>${this.escapeHtml(l.customer_name || 'Customer')}</strong></td>
-            <td style="font-family:monospace;font-weight:600;">${this.escapeHtml(l.phone_number)}</td>
-            <td>${opBadge}</td>
-            <td><span style="font-size:11.5px;color:#334155;">${this.escapeHtml(l.call_time || 'Immediate')}</span></td>
-            <td>${readinessBadge}</td>
-            <td>
-              <button class="btn btn-primary btn-sm" onclick="app.dialSingleLeadWithIvr(${l.id})" style="padding:2px 8px;font-size:11px;">Dial Now</button>
-            </td>
-          `;
-          this.monUpcomingTableBody.appendChild(tr);
-        });
-      }
-    }
-  }
 
   logLiveEvent(msg, type = 'info') {
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     this.liveEvents.unshift({ time: timeStr, msg, type });
     if (this.liveEvents.length > 60) this.liveEvents.pop();
-
-    if (this.monLiveEventLog) {
-      const colorMap = {
-        info: '#38bdf8',
-        success: '#4ade80',
-        warning: '#fbbf24',
-        danger: '#f87171'
-      };
-      const items = this.liveEvents.map(e => {
-        const c = colorMap[e.type] || '#e2e8f0';
-        return `<div><span style="color:#64748b;">[${e.time}]</span> <span style="color:${c};font-weight:600;">${this.escapeHtml(e.msg)}</span></div>`;
-      });
-      this.monLiveEventLog.innerHTML = items.join('');
-    }
   }
 
   clearLiveEventLog() {
     this.liveEvents = [];
-    if (this.monLiveEventLog) {
-      this.monLiveEventLog.innerHTML = '<div style="color:#64748b;font-style:italic;">[System Ready] Live telephony activity log cleared.</div>';
-    }
   }
 
   /* ─────────────────────────────────────────────────────────

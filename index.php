@@ -127,9 +127,6 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
     <div class="sb-nav">
       <div class="sb-section-label">Navigation</div>
       <button class="sb-item active" id="sbLiveRoom" onclick="switchTab('tabLiveRoom')">Auto-Dialer</button>
-      <button class="sb-item" id="sbRealtimeMonitor" onclick="switchTab('tabRealtimeMonitor')">
-        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#ef4444;margin-right:6px;" class="live-pulse-dot"></span>Real-Time Monitor
-      </button>
       <button class="sb-item" id="sbLeadManager" onclick="switchTab('tabLeadManager')">Lead Manager</button>
       <button class="sb-item" id="sbIVRStudio" onclick="switchTab('tabIVRStudio')">Human IVR Audio</button>
       <button class="sb-item" id="sbUnanswered" onclick="switchTab('tabUnanswered')">Unanswered Leads</button>
@@ -180,9 +177,6 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
     <div class="full-section">
       <div class="tab-bar">
         <button class="tab-btn active" id="tabBtnLiveRoom" onclick="switchTab('tabLiveRoom')">Auto-Dialer Dashboard</button>
-        <button class="tab-btn" id="tabBtnRealtimeMonitor" onclick="switchTab('tabRealtimeMonitor')">
-          <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#ef4444;margin-right:5px;" class="live-pulse-dot"></span>Live Monitor (<span id="badgeActiveCalls">0</span>)
-        </button>
         <button class="tab-btn" id="tabBtnLeadManager" onclick="switchTab('tabLeadManager')">Lead Manager (<span id="badgePendingCount">0</span>)</button>
         <button class="tab-btn" id="tabBtnUnanswered" onclick="switchTab('tabUnanswered')">Unanswered (<span id="badgeUnansweredCount">0</span>)</button>
         <button class="tab-btn" id="tabBtnIVRStudio" onclick="switchTab('tabIVRStudio')">Human IVR Audio</button>
@@ -326,116 +320,6 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                 <audio id="mainAudioPlayer" controls style="width:100%;height:36px;outline:none;" src="assets/audio/welcome_human_voice.wav"></audio>
               </div>
             </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- TAB: REAL-TIME CAMPAIGN MONITOR -->
-      <div class="tab-panel" id="tabRealtimeMonitor">
-        <!-- Live Monitor Top Bar -->
-        <div style="background:#0f172a;color:#fff;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 4px 20px rgba(0,0,0,0.15);">
-          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:14px;">
-            <div style="display:flex;align-items:center;gap:14px;">
-              <div style="width:48px;height:48px;border-radius:12px;background:rgba(239,68,68,0.2);border:1.5px solid #ef4444;display:flex;align-items:center;justify-content:center;color:#ef4444;font-size:22px;">
-                <span class="live-pulse-dot" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:#ef4444;box-shadow:0 0 12px #ef4444;"></span>
-              </div>
-              <div>
-                <div style="display:flex;align-items:center;gap:10px;">
-                  <h2 style="font-size:20px;font-weight:800;color:#fff;margin:0;letter-spacing:-0.3px;">Real-Time Campaign Monitor</h2>
-                  <span id="monCampaignStatusBadge" class="campaign-status-tag idle" style="font-size:11px;padding:3px 10px;">IDLE</span>
-                </div>
-                <div style="font-size:12.5px;color:#94a3b8;margin-top:2px;">
-                  Live Line-by-Line Telephony Feed &bull; Auto-tracking active calls, IVR playback, and upcoming scheduled dispatches
-                </div>
-              </div>
-            </div>
-
-            <!-- Monitor Quick Controls -->
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-              <button class="btn btn-success" id="monBtnStart" onclick="app.startCampaign()" style="padding:9px 18px;font-weight:700;">▶ Start Dialer</button>
-              <button class="btn btn-warning" id="monBtnPause" onclick="app.togglePauseCampaign()" disabled style="padding:9px 16px;">⏸ Pause</button>
-              <button class="btn btn-danger" id="monBtnStop" onclick="app.stopCampaign()" disabled style="padding:9px 16px;">⏹ Stop</button>
-              <button class="btn btn-secondary" onclick="app.openVerificationModal()" style="padding:9px 14px;background:rgba(255,255,255,0.1);color:#38bdf8;border-color:rgba(56,189,248,0.4);">🛡️ Verify Queue</button>
-              <button class="btn btn-secondary" onclick="app.openRetrySettingsModal()" style="padding:9px 14px;background:rgba(255,255,255,0.1);color:#e2e8f0;border-color:rgba(255,255,255,0.2);">⚙️ Retry Rules</button>
-            </div>
-          </div>
-
-          <!-- Monitor Sub Metrics Banner -->
-          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1);">
-            <div style="background:rgba(255,255,255,0.05);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);">
-              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600;">Active Calls</div>
-              <div style="font-size:20px;font-weight:800;color:#38bdf8;" id="monActiveCallsVal">0 / 2</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.05);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);">
-              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600;">Queue Remaining</div>
-              <div style="font-size:20px;font-weight:800;color:#fbbf24;" id="monQueueRemainingVal">0</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.05);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);">
-              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600;">Completed Calls</div>
-              <div style="font-size:20px;font-weight:800;color:#4ade80;" id="monCompletedCallsVal">0</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.05);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);">
-              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600;">Answer Rate</div>
-              <div style="font-size:20px;font-weight:800;color:#a78bfa;" id="monAnswerRateVal">0%</div>
-            </div>
-            <div style="background:rgba(255,255,255,0.05);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.08);">
-              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600;">Avg Talk Time</div>
-              <div style="font-size:20px;font-weight:800;color:#f472b6;" id="monAvgDurationVal">0s</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Monitor Middle: Two Column Layout -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
-          <!-- Left Column: Live Line 1 & Line 2 Detailed Cards -->
-          <div>
-            <div style="font-size:13px;font-weight:700;color:#1e293b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">
-              <span>Live Concurrent Channels</span>
-              <span style="font-size:11px;color:#64748b;font-weight:500;">WebRTC &bull; Line 1 & Line 2</span>
-            </div>
-            <div id="monChannelsContainer" style="display:flex;flex-direction:column;gap:14px;">
-              <!-- Rendered dynamically by dialer.js -->
-            </div>
-          </div>
-
-          <!-- Right Column: Live Telephony Event Console -->
-          <div>
-            <div style="font-size:13px;font-weight:700;color:#1e293b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">
-              <span>Live Telephony Activity Log</span>
-              <button class="btn btn-secondary btn-sm" onclick="app.clearLiveEventLog()" style="font-size:11px;padding:2px 8px;">Clear Log</button>
-            </div>
-            <div style="background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:14px;height:380px;overflow-y:auto;font-family:'Courier New',Courier,monospace;font-size:12px;color:#e2e8f0;display:flex;flex-direction:column;gap:6px;" id="monLiveEventLog">
-              <div style="color:#64748b;font-style:italic;">[System Ready] Real-time telephony monitor active. Live events will appear here...</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Monitor Bottom: Next Up in Queue (Preview of Upcoming Scheduled Calls) -->
-        <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-            <div>
-              <div style="font-size:14px;font-weight:700;color:#1e293b;">Next Scheduled Calls in Queue</div>
-              <div style="font-size:12px;color:#64748b;">Upcoming contacts waiting to be dialed in real-time order</div>
-            </div>
-            <button class="btn btn-secondary btn-sm" onclick="switchTab('tabLiveRoom')">View Full Queue &rarr;</button>
-          </div>
-          <div class="data-table-wrapper">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Customer Name</th>
-                  <th>Phone Number</th>
-                  <th>Operator</th>
-                  <th>Scheduled Time</th>
-                  <th>Status / Readiness</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="monUpcomingTableBody">
-                <!-- Rendered by JS -->
-              </tbody>
-            </table>
           </div>
         </div>
       </div>

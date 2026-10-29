@@ -1460,7 +1460,7 @@ body.phone-open .main {
   background: rgba(255, 255, 255, 0.25);
 }
 
-/* ── Real-Time Campaign Monitor & Audio Wave Styles ──── */
+/* ── Audio Wave & Pulse Styles ──── */
 .sound-wave {
   display: inline-flex;
   align-items: center;
@@ -1488,27 +1488,6 @@ body.phone-open .main {
 }
 .live-pulse-dot {
   animation: pulseDot 1.4s ease-in-out infinite;
-}
-.mon-channel-card {
-  background: #ffffff;
-  border: 1.5px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 16px 18px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-  transition: all 0.2s ease;
-}
-.mon-channel-card.connected {
-  border-color: #22c55e;
-  background: #f0fdf4;
-}
-.mon-channel-card.ringing {
-  border-color: #38bdf8;
-  background: #f0f9ff;
-}
-.mon-channel-card.idle {
-  border-color: #e2e8f0;
-  background: #f8fafc;
-  opacity: 0.85;
 }
 
 
