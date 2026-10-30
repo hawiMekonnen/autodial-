@@ -123,6 +123,20 @@ class DialerDB {
                 fusionpbx_path TEXT NOT NULL,
                 duration_sec INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+
+            // Inbound API Lead Injection Audit Logs
+            "CREATE TABLE IF NOT EXISTS api_lead_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT,
+                ip_address TEXT,
+                total_received INTEGER DEFAULT 0,
+                imported_count INTEGER DEFAULT 0,
+                duplicates_count INTEGER DEFAULT 0,
+                invalid_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'success',
+                payload_sample TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )"
         ];
 
@@ -155,15 +169,29 @@ class DialerDB {
 
         // Add Retry and Schedule policy columns to campaigns
         foreach ([
-            'max_retries'       => "2",
-            'retry_delay_min'   => "15",
-            'retry_date_mode'   => "'same_day'",
-            'retry_custom_date' => "''"
+            'calling_method'        => "'auto_schedule'",
+            'schedule_strategy'     => "'interval'",
+            'schedule_interval_mins'=> "2",
+            'schedule_window_start' => "'09:00'",
+            'schedule_window_end'   => "'17:00'",
+            'schedule_batch_size'   => "5",
+            'max_retries'           => "2",
+            'retry_delay_min'       => "15",
+            'retry_date_mode'       => "'same_day'",
+            'retry_custom_date'     => "''"
         ] as $col => $def) {
             try {
                 $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN {$col} " . (is_numeric($def) ? "INTEGER" : "TEXT") . " DEFAULT {$def}");
             } catch (Exception $e) {}
         }
+
+        // Add additional columns to leads if missing
+        try {
+            $this->pdo->exec("ALTER TABLE leads ADD COLUMN account_number TEXT DEFAULT ''");
+        } catch (Exception $e) {}
+        try {
+            $this->pdo->exec("ALTER TABLE leads ADD COLUMN debt_amount REAL DEFAULT 0.00");
+        } catch (Exception $e) {}
 
         // Add SIP settings columns if upgrading existing DB
         foreach ([

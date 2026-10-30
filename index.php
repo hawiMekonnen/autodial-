@@ -1,10 +1,22 @@
 <?php
-date_default_timezone_set(getenv('APP_TIMEZONE') ?: 'Africa/Addis_Ababa');
 /**
  * SkyKin Technologies - Automatic Outbound Dialer
  * Clean, high-performance interface with Human Voice IVR & Scheduled Call Times
  */
-session_start();
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_set_cookie_params([
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+    session_start();
+}
+
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+
+date_default_timezone_set(getenv('APP_TIMEZONE') ?: 'Africa/Addis_Ababa');
 
 require_once __DIR__ . '/data/db.php';
 $db = DialerDB::getInstance()->getPdo();
@@ -28,10 +40,8 @@ if (!empty($_SESSION['dialer_user']['id'])) {
 }
 
 if (empty($_SESSION['dialer_user'])) {
-    if (empty($_SESSION['authorized'])) {
-        header("Location: login.php");
-        exit;
-    }
+    header("Location: login.php");
+    exit;
 }
 
 $currentUser   = $_SESSION['dialer_user'] ?? [
@@ -759,6 +769,54 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <input type="file" id="leadFileInput" accept=".xlsx,.xls,.csv,.txt,.tsv" style="display:none;" onchange="const f = this.files[0]; if (f) document.getElementById('selectedFileName').textContent = 'Selected: ' + f.name;">
             <div id="selectedFileName" style="margin-top:8px;color:#0047AB;font-weight:700;font-size:12px;"></div>
           </div>
+
+          <!-- Auto-Schedule Config in Modal -->
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;margin:12px 0;">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:#166534;cursor:pointer;margin:0;">
+              <input type="checkbox" id="uploadAutoScheduleToggle" checked onchange="document.getElementById('uploadScheduleOptionsRow').style.display = this.checked ? 'flex' : 'none';">
+              <span>Auto-Schedule any contacts without a time (stagger calls automatically)</span>
+            </label>
+            <div id="uploadScheduleOptionsRow" style="display:flex;gap:10px;align-items:center;margin-top:8px;">
+              <div style="flex:1;">
+                <label style="font-size:11px;color:#374151;font-weight:600;display:block;margin-bottom:2px;">Strategy</label>
+                <select id="uploadScheduleStrategy" class="form-control" style="font-size:11.5px;padding:5px 8px;" onchange="app.handleUploadStrategyChange(this.value)">
+                  <option value="interval" selected>Interval Staggering</option>
+                  <option value="window">Business Hours Window</option>
+                  <option value="batch">Wave / Batch Sizing</option>
+                </select>
+              </div>
+              <div id="uploadColInterval" style="flex:1;">
+                <label id="uploadLblInterval" style="font-size:11px;color:#374151;font-weight:600;display:block;margin-bottom:2px;">Stagger Interval</label>
+                <select id="uploadScheduleInterval" class="form-control" style="font-size:11.5px;padding:5px 8px;">
+                  <option value="2">Every 2 mins</option>
+                  <option value="5" selected>Every 5 mins (Recommended)</option>
+                  <option value="10">Every 10 mins</option>
+                  <option value="15">Every 15 mins</option>
+                </select>
+              </div>
+              <div id="uploadColWindow" style="flex:1;display:none;">
+                <label style="font-size:11px;color:#374151;font-weight:600;display:block;margin-bottom:2px;">Business Hours</label>
+                <div style="display:flex;gap:5px;align-items:center;">
+                  <input type="time" id="uploadWindowStart" value="09:00" class="form-control" style="font-size:11.5px;padding:4px 6px;flex:1;">
+                  <span style="font-size:11px;color:#64748b;">to</span>
+                  <input type="time" id="uploadWindowEnd" value="17:00" class="form-control" style="font-size:11.5px;padding:4px 6px;flex:1;">
+                </div>
+              </div>
+              <div id="uploadColBatch" style="flex:1;display:none;">
+                <label style="font-size:11px;color:#374151;font-weight:600;display:block;margin-bottom:2px;">Batch Size</label>
+                <select id="uploadBatchSize" class="form-control" style="font-size:11.5px;padding:5px 8px;">
+                  <option value="2">2 per wave</option>
+                  <option value="5" selected>5 per wave</option>
+                  <option value="10">10 per wave</option>
+                  <option value="20">20 per wave</option>
+                </select>
+              </div>
+            </div>
+            <div id="uploadWindowHelpText" style="display:none;font-size:11px;color:#166534;margin-top:6px;background:#e8f5e9;padding:4px 8px;border-radius:4px;">
+              System will evenly distribute calls across these business hours automatically.
+            </div>
+          </div>
+
           <div style="margin-top:12px;font-size:11.5px;color:#64748b;background:#f8fafc;padding:8px 12px;border-radius:6px;border:1px solid #e2e8f0;">
             Format: <code>Customer Name, Phone Number, Call Time, Notes</code><br>
             Example: <code>Helen Tesfaye, 0911223344, 12:00 PM, VIP Customer</code>
@@ -782,12 +840,61 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
       <form id="formManualLeads">
         <div class="modal-body">
           <p style="font-size:12px;color:#64748b;margin-bottom:10px;">
-            Enter numbers and call times (one per line):
+            Paste numbers (one per line). System will auto-schedule them starting at the present time:
+          </p>
+
+          <!-- Auto-Schedule Config in Manual Modal -->
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:#166534;cursor:pointer;margin:0;">
+              <input type="checkbox" id="manualAutoScheduleToggle" checked onchange="document.getElementById('manualScheduleOptionsRow').style.display = this.checked ? 'flex' : 'none';">
+              <span>System Auto-Schedule (Paste Name &amp; Phone only)</span>
+            </label>
+            <div id="manualScheduleOptionsRow" style="display:flex;gap:10px;align-items:center;margin-top:8px;">
+              <div style="flex:1;">
+                <label style="font-size:11px;color:#374151;font-weight:600;display:block;margin-bottom:2px;">Strategy</label>
+                <select id="manualScheduleStrategy" class="form-control" style="font-size:11.5px;padding:5px 8px;" onchange="app.handleManualStrategyChange(this.value)">
+                  <option value="interval" selected>Interval Staggering</option>
+                  <option value="window">Business Hours Window</option>
+                  <option value="batch">Wave / Batch Sizing</option>
+                </select>
+              </div>
+              <div id="manualColInterval" style="flex:1;">
+                <label id="manualLblInterval" style="font-size:11px;color:#374151;font-weight:600;display:block;margin-bottom:2px;">Stagger Interval</label>
+                <select id="manualScheduleInterval" class="form-control" style="font-size:11.5px;padding:5px 8px;">
+                  <option value="2">Every 2 mins</option>
+                  <option value="5" selected>Every 5 mins (Recommended)</option>
+                  <option value="10">Every 10 mins</option>
+                  <option value="15">Every 15 mins</option>
+                </select>
+              </div>
+              <div id="manualColWindow" style="flex:1;display:none;">
+                <label style="font-size:11px;color:#374151;font-weight:600;display:block;margin-bottom:2px;">Business Hours</label>
+                <div style="display:flex;gap:5px;align-items:center;">
+                  <input type="time" id="manualWindowStart" value="09:00" class="form-control" style="font-size:11.5px;padding:4px 6px;flex:1;">
+                  <span style="font-size:11px;color:#64748b;">to</span>
+                  <input type="time" id="manualWindowEnd" value="17:00" class="form-control" style="font-size:11.5px;padding:4px 6px;flex:1;">
+                </div>
+              </div>
+              <div id="manualColBatch" style="flex:1;display:none;">
+                <label style="font-size:11px;color:#374151;font-weight:600;display:block;margin-bottom:2px;">Batch Size</label>
+                <select id="manualBatchSize" class="form-control" style="font-size:11.5px;padding:5px 8px;">
+                  <option value="2">2 per wave</option>
+                  <option value="5" selected>5 per wave</option>
+                  <option value="10">10 per wave</option>
+                  <option value="20">20 per wave</option>
+                </select>
+              </div>
+            </div>
+            <div id="manualWindowHelpText" style="display:none;font-size:11px;color:#166534;margin-top:6px;background:#e8f5e9;padding:4px 8px;border-radius:4px;">
+              System will evenly distribute calls across these business hours automatically.
+            </div>
+          </div>
+
+          <p style="font-size:11.5px;color:#64748b;margin-bottom:6px;">
+            Format: <code>0911223344</code>, or <code>Helen Tesfaye, 0911223344</code>, or <code>Abebe, 0922334455, 02:30 PM</code>
           </p>
           <div class="form-group">
-            <textarea id="manualLeadsText" class="form-control" rows="7" placeholder="0911223344, Helen Tesfaye, 11:30 AM, VIP Customer
-0922334455, Dawit Haile, 11:45 AM, Delivery Followup
-+251933778899, Bethlehem Mengistu, 12:00 PM"></textarea>
+            <textarea id="manualLeadsText" class="form-control" rows="7" placeholder="0911223344&#10;Helen Tesfaye, 0911223344&#10;Dawit Haile, 0922334455, 02:30 PM" style="font-family:monospace;font-size:12px;"></textarea>
           </div>
         </div>
         <div class="modal-footer">

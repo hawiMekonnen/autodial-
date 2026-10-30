@@ -2497,16 +2497,71 @@ class SkyKinDialerApp {
     }
   }
 
+  handleUploadStrategyChange(val) {
+    const colInt = document.getElementById('uploadColInterval');
+    const colWin = document.getElementById('uploadColWindow');
+    const colBatch = document.getElementById('uploadColBatch');
+    const lblInt = document.getElementById('uploadLblInterval');
+    const helpWin = document.getElementById('uploadWindowHelpText');
+
+    if (colInt) colInt.style.display = (val === 'interval' || val === 'batch') ? 'block' : 'none';
+    if (colWin) colWin.style.display = (val === 'window') ? 'block' : 'none';
+    if (colBatch) colBatch.style.display = (val === 'batch') ? 'block' : 'none';
+    if (helpWin) helpWin.style.display = (val === 'window') ? 'block' : 'none';
+    if (lblInt) lblInt.textContent = (val === 'batch') ? 'Wave Interval' : 'Stagger Interval';
+  }
+
+  handleManualStrategyChange(val) {
+    const colInt = document.getElementById('manualColInterval');
+    const colWin = document.getElementById('manualColWindow');
+    const colBatch = document.getElementById('manualColBatch');
+    const lblInt = document.getElementById('manualLblInterval');
+    const helpWin = document.getElementById('manualWindowHelpText');
+
+    if (colInt) colInt.style.display = (val === 'interval' || val === 'batch') ? 'block' : 'none';
+    if (colWin) colWin.style.display = (val === 'window') ? 'block' : 'none';
+    if (colBatch) colBatch.style.display = (val === 'batch') ? 'block' : 'none';
+    if (helpWin) helpWin.style.display = (val === 'window') ? 'block' : 'none';
+    if (lblInt) lblInt.textContent = (val === 'batch') ? 'Wave Interval' : 'Stagger Interval';
+  }
+
   async handleFileUpload(e) {
     if (e) e.preventDefault();
     const fileInp = document.getElementById('leadFileInput');
     if (!fileInp || !fileInp.files || fileInp.files.length === 0) {
-      this.showToast('Please select a CSV or TXT file to upload.', 'error');
+      this.showToast('Please select a CSV, Excel, or TXT file to upload.', 'error');
       return;
     }
     const formData = new FormData();
     formData.append('lead_file', fileInp.files[0]);
     formData.append('campaign_id', this.campaign?.id || 1);
+
+    const autoSchedule = document.getElementById('uploadAutoScheduleToggle')?.checked;
+    if (autoSchedule !== undefined) {
+      formData.append('auto_schedule', autoSchedule ? '1' : '0');
+    }
+    const strat = document.getElementById('uploadScheduleStrategy')?.value || 'interval';
+    formData.append('schedule_strategy', strat);
+
+    if (strat === 'interval') {
+      const intv = document.getElementById('uploadScheduleInterval')?.value || '5';
+      formData.append('schedule_interval_mins', intv);
+    } else if (strat === 'window') {
+      const winStart = document.getElementById('uploadWindowStart')?.value || '09:00';
+      const winEnd = document.getElementById('uploadWindowEnd')?.value || '17:00';
+      formData.append('schedule_window_start', winStart);
+      formData.append('schedule_window_end', winEnd);
+    } else if (strat === 'batch') {
+      const batchSize = document.getElementById('uploadBatchSize')?.value || '5';
+      const intv = document.getElementById('uploadScheduleInterval')?.value || '5';
+      formData.append('schedule_batch_size', batchSize);
+      formData.append('schedule_interval_mins', intv);
+    }
+
+    formData.append('client_time', Math.floor(Date.now() / 1000));
+    try {
+      formData.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
+    } catch(err) {}
 
     this.showToast('Importing customer leads...', 'info');
     try {
@@ -2547,6 +2602,33 @@ class SkyKinDialerApp {
     formData.append('leads_text', text);
     formData.append('campaign_id', this.campaign?.id || 1);
 
+    const autoSchedule = document.getElementById('manualAutoScheduleToggle')?.checked;
+    if (autoSchedule !== undefined) {
+      formData.append('auto_schedule', autoSchedule ? '1' : '0');
+    }
+    const strat = document.getElementById('manualScheduleStrategy')?.value || 'interval';
+    formData.append('schedule_strategy', strat);
+
+    if (strat === 'interval') {
+      const intv = document.getElementById('manualScheduleInterval')?.value || '5';
+      formData.append('schedule_interval_mins', intv);
+    } else if (strat === 'window') {
+      const winStart = document.getElementById('manualWindowStart')?.value || '09:00';
+      const winEnd = document.getElementById('manualWindowEnd')?.value || '17:00';
+      formData.append('schedule_window_start', winStart);
+      formData.append('schedule_window_end', winEnd);
+    } else if (strat === 'batch') {
+      const batchSize = document.getElementById('manualBatchSize')?.value || '5';
+      const intv = document.getElementById('manualScheduleInterval')?.value || '5';
+      formData.append('schedule_batch_size', batchSize);
+      formData.append('schedule_interval_mins', intv);
+    }
+
+    formData.append('client_time', Math.floor(Date.now() / 1000));
+    try {
+      formData.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
+    } catch(err) {}
+
     try {
       const res = await fetch('api.php?action=save_manual_leads', { method: 'POST', body: formData });
       const data = await res.json();
@@ -2562,7 +2644,6 @@ class SkyKinDialerApp {
       this.showToast('Error saving leads', 'error');
     }
   }
-
   /* ─────────────────────────────────────────────────────────
      Manual Outbound Calling with Dialpad
      ───────────────────────────────────────────────────────── */

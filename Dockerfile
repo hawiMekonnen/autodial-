@@ -23,8 +23,11 @@ RUN docker-php-ext-install -j$(nproc) \
     opcache \
     zip
 
-# Enable Apache modules
-RUN a2enmod rewrite headers
+# Enable Apache modules & configure security
+RUN a2enmod rewrite headers \
+    && echo "ServerTokens Prod" >> /etc/apache2/conf-available/security.conf \
+    && echo "ServerSignature Off" >> /etc/apache2/conf-available/security.conf \
+    && sed -i '/<Directory \/var\/www\/>/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf
 
 # Configure PHP settings for production & large audio/lead uploads
 RUN { \
@@ -33,9 +36,11 @@ RUN { \
     echo 'memory_limit = 256M'; \
     echo 'max_execution_time = 300'; \
     echo 'max_input_time = 300'; \
-    echo 'date.timezone = UTC'; \
+    echo 'date.timezone = Africa/Addis_Ababa'; \
     echo 'session.cookie_httponly = 1'; \
+    echo 'session.cookie_samesite = "Lax"'; \
     echo 'session.use_strict_mode = 1'; \
+    echo 'expose_php = Off'; \
     echo 'opcache.enable = 1'; \
     echo 'opcache.memory_consumption = 128'; \
     echo 'opcache.interned_strings_buffer = 8'; \

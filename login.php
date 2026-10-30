@@ -3,7 +3,17 @@
  * SkyKin Technologies - Call Center Platform
  * Automatic Dialer Agent Authentication
  */
-session_start();
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_set_cookie_params([
+        'httponly' => true,
+        'samesite' => 'Lax'
+    ]);
+    session_start();
+}
+
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
 
 // If already authenticated, redirect to dialer dashboard
 if (!empty($_SESSION['dialer_user'])) {
@@ -31,38 +41,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$username, $username]);
         $user = $stmt->fetch();
 
-        if ($user && (password_verify($password, $user['password_hash']) || $password === '123Newadissagentone' || $password === '1234')) {
+        if ($user && password_verify($password, $user['password_hash'])) {
             unset($user['password_hash']);
             if (!empty($domainInput)) {
                 $user['domain'] = $domainInput;
             }
-            $_SESSION['dialer_user'] = $user;
-            $_SESSION['authorized'] = true;
-            $_SESSION['username'] = $user['username'];
-            header("Location: index.php");
-            exit;
-        } elseif (in_array(strtolower($username), ['agent1', 'agent2', 'agent', '101', '102', '1001', '1002', '1003', 'supervisor', 'admin']) && ($password === '123Newadissagentone' || $password === '1234' || $password === '123456')) {
-            // Dynamic fallback for SkyKin agent testing
-            $ext = preg_match('/^\d+$/', $username) ? $username : ($username === 'agent2' ? '102' : '101');
-            $user = [
-                'id' => 1,
-                'username' => $username,
-                'full_name' => 'Agent ' . ucfirst($username),
-                'extension' => $ext,
-                'role' => in_array($username, ['supervisor', 'admin']) ? $username : 'agent',
-                'domain' => !empty($domainInput) ? $domainInput : 'client1.skykin.local',
-                'sip_extension' => $ext,
-                'sip_password' => '1234',
-                'sip_server' => 'webcc.skyconnectsolutions.et',
-                'sip_port' => '443',
-                'sip_domain' => !empty($domainInput) ? $domainInput : 'client1.skykin.local'
-            ];
+            session_regenerate_id(true);
             $_SESSION['dialer_user'] = $user;
             $_SESSION['authorized'] = true;
             $_SESSION['username'] = $user['username'];
             header("Location: index.php");
             exit;
         } else {
+            usleep(250000); // 250ms delay to deter automated brute force
             $error = 'Invalid agent username or password. Please try again.';
         }
     }
