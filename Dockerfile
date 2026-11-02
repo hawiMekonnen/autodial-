@@ -1,6 +1,6 @@
 # ==============================================================================
 # SkyKin Automatic Dialer - Production Dockerfile
-# Optimized PHP 8.2 with Apache, SQLite3, Zip, and OPcache
+# Optimized PHP 8.2 with Apache, PostgreSQL, SQLite3, Zip, and OPcache
 # ==============================================================================
 
 FROM php:8.2-apache
@@ -10,6 +10,7 @@ WORKDIR /var/www/html
 
 # Install system dependencies & libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
     libsqlite3-dev \
     libzip-dev \
     zip \
@@ -19,6 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install and configure PHP extensions
 RUN docker-php-ext-install -j$(nproc) \
+    pdo_pgsql \
+    pgsql \
     pdo_sqlite \
     opcache \
     zip

@@ -13,7 +13,9 @@ require_once __DIR__ . '/data/db.php';
 require_once __DIR__ . '/data/scheduler.php';
 require_once __DIR__ . '/telephony/esl_client.php';
 
-$db = DialerDB::getInstance()->getPdo();
+$dbInstance = DialerDB::getInstance();
+$db = $dbInstance->getPdo();
+$dbDriver = $dbInstance->getDriver();
 $action = $_REQUEST['action'] ?? '';
 
 function jsonOut($data, $status = 200) {
@@ -131,8 +133,13 @@ if ($action === 'get_campaign_data') {
     $campaign = $stmt->fetch();
 
     if (!$campaign) {
-        $db->exec("INSERT INTO campaigns (name, status) VALUES ('Outbound Customer Calls', 'idle')");
-        $campaignId = (int)$db->lastInsertId();
+        if ($dbDriver === 'pgsql') {
+            $stmtCampIns = $db->query("INSERT INTO campaigns (name, status) VALUES ('SkyKin Automated Outbound Campaign', 'idle') RETURNING id");
+            $campaignId = (int)$stmtCampIns->fetchColumn();
+        } else {
+            $db->exec("INSERT INTO campaigns (name, status) VALUES ('SkyKin Automated Outbound Campaign', 'idle')");
+            $campaignId = (int)$db->lastInsertId();
+        }
         $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ?");
         $stmt->execute([$campaignId]);
         $campaign = $stmt->fetch();
@@ -220,6 +227,7 @@ if ($action === 'get_campaign_data') {
 
     jsonOut([
         'success' => true,
+        'db_driver' => $dbDriver,
         'server_today' => $today,
         'available_dates' => $availableDates,
         'remaining_count' => $remainingCount,
@@ -760,6 +768,96 @@ if ($action === 'update_lead_status') {
         'next_retry_time' => $nextRetryTime,
         'retry_count' => $finalRetryCount
     ]);
+}
+
+// 4b. Pop Next Lead (Atomic High-Concurrency Outbound Queue with FOR UPDATE SKIP LOCKED)
+if ($action === 'pop_next_lead' || $action === 'get_next_lead') {
+    $campaignId = (int)($_REQUEST['campaign_id'] ?? 1);
+    $lead = null;
+
+    if ($dbDriver === 'pgsql') {
+        $db->beginTransaction();
+        try {
+            $stmt = $db->prepare("
+                SELECT id, campaign_id, customer_name, phone_number, call_time, notes, status, retry_count
+                FROM leads 
+                WHERE campaign_id = ? AND status = 'pending'
+                ORDER BY id ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            ");
+            $stmt->execute([$campaignId]);
+            $lead = $stmt->fetch();
+
+            if ($lead) {
+                $upd = $db->prepare("UPDATE leads SET status = 'calling', last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+                $upd->execute([$lead['id']]);
+            }
+            $db->commit();
+        } catch (Exception $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            jsonOut(['success' => false, 'error' => 'Database queue error: ' . $e->getMessage()], 500);
+        }
+    } else {
+        // SQLite Atomic Reservation
+        $db->beginTransaction();
+        try {
+            $stmt = $db->prepare("
+                SELECT id, campaign_id, customer_name, phone_number, call_time, notes, status, retry_count
+                FROM leads 
+                WHERE campaign_id = ? AND status = 'pending'
+                ORDER BY id ASC
+                LIMIT 1
+            ");
+            $stmt->execute([$campaignId]);
+            $lead = $stmt->fetch();
+
+            if ($lead) {
+                $upd = $db->prepare("UPDATE leads SET status = 'calling', last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+                $upd->execute([$lead['id']]);
+            }
+            $db->commit();
+        } catch (Exception $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            jsonOut(['success' => false, 'error' => 'Database queue error: ' . $e->getMessage()], 500);
+        }
+    }
+
+    if (!$lead) {
+        jsonOut([
+            'success' => true,
+            'has_lead' => false,
+            'message' => 'Queue is empty or all pending leads are currently being dialed.',
+            'lead' => null,
+            'driver' => $dbDriver
+        ]);
+    }
+
+    jsonOut([
+        'success' => true,
+        'has_lead' => true,
+        'driver' => $dbDriver,
+        'queue_mode' => ($dbDriver === 'pgsql' ? 'postgres_skip_locked' : 'sqlite_atomic'),
+        'lead' => [
+            'id' => (int)$lead['id'],
+            'campaign_id' => (int)$lead['campaign_id'],
+            'customer_name' => $lead['customer_name'],
+            'phone_number' => $lead['phone_number'],
+            'call_time' => $lead['call_time'],
+            'status' => 'calling',
+            'retry_count' => (int)($lead['retry_count'] ?? 0)
+        ]
+    ]);
+}
+
+// 4c. Release / Unreserve Lead (Return to Pending if dial was aborted before connection)
+if ($action === 'release_lead') {
+    $leadId = (int)($_POST['lead_id'] ?? 0);
+    if ($leadId > 0) {
+        $stmt = $db->prepare("UPDATE leads SET status = 'pending' WHERE id = ? AND status = 'calling'");
+        $stmt->execute([$leadId]);
+    }
+    jsonOut(['success' => true]);
 }
 
 // 5. Upload Human Audio File (.wav / .mp3 / audio formats)

@@ -40,7 +40,7 @@ if (file_exists($envFile)) {
         if (strpos($line, '=') !== false) {
             list($k, $v) = explode('=', $line, 2);
             $keyTrimmed = trim($k);
-            if ($keyTrimmed === 'DIALER_API_KEY' || $keyTrimmed === 'ETHIO_TELECOM_API_KEY') {
+            if ($keyTrimmed === 'DIALER_API_KEY') {
                 $configuredApiKey = trim(trim($v), "\"'\t ");
             }
         }
@@ -112,7 +112,7 @@ if (empty($providedKey)) {
     $providedKey = $_POST['api_key'] ?? $_GET['api_key'] ?? '';
 }
 
-$validKeys = array_unique([$configuredApiKey, 'skykin_dialer_sec_key_2026', 'ethio_telecom_sec_key_2026']);
+$validKeys = array_unique([$configuredApiKey, 'skykin_dialer_sec_key_2026']);
 $authenticated = false;
 foreach ($validKeys as $vk) {
     if (!empty($providedKey) && hash_equals($vk, $providedKey)) {
@@ -187,7 +187,7 @@ try {
 $scheduleInterval = (int)($data['schedule_interval_mins'] ?? 5);
 if ($scheduleInterval <= 0) $scheduleInterval = 5;
 
-$batchId = 'ET-' . date('Ymd') . '-' . substr(strtoupper(bin2hex(random_bytes(4))), 0, 6);
+$batchId = 'SK-' . date('Ymd') . '-' . substr(strtoupper(bin2hex(random_bytes(4))), 0, 6);
 $clientIp = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 
 // 5. Pre-calculate Auto-Schedule slots starting at present moment
@@ -203,8 +203,13 @@ $duplicates = 0;
 $invalid = 0;
 $queuedRecords = [];
 
+$isPgsql = (DialerDB::getInstance()->getDriver() === 'pgsql');
 $stmtCheckDup = $db->prepare("SELECT id FROM leads WHERE campaign_id = ? AND phone_number = ? AND status = 'pending'");
-$stmtInsert = $db->prepare("INSERT INTO leads (campaign_id, customer_name, phone_number, call_time, notes, status) VALUES (?, ?, ?, ?, ?, 'pending')");
+if ($isPgsql) {
+    $stmtInsert = $db->prepare("INSERT INTO leads (campaign_id, customer_name, phone_number, call_time, notes, status) VALUES (?, ?, ?, ?, ?, 'pending') RETURNING id");
+} else {
+    $stmtInsert = $db->prepare("INSERT INTO leads (campaign_id, customer_name, phone_number, call_time, notes, status) VALUES (?, ?, ?, ?, ?, 'pending')");
+}
 
 $db->beginTransaction();
 
@@ -248,7 +253,7 @@ try {
 
         $notes = "Inbound API [Batch: {$batchId}]";
         $stmtInsert->execute([$campaignId, $rawName, $phone, $callTime, $notes]);
-        $newId = (int)$db->lastInsertId();
+        $newId = $isPgsql ? (int)$stmtInsert->fetchColumn() : (int)$db->lastInsertId();
         $imported++;
 
         if ($imported <= 10) {
@@ -306,3 +311,4 @@ echo json_encode([
     'queued_contacts' => $queuedRecords,
     'timestamp' => date('c')
 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+

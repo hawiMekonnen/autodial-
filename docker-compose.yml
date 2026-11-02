@@ -1,6 +1,9 @@
 version: '3.8'
 
 services:
+  # ----------------------------------------------------------------------------
+  # 1. SkyKin Automatic Dialer Web Application (PHP 8.2 + Apache)
+  # ----------------------------------------------------------------------------
   autodialer:
     build:
       context: .
@@ -10,21 +13,65 @@ services:
     ports:
       - "${PORT:-8080}:80"
     environment:
+      - DB_DRIVER=${DB_DRIVER:-pgsql}
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-skykin_dialer}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-skykindialer123}
+      - DIALER_API_KEY=${DIALER_API_KEY:-skykin_dialer_sec_key_2026}
+      - APP_TIMEZONE=${APP_TIMEZONE:-Africa/Addis_Ababa}
       - ESL_HOST=${ESL_HOST:-127.0.0.1}
       - ESL_PORT=${ESL_PORT:-8021}
       - ESL_PASSWORD=${ESL_PASSWORD:-ClueCon}
     volumes:
       - dialer_data:/var/www/html/data
       - dialer_audio:/var/www/html/assets/audio
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/login.php"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - dialer_net
+
+  # ----------------------------------------------------------------------------
+  # 2. PostgreSQL Enterprise Database (Dedicated High-Throughput Engine)
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: skykin_dialer_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-skykin_dialer}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-skykindialer123}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./data/schema_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-skykin_dialer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - dialer_net
 
 volumes:
+  postgres_data:
+    driver: local
   dialer_data:
     driver: local
   dialer_audio:
     driver: local
+
+networks:
+  dialer_net:
+    driver: bridge
