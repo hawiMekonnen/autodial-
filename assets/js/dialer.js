@@ -78,6 +78,12 @@ class SkyKinDialerApp {
       console.warn('SIP Telephony init error:', e);
     }
     this.loadCampaignData();
+    // Periodic UI past-due refresh ticker
+    setInterval(() => {
+      if (!this.isRunning && this.leads && this.leads.length > 0) {
+        this.renderLeadsTables();
+      }
+    }, 10000);
   }
 
   initElements() {
@@ -903,7 +909,12 @@ class SkyKinDialerApp {
         const matchQuery = !query || 
           (l.customer_name && l.customer_name.toLowerCase().includes(query)) ||
           (l.phone_number && l.phone_number.includes(query));
-        const matchStatus = filterStatus === 'all' || l.status === filterStatus;
+        const isPastDue = this.isLeadPastDue(l);
+        let matchStatus = false;
+        if (filterStatus === 'all') matchStatus = true;
+        else if (filterStatus === 'past_due') matchStatus = isPastDue;
+        else if (filterStatus === 'pending') matchStatus = (l.status === 'pending');
+        else matchStatus = (l.status === filterStatus);
         return matchQuery && matchStatus;
       });
 
@@ -925,7 +936,7 @@ class SkyKinDialerApp {
 
       filtered.forEach((l, idx) => {
         const tr = document.createElement('tr');
-        const stBadge = this.getStatusBadge(l.status);
+        const stBadge = this.getStatusBadge(l.status, l);
         const retryBadge = (l.retry_count && Number(l.retry_count) > 0)
           ? `<span style="font-size:10px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:10px;margin-left:4px;font-weight:700;" title="Automated Retry #${l.retry_count}">Retry #${l.retry_count}</span>`
           : '';
@@ -933,9 +944,12 @@ class SkyKinDialerApp {
         const dur = l.duration_sec ? `${l.duration_sec}s` : '-';
         const isImmediate = !l.call_time || l.call_time.toLowerCase() === 'immediate' || l.call_time.toLowerCase() === 'now';
         const isDue = this.isLeadDueForCall(l);
-        const timeBadgeStyle = (isImmediate || isDue)
-          ? 'background:#e0f2fe;color:#0369a1;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:700;'
-          : 'background:#f8fafc;color:#475569;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;border:1px solid #e2e8f0;';
+        const isPastDue = this.isLeadPastDue(l);
+        const timeBadgeStyle = isPastDue
+          ? 'background:#fff7ed;color:#c2410c;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:700;border:1px solid #fed7aa;'
+          : (isImmediate || isDue)
+            ? 'background:#e0f2fe;color:#0369a1;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:700;'
+            : 'background:#f8fafc;color:#475569;padding:3px 8px;border-radius:12px;font-size:11px;font-weight:600;border:1px solid #e2e8f0;';
 
         const op = this.verifyNumber(l.phone_number);
         const opBadge = op.valid
@@ -1045,7 +1059,7 @@ class SkyKinDialerApp {
 
     filtered.forEach((l, idx) => {
       const tr = document.createElement('tr');
-      const stBadge = this.getStatusBadge(l.status);
+      const stBadge = this.getStatusBadge(l.status, l);
       const effDate = l.effective_date || (l.created_at ? l.created_at.split(' ')[0] : '-');
       const dur = l.duration_sec ? `${l.duration_sec}s` : '-';
       const callTime = l.call_time || 'Immediate';
@@ -1245,7 +1259,7 @@ class SkyKinDialerApp {
 
     unansweredLeads.forEach((l, idx) => {
       const tr = document.createElement('tr');
-      const stBadge = this.getStatusBadge(l.status);
+      const stBadge = this.getStatusBadge(l.status, l);
       const lastAttempt = l.last_attempt_at || '-';
       const reason = l.error_message || (l.status === 'no_answer' ? 'No Answer / Timeout' : (l.status === 'busy' ? 'Busy Line' : 'Call Failed'));
 
@@ -1339,7 +1353,24 @@ class SkyKinDialerApp {
     URL.revokeObjectURL(url);
   }
 
-  getStatusBadge(st) {
+  isLeadPastDue(lead) {
+    if (!lead || lead.status !== 'pending') return false;
+    const today = this.serverToday || new Date().toISOString().split('T')[0];
+    if (lead.is_past || (lead.effective_date && lead.effective_date < today)) {
+      return true;
+    }
+    const s = String(lead.call_time || '').trim().toLowerCase();
+    if (!s || s === 'immediate' || s === 'now') {
+      return false;
+    }
+    const scheduledTs = this.getLeadScheduledTimestamp(lead);
+    return scheduledTs > 0 && Date.now() > scheduledTs;
+  }
+
+  getStatusBadge(st, lead = null) {
+    if (st === 'pending' && lead && this.isLeadPastDue(lead)) {
+      return '<span style="background:#fff7ed;color:#c2410c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fed7aa;box-shadow:0 1px 2px rgba(194,65,12,0.08);" title="Scheduled call time has passed"><span style="width:6px;height:6px;border-radius:50%;background:#f97316;display:inline-block;"></span>Past Due</span>';
+    }
     const map = {
       'pending': '<span style="background:#f1f5f9;color:#475569;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #e2e8f0;"><span style="width:6px;height:6px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>Pending</span>',
       'calling': '<span style="background:#fef3c7;color:#b45309;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fde68a;box-shadow:0 0 8px rgba(245,158,11,0.25);"><span style="width:7px;height:7px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>Calling...</span>',

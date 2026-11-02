@@ -483,11 +483,29 @@ if ($action === 'upload_leads') {
         }
     }
 
+    $stmtCheck = $db->prepare("SELECT id FROM leads WHERE campaign_id = ? AND phone_number = ? AND status = 'pending'");
     $stmtInsert = $db->prepare("INSERT INTO leads (campaign_id, customer_name, phone_number, call_time, notes, status) VALUES (?, ?, ?, ?, ?, 'pending')");
+
+    $duplicates = 0;
+    $seenPhones = [];
 
     $db->beginTransaction();
     try {
         foreach ($pendingRows as $r) {
+            // Deduplicate within the file itself
+            if (isset($seenPhones[$r['phone']])) {
+                $duplicates++;
+                continue;
+            }
+            $seenPhones[$r['phone']] = true;
+
+            // Deduplicate against existing pending leads in database
+            $stmtCheck->execute([$campaignId, $r['phone']]);
+            if ($stmtCheck->fetch()) {
+                $duplicates++;
+                continue;
+            }
+
             $stmtInsert->execute([$campaignId, $r['name'], $r['phone'], $r['callTime'], $r['notes']]);
             $imported++;
         }
@@ -506,12 +524,14 @@ if ($action === 'upload_leads') {
     $stmtLeads->execute([$campaignId]);
     $allLeads = $stmtLeads->fetchAll();
 
+    $dupMsg = $duplicates > 0 ? " ({$duplicates} duplicate numbers skipped)" : "";
     jsonOut([
         'success' => true,
         'imported' => $imported,
+        'duplicates' => $duplicates,
         'invalid' => $invalid,
         'leads' => $allLeads,
-        'message' => "Successfully imported {$imported} leads from " . htmlspecialchars($origName) . ($forceAutoSchedule ? " with system auto-scheduling." : ".")
+        'message' => "Successfully imported {$imported} leads from " . htmlspecialchars($origName) . "{$dupMsg}" . ($forceAutoSchedule ? " with system auto-scheduling." : ".")
     ]);
 }
 

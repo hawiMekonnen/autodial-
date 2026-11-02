@@ -342,6 +342,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <select id="leadStatusFilter" class="form-control" style="max-width:180px;">
               <option value="all">All Statuses</option>
               <option value="pending">Pending</option>
+              <option value="past_due">Past Due</option>
               <option value="answered">Answered / Completed</option>
               <option value="busy">Busy / Unreachable</option>
               <option value="no_answer">No Answer</option>
@@ -758,7 +759,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
         <h3>Upload Customer File</h3>
         <button type="button" class="btn-close-modal" style="background:none;border:none;color:#888;font-size:20px;cursor:pointer;">✕</button>
       </div>
-      <form id="formUploadLeads" onsubmit="app.handleFileUpload(event)">
+      <form id="formUploadLeads">
         <div class="modal-body">
           <p style="font-size:12.5px;color:#64748b;margin-bottom:12px;">
             Select an Excel (.xlsx, .xls) or CSV file with your customer phone numbers to import into the queue.
@@ -912,7 +913,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
         <h3>Upload Human Voice Audio Recording</h3>
         <button type="button" class="btn-close-modal" style="background:none;border:none;color:#888;font-size:20px;cursor:pointer;">✕</button>
       </div>
-      <form id="formUploadAudio" onsubmit="app.handleAudioUpload(event)">
+      <form id="formUploadAudio">
         <div class="modal-body">
           <div class="form-group" style="margin-bottom:12px;">
             <label class="form-label" style="font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;display:block;">Audio File (.wav, .mp3, .m4a, .ogg)</label>
