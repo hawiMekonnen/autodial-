@@ -130,16 +130,24 @@ function validatePhoneNumberInfo(string $raw): array {
 
 function extractLeadDate(?string $callTime, ?string $createdAt): string {
     $timeStr = trim((string)$callTime);
-    // 1. ISO date: YYYY-MM-DD
-    if (preg_match('/(\d{4}-\d{2}-\d{2})/', $timeStr, $m)) {
-        return $m[1];
-    }
-    // 2. Month format: "Sep 18, 2026" or "18 Sep 2026"
-    $parsed = @strtotime($timeStr);
-    if ($parsed !== false && $parsed > 0 && !preg_match('/^\d{1,2}:\d{2}/', $timeStr)) {
-        $year = (int)date('Y', $parsed);
-        if ($year >= 2020 && $year <= 2040) {
-            return date('Y-m-d', $parsed);
+    if (!empty($timeStr)) {
+        if (function_exists('parseAnyDateTime')) {
+            $ts = parseAnyDateTime($timeStr);
+            if ($ts !== null && $ts > 0) {
+                return date('Y-m-d', $ts);
+            }
+        }
+        // 1. ISO date: YYYY-MM-DD
+        if (preg_match('/(\d{4}-\d{2}-\d{2})/', $timeStr, $m)) {
+            return $m[1];
+        }
+        // 2. Month format: "Sep 18, 2026" or "18 Sep 2026"
+        $parsed = @strtotime($timeStr);
+        if ($parsed !== false && $parsed > 0 && !preg_match('/^\d{1,2}:\d{2}/', $timeStr)) {
+            $year = (int)date('Y', $parsed);
+            if ($year >= 2020 && $year <= 2040) {
+                return date('Y-m-d', $parsed);
+            }
         }
     }
     // 3. Fallback to record creation date

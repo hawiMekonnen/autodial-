@@ -96,12 +96,100 @@ function validatePhoneNumber(string $raw): array {
 }
 
 /**
+ * Robust parser for all datetime formats:
+ * - Excel serial timestamps (e.g. 46321.336805555555)
+ * - ISO formats (2026-10-26 08:05 AM, 2026-10-26 14:30)
+ * - Slashes & dots (26/10/2026 08:05 AM, 10/26/2026, 26.10.2026)
+ * - Textual dates (Oct 26, 2026 08:05 AM, 26-Oct-2026)
+ * - Time only (08:05 AM, 14:30, Today 08:05 AM, Tomorrow 09:00 AM)
+ * - Relative offsets (+5 mins, +1 hour)
+ */
+if (!function_exists('parseAnyDateTime')) {
+function parseAnyDateTime(string $raw, string $tz = ''): ?int {
+    $s = trim($raw);
+    if (empty($s) || strcasecmp($s, 'immediate') === 0 || strcasecmp($s, 'now') === 0 || strcasecmp($s, 'none') === 0) {
+        return null;
+    }
+
+    if (empty($tz)) $tz = getDialerTimezone();
+    @date_default_timezone_set($tz);
+    $now = time();
+    $todayDate = date('Y-m-d', $now);
+
+    // 1. Excel Serial Number (e.g. 46321.336805555555 or 46321 or 0.336805555555)
+    if (is_numeric($s)) {
+        $num = (float)$s;
+        // Excel serial date range for years 1970 - 2100 (25569 to 73415)
+        if ($num >= 25569 && $num <= 73415) {
+            $utcStr = gmdate('Y-m-d H:i:s', (int)round(($num - 25569) * 86400));
+            $localTs = @strtotime($utcStr);
+            if ($localTs !== false && $localTs > 0) return $localTs;
+        }
+        // Time fraction without date: 0.0 < num < 1.0
+        if ($num > 0 && $num < 1.0) {
+            $midnight = strtotime($todayDate . ' 00:00:00');
+            return (int)round($midnight + ($num * 86400));
+        }
+    }
+
+    // 2. Relative offset (e.g. "+5 mins", "+10 min", "+1 hour")
+    if (preg_match('/^\+(\d+)\s*(?:min|mins|minute|minutes)$/i', $s, $m)) {
+        return $now + ((int)$m[1] * 60);
+    }
+    if (preg_match('/^\+(\d+)\s*(?:hr|hrs|hour|hours)$/i', $s, $m)) {
+        return $now + ((int)$m[1] * 3600);
+    }
+
+    // 3. Clean string: remove "Today," or "Tomorrow,"
+    $isTomorrow = (stripos($s, 'tomorrow') !== false);
+    $clean = trim(preg_replace('/^(?:today|tomorrow),?\s*(?:at\s*)?/i', '', $s));
+    $clean = trim(preg_replace('/\s+at\s+/i', ' ', $clean));
+
+    // 4. Time-only format: "08:05 AM", "8:05 pm", "14:30", "08:05:00"
+    if (preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i', $clean, $m)) {
+        $baseDate = $isTomorrow ? date('Y-m-d', strtotime('+1 day', $now)) : $todayDate;
+        $timeStr = $m[1] . ':' . $m[2] . (!empty($m[3]) ? ':' . $m[3] : ':00') . (!empty($m[4]) ? ' ' . $m[4] : '');
+        $ts = @strtotime("{$baseDate} {$timeStr}");
+        if ($ts !== false && $ts > 0) return $ts;
+    }
+
+    // 5. European / African Date format with slashes or dots:
+    // DD/MM/YYYY or DD.MM.YYYY (e.g. 26/10/2026 08:05 AM or 26.10.2026 08:05)
+    if (preg_match('/^(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{4})(.*)$/', $clean, $m)) {
+        $d = (int)$m[1];
+        $mo = (int)$m[2];
+        $y = (int)$m[3];
+        $rest = trim($m[4]);
+        $isoStr = sprintf('%04d-%02d-%02d %s', $y, $mo, $d, $rest);
+        $ts = @strtotime(trim($isoStr));
+        if ($ts !== false && $ts > 0) return $ts;
+    }
+
+    // 6. YYYY/MM/DD with slashes or dots: 2026/10/26 08:05 AM
+    if (preg_match('/^(\d{4})[\/\.](\d{1,2})[\/\.](\d{1,2})(.*)$/', $clean, $m)) {
+        $isoStr = sprintf('%04d-%02d-%02d %s', (int)$m[1], (int)$m[2], (int)$m[3], trim($m[4]));
+        $ts = @strtotime(trim($isoStr));
+        if ($ts !== false && $ts > 0) return $ts;
+    }
+
+    // 7. General strtotime fallback (handles "2026-10-26 08:05 AM", "Oct 26, 2026", etc.)
+    $ts = @strtotime($clean);
+    if ($ts !== false && $ts > 0) {
+        if ($isTomorrow) $ts += 86400;
+        return $ts;
+    }
+
+    return null;
+}
+}
+
+/**
  * Normalizes user-submitted scheduled time string
  */
 if (!function_exists('normalizeScheduledTime')) {
 function normalizeScheduledTime(string $raw): string {
     $s = trim($raw);
-    if (empty($s) || strcasecmp($s, 'immediate') === 0 || strcasecmp($s, 'now') === 0) {
+    if (empty($s) || strcasecmp($s, 'immediate') === 0 || strcasecmp($s, 'now') === 0 || strcasecmp($s, 'none') === 0) {
         return 'Immediate';
     }
 
@@ -110,24 +198,14 @@ function normalizeScheduledTime(string $raw): string {
     $now = time();
     $todayDate = date('Y-m-d', $now);
 
-    // If already in "Today, hh:mm A" or "YYYY-MM-DD hh:mm A"
-    if (preg_match('/^(?:Today,\s*)?(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM))$/i', $s, $m)) {
-        return "Today, " . strtoupper(trim($m[1]));
-    }
-
-    // 24h format "14:30"
-    if (preg_match('/^(\d{1,2}):(\d{2})$/', $s, $m)) {
-        $ts = strtotime("{$todayDate} {$s}");
-        if ($ts !== false) {
-            return "Today, " . date('h:i A', $ts);
+    $ts = parseAnyDateTime($s, $tz);
+    if ($ts !== null && $ts > 0) {
+        $leadDate = date('Y-m-d', $ts);
+        $leadTime = date('h:i A', $ts);
+        if ($leadDate === $todayDate) {
+            return "Today, {$leadTime}";
         }
-    }
-
-    $parsed = @strtotime($s);
-    if ($parsed !== false) {
-        $pDate = date('Y-m-d', $parsed);
-        $pTime = date('h:i A', $parsed);
-        return ($pDate === $todayDate) ? "Today, {$pTime}" : "{$pDate} {$pTime}";
+        return "{$leadDate} {$leadTime}";
     }
 
     return $s;

@@ -805,7 +805,7 @@ class SkyKinDialerApp {
 
   getTodayLeads() {
     const today = this.serverToday || new Date().toISOString().split('T')[0];
-    return this.leads.filter(l => l.is_today || l.effective_date === today || (!l.effective_date && !l.is_past));
+    return this.leads.filter(l => l.status === 'pending' || l.is_today || l.effective_date === today || (!l.effective_date && !l.is_past));
   }
 
   getPastLeads() {
@@ -940,7 +940,7 @@ class SkyKinDialerApp {
         const retryBadge = (l.retry_count && Number(l.retry_count) > 0)
           ? `<span style="font-size:10px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:10px;margin-left:4px;font-weight:700;" title="Automated Retry #${l.retry_count}">Retry #${l.retry_count}</span>`
           : '';
-        const callTime = l.call_time || 'Immediate';
+        const callTime = this.formatDisplayCallTime(l.call_time);
         const dur = l.duration_sec ? `${l.duration_sec}s` : '-';
         const isImmediate = !l.call_time || l.call_time.toLowerCase() === 'immediate' || l.call_time.toLowerCase() === 'now';
         const isDue = this.isLeadDueForCall(l);
@@ -1523,11 +1523,39 @@ class SkyKinDialerApp {
     return Date.now() >= scheduledTs;
   }
 
+  formatDisplayCallTime(raw) {
+    if (!raw) return 'Immediate';
+    const s = String(raw).trim();
+    if (!s || s.toLowerCase() === 'immediate' || s.toLowerCase() === 'now') return 'Immediate';
+    if (!isNaN(Number(s)) && Number(s) >= 25569 && Number(s) <= 73415) {
+      const num = Number(s);
+      const totalSec = Math.round((num - 25569) * 86400);
+      const d = new Date(totalSec * 1000);
+      const today = new Date();
+      const isToday = (d.getUTCFullYear() === today.getFullYear() && d.getUTCMonth() === today.getMonth() && d.getUTCDate() === today.getDate());
+      let hours = d.getUTCHours();
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12 || 12;
+      const mins = String(d.getUTCMinutes()).padStart(2, '0');
+      const timeStr = `${String(hours).padStart(2, '0')}:${mins} ${ampm}`;
+      if (isToday) return `Today, ${timeStr}`;
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      return `${year}-${month}-${day} ${timeStr}`;
+    }
+    return s;
+  }
+
   getLeadScheduledTimestamp(lead) {
     if (!lead || !lead.call_time) return 0;
     const s = String(lead.call_time).trim();
     if (!s || s.toLowerCase() === 'immediate' || s.toLowerCase() === 'now') {
       return 0; // Immediate priority
+    }
+    if (!isNaN(Number(s)) && Number(s) >= 25569 && Number(s) <= 73415) {
+      const num = Number(s);
+      return Math.round((num - 25569) * 86400 * 1000);
     }
 
     // 1. Relative offsets (e.g. "+5 mins", "+15 min", "+1 hour")
@@ -1567,11 +1595,18 @@ class SkyKinDialerApp {
           if (dateMatch[3]) baseYear = parseInt(dateMatch[3], 10);
         }
       } else {
-        const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-        if (isoMatch) {
-          baseYear = parseInt(isoMatch[1], 10);
-          baseMonth = parseInt(isoMatch[2], 10) - 1;
-          baseDate = parseInt(isoMatch[3], 10);
+        const euroMatch = s.match(/^(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{4})/);
+        if (euroMatch) {
+          baseDate = parseInt(euroMatch[1], 10);
+          baseMonth = parseInt(euroMatch[2], 10) - 1;
+          baseYear = parseInt(euroMatch[3], 10);
+        } else {
+          const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+          if (isoMatch) {
+            baseYear = parseInt(isoMatch[1], 10);
+            baseMonth = parseInt(isoMatch[2], 10) - 1;
+            baseDate = parseInt(isoMatch[3], 10);
+          }
         }
       }
     }
