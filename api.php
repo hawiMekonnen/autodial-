@@ -550,22 +550,12 @@ if ($action === 'upload_leads') {
         }
     }
 
-    $stmtCheck = $db->prepare("SELECT id FROM leads WHERE campaign_id = ? AND phone_number = ? AND status = 'pending'");
-    $stmtUpdate = $db->prepare("UPDATE leads SET customer_name = ?, call_time = ?, notes = ? WHERE id = ?");
     $stmtInsert = $db->prepare("INSERT INTO leads (campaign_id, customer_name, phone_number, call_time, notes, status) VALUES (?, ?, ?, ?, ?, 'pending')");
 
     $db->beginTransaction();
     try {
         foreach ($pendingRows as $r) {
-            $stmtCheck->execute([$campaignId, $r['phone']]);
-            $existing = $stmtCheck->fetch();
-            if ($existing) {
-                // Update existing pending lead to reflect newly uploaded details and schedule
-                $stmtUpdate->execute([$r['name'], $r['callTime'], $r['notes'], $existing['id']]);
-            } else {
-                // Insert new lead into queue
-                $stmtInsert->execute([$campaignId, $r['name'], $r['phone'], $r['callTime'], $r['notes']]);
-            }
+            $stmtInsert->execute([$campaignId, $r['name'], $r['phone'], $r['callTime'], $r['notes']]);
             $imported++;
         }
 

@@ -2234,7 +2234,7 @@ class SkyKinDialerApp {
       formData.append('campaign_id', this.campaign?.id || 1);
       await fetch('api.php?action=clear_all_leads', { method: 'POST', body: formData });
       this.showToast('All leads cleared from queue', 'info');
-      await this.fetchCampaignData();
+      await this.loadCampaignData();
     } catch (e) {
       this.showToast('Failed to clear leads from server', 'error');
     }

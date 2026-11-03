@@ -166,25 +166,27 @@ function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, arra
     $todayDate = date('Y-m-d', $now);
     $baseTs = $now;
 
-    // If there are already future pending scheduled calls in the queue, append after the latest
-    try {
-        $stmtPending = $db->prepare("SELECT call_time FROM leads WHERE campaign_id = ? AND status = 'pending' AND call_time != 'Immediate' ORDER BY id DESC LIMIT 20");
-        $stmtPending->execute([$campaignId]);
-        $lastCallTimes = $stmtPending->fetchAll(PDO::FETCH_COLUMN);
+    // If append_queue is explicitly requested, append after existing pending scheduled calls
+    if (!empty($override['append_queue'])) {
+        try {
+            $stmtPending = $db->prepare("SELECT call_time FROM leads WHERE campaign_id = ? AND status = 'pending' AND call_time != 'Immediate' ORDER BY id DESC LIMIT 20");
+            $stmtPending->execute([$campaignId]);
+            $lastCallTimes = $stmtPending->fetchAll(PDO::FETCH_COLUMN);
 
-        $latestPendingTs = 0;
-        foreach ($lastCallTimes as $ct) {
-            $cleanTime = str_replace(['Today,', 'Today'], '', $ct);
-            $ts = @strtotime($todayDate . ' ' . trim($cleanTime));
-            if ($ts && $ts > $latestPendingTs) {
-                $latestPendingTs = $ts;
+            $latestPendingTs = 0;
+            foreach ($lastCallTimes as $ct) {
+                $cleanTime = str_replace(['Today,', 'Today'], '', $ct);
+                $ts = @strtotime($todayDate . ' ' . trim($cleanTime));
+                if ($ts && $ts > $latestPendingTs) {
+                    $latestPendingTs = $ts;
+                }
             }
-        }
 
-        if ($latestPendingTs > $now && $strategy === 'interval') {
-            $baseTs = $latestPendingTs + ($intervalMins * 60);
-        }
-    } catch (Exception $e) {}
+            if ($latestPendingTs > $now && $strategy === 'interval') {
+                $baseTs = $latestPendingTs + ($intervalMins * 60);
+            }
+        } catch (Exception $e) {}
+    }
 
     $schedules = [];
 
