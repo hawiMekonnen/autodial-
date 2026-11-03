@@ -213,16 +213,16 @@ function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, arra
         }
     } elseif ($strategy === 'batch') {
         for ($i = 0; $i < $count; $i++) {
-            $batchIndex = floor($i / $batchSize);
+            $batchIndex = floor($i / $batchSize) + 1;
             $ts = $baseTs + ($batchIndex * $intervalMins * 60);
             $timePart = date('h:i A', $ts);
             $datePart = date('Y-m-d', $ts);
             $schedules[] = ($datePart === $todayDate) ? "Today, {$timePart}" : "{$datePart} {$timePart}";
         }
     } else {
-        // Interval Staggering: starts at present ($baseTs = $now), +intervalMins each
+        // Interval Staggering: first contact is scheduled intervalMins after import time, then each next +intervalMins
         for ($i = 0; $i < $count; $i++) {
-            $ts = $baseTs + ($i * $intervalMins * 60);
+            $ts = $baseTs + (($i + 1) * $intervalMins * 60);
             $timePart = date('h:i A', $ts);
             $datePart = date('Y-m-d', $ts);
             $schedules[] = ($datePart === $todayDate) ? "Today, {$timePart}" : "{$datePart} {$timePart}";
