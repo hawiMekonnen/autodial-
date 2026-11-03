@@ -2558,44 +2558,55 @@ class SkyKinDialerApp {
 
   async handleFileUpload(e) {
     if (e) e.preventDefault();
+    if (this.isUploadingLeads) return;
+
     const fileInp = document.getElementById('leadFileInput');
     if (!fileInp || !fileInp.files || fileInp.files.length === 0) {
       this.showToast('Please select a CSV, Excel, or TXT file to upload.', 'error');
       return;
     }
-    const formData = new FormData();
-    formData.append('lead_file', fileInp.files[0]);
-    formData.append('campaign_id', this.campaign?.id || 1);
 
-    const autoSchedule = document.getElementById('uploadAutoScheduleToggle')?.checked;
-    if (autoSchedule !== undefined) {
-      formData.append('auto_schedule', autoSchedule ? '1' : '0');
+    const submitBtn = document.querySelector('#formUploadLeads button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Importing...';
     }
-    const strat = document.getElementById('uploadScheduleStrategy')?.value || 'interval';
-    formData.append('schedule_strategy', strat);
+    this.isUploadingLeads = true;
 
-    if (strat === 'interval') {
-      const intv = document.getElementById('uploadScheduleInterval')?.value || '5';
-      formData.append('schedule_interval_mins', intv);
-    } else if (strat === 'window') {
-      const winStart = document.getElementById('uploadWindowStart')?.value || '09:00';
-      const winEnd = document.getElementById('uploadWindowEnd')?.value || '17:00';
-      formData.append('schedule_window_start', winStart);
-      formData.append('schedule_window_end', winEnd);
-    } else if (strat === 'batch') {
-      const batchSize = document.getElementById('uploadBatchSize')?.value || '5';
-      const intv = document.getElementById('uploadScheduleInterval')?.value || '5';
-      formData.append('schedule_batch_size', batchSize);
-      formData.append('schedule_interval_mins', intv);
-    }
-
-    formData.append('client_time', Math.floor(Date.now() / 1000));
     try {
-      formData.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
-    } catch(err) {}
+      const formData = new FormData();
+      formData.append('lead_file', fileInp.files[0]);
+      formData.append('campaign_id', this.campaign?.id || 1);
 
-    this.showToast('Importing customer leads...', 'info');
-    try {
+      const autoSchedule = document.getElementById('uploadAutoScheduleToggle')?.checked;
+      if (autoSchedule !== undefined) {
+        formData.append('auto_schedule', autoSchedule ? '1' : '0');
+      }
+      const strat = document.getElementById('uploadScheduleStrategy')?.value || 'interval';
+      formData.append('schedule_strategy', strat);
+
+      if (strat === 'interval') {
+        const intv = document.getElementById('uploadScheduleInterval')?.value || '5';
+        formData.append('schedule_interval_mins', intv);
+      } else if (strat === 'window') {
+        const winStart = document.getElementById('uploadWindowStart')?.value || '09:00';
+        const winEnd = document.getElementById('uploadWindowEnd')?.value || '17:00';
+        formData.append('schedule_window_start', winStart);
+        formData.append('schedule_window_end', winEnd);
+      } else if (strat === 'batch') {
+        const batchSize = document.getElementById('uploadBatchSize')?.value || '5';
+        const intv = document.getElementById('uploadScheduleInterval')?.value || '5';
+        formData.append('schedule_batch_size', batchSize);
+        formData.append('schedule_interval_mins', intv);
+      }
+
+      formData.append('client_time', Math.floor(Date.now() / 1000));
+      try {
+        formData.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
+      } catch(err) {}
+
+      this.showToast('Importing customer leads...', 'info');
+
       const res = await fetch('api.php?action=upload_leads', { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
@@ -2605,62 +2616,72 @@ class SkyKinDialerApp {
         if (nameLabel) nameLabel.textContent = '';
         this.closeAllModals();
 
-        if (data.leads && Array.isArray(data.leads)) {
-          this.leads = data.leads;
-          this.renderLeadsTables();
-          this.renderUnansweredTable();
-          this.updateLocalStats();
-        } else {
-          await this.loadCampaignData();
-        }
+        // Always reload campaign data to sync counters, badges, and all table views
+        await this.loadCampaignData();
       } else {
         this.showToast(data.error || 'Failed to import file', 'error');
       }
     } catch (err) {
       this.showToast('Error uploading lead file', 'error');
+    } finally {
+      this.isUploadingLeads = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Import';
+      }
     }
   }
 
   async handleManualUpload(e) {
     if (e) e.preventDefault();
+    if (this.isUploadingManual) return;
+
     const textInp = document.getElementById('manualLeadsText');
     const text = textInp?.value.trim() || '';
     if (!text) {
       this.showToast('Please enter at least one contact line', 'error');
       return;
     }
-    const formData = new FormData();
-    formData.append('leads_text', text);
-    formData.append('campaign_id', this.campaign?.id || 1);
 
-    const autoSchedule = document.getElementById('manualAutoScheduleToggle')?.checked;
-    if (autoSchedule !== undefined) {
-      formData.append('auto_schedule', autoSchedule ? '1' : '0');
+    const submitBtn = document.querySelector('#formManualLeads button[type="submit"]');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Adding...';
     }
-    const strat = document.getElementById('manualScheduleStrategy')?.value || 'interval';
-    formData.append('schedule_strategy', strat);
-
-    if (strat === 'interval') {
-      const intv = document.getElementById('manualScheduleInterval')?.value || '5';
-      formData.append('schedule_interval_mins', intv);
-    } else if (strat === 'window') {
-      const winStart = document.getElementById('manualWindowStart')?.value || '09:00';
-      const winEnd = document.getElementById('manualWindowEnd')?.value || '17:00';
-      formData.append('schedule_window_start', winStart);
-      formData.append('schedule_window_end', winEnd);
-    } else if (strat === 'batch') {
-      const batchSize = document.getElementById('manualBatchSize')?.value || '5';
-      const intv = document.getElementById('manualScheduleInterval')?.value || '5';
-      formData.append('schedule_batch_size', batchSize);
-      formData.append('schedule_interval_mins', intv);
-    }
-
-    formData.append('client_time', Math.floor(Date.now() / 1000));
-    try {
-      formData.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
-    } catch(err) {}
+    this.isUploadingManual = true;
 
     try {
+      const formData = new FormData();
+      formData.append('leads_text', text);
+      formData.append('campaign_id', this.campaign?.id || 1);
+
+      const autoSchedule = document.getElementById('manualAutoScheduleToggle')?.checked;
+      if (autoSchedule !== undefined) {
+        formData.append('auto_schedule', autoSchedule ? '1' : '0');
+      }
+      const strat = document.getElementById('manualScheduleStrategy')?.value || 'interval';
+      formData.append('schedule_strategy', strat);
+
+      if (strat === 'interval') {
+        const intv = document.getElementById('manualScheduleInterval')?.value || '5';
+        formData.append('schedule_interval_mins', intv);
+      } else if (strat === 'window') {
+        const winStart = document.getElementById('manualWindowStart')?.value || '09:00';
+        const winEnd = document.getElementById('manualWindowEnd')?.value || '17:00';
+        formData.append('schedule_window_start', winStart);
+        formData.append('schedule_window_end', winEnd);
+      } else if (strat === 'batch') {
+        const batchSize = document.getElementById('manualBatchSize')?.value || '5';
+        const intv = document.getElementById('manualScheduleInterval')?.value || '5';
+        formData.append('schedule_batch_size', batchSize);
+        formData.append('schedule_interval_mins', intv);
+      }
+
+      formData.append('client_time', Math.floor(Date.now() / 1000));
+      try {
+        formData.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
+      } catch(err) {}
+
       const res = await fetch('api.php?action=save_manual_leads', { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
@@ -2673,6 +2694,12 @@ class SkyKinDialerApp {
       }
     } catch (err) {
       this.showToast('Error saving leads', 'error');
+    } finally {
+      this.isUploadingManual = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Add Leads';
+      }
     }
   }
   /* ─────────────────────────────────────────────────────────
@@ -2774,7 +2801,7 @@ class SkyKinDialerApp {
         return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Ethio Telecom', type: 'Mobile' };
       }
       if (norm.startsWith('7')) {
-        return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Safaricom Ethiopia', type: 'Mobile' };
+        return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Safaricom', type: 'Mobile' };
       }
       if (norm.startsWith('11') || norm.startsWith('1')) {
         return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Ethio Telecom', type: 'Fixed Line' };
@@ -2813,29 +2840,45 @@ class SkyKinDialerApp {
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Verification failed');
 
-      if (document.getElementById('verifyTotalCount')) document.getElementById('verifyTotalCount').textContent = data.total;
-      if (document.getElementById('verifyValidEthioCount')) document.getElementById('verifyValidEthioCount').textContent = data.ethio_telecom;
-      if (document.getElementById('verifyValidSafariCount')) document.getElementById('verifyValidSafariCount').textContent = data.safaricom;
-      if (document.getElementById('verifyDuplicatesCount')) document.getElementById('verifyDuplicatesCount').textContent = data.duplicates.length;
-      if (document.getElementById('verifyInvalidCount')) document.getElementById('verifyInvalidCount').textContent = data.invalid.length;
+      const validCount = data.valid_count ?? (data.valid ? data.valid.length : (data.total || 0));
+      const dupCount = data.duplicate_count ?? (data.duplicates ? data.duplicates.length : 0);
+      const invCount = data.invalid_count ?? (data.invalid ? data.invalid.length : 0);
+
+      const elValid = document.getElementById('verifyValidCount') || document.getElementById('verifyTotalCount');
+      if (elValid) elValid.textContent = validCount;
+
+      const elBreakdown = document.getElementById('verifyOperatorBreakdown');
+      if (elBreakdown) elBreakdown.textContent = `Ethio: ${data.ethio_telecom || 0} | Safari: ${data.safaricom || 0}`;
+
+      const elDup = document.getElementById('verifyDuplicateCount') || document.getElementById('verifyDuplicatesCount');
+      if (elDup) elDup.textContent = dupCount;
+
+      const elInv = document.getElementById('verifyInvalidCount');
+      if (elInv) elInv.textContent = invCount;
 
       let detailHtml = '';
-      if (data.invalid.length === 0 && data.duplicates.length === 0) {
+      const invalidList = data.invalid || [];
+      const duplicateList = data.duplicates || [];
+
+      if (invalidList.length === 0 && duplicateList.length === 0) {
         detailHtml = '<div style="text-align:center;color:#16a34a;font-weight:700;padding:12px;">✅ All phone numbers in the queue are valid and verified!</div>';
       } else {
-        if (data.invalid.length > 0) {
-          detailHtml += `<div style="font-weight:700;color:#dc2626;margin-bottom:4px;">❌ Invalid Numbers (${data.invalid.length}):</div>`;
-          data.invalid.slice(0, 10).forEach(inv => {
-            detailHtml += `<div style="padding:2px 0;color:#b91c1c;">• <strong>${this.escapeHtml(inv.phone_number)}</strong> (${this.escapeHtml(inv.customer_name || 'Customer')}): ${this.escapeHtml(inv.reason)}</div>`;
+        if (invalidList.length > 0) {
+          detailHtml += `<div style="font-weight:700;color:#dc2626;margin-bottom:4px;">❌ Invalid Numbers (${invalidList.length}):</div>`;
+          invalidList.slice(0, 15).forEach(inv => {
+            const p = inv.phone_number || inv.formatted_phone || inv.original_phone || 'Number';
+            const reason = inv.reason || inv.error || 'Invalid format';
+            detailHtml += `<div style="padding:2px 0;color:#b91c1c;">• <strong>${this.escapeHtml(p)}</strong> (${this.escapeHtml(inv.customer_name || 'Customer')}): ${this.escapeHtml(reason)}</div>`;
           });
-          if (data.invalid.length > 10) detailHtml += `<div style="color:#64748b;font-style:italic;">...and ${data.invalid.length - 10} more invalid</div>`;
+          if (invalidList.length > 15) detailHtml += `<div style="color:#64748b;font-style:italic;">...and ${invalidList.length - 15} more invalid</div>`;
         }
-        if (data.duplicates.length > 0) {
-          detailHtml += `<div style="font-weight:700;color:#b45309;margin-top:8px;margin-bottom:4px;">⚠️ Duplicate Numbers (${data.duplicates.length}):</div>`;
-          data.duplicates.slice(0, 10).forEach(dup => {
-            detailHtml += `<div style="padding:2px 0;color:#92400e;">• <strong>${this.escapeHtml(dup.phone_number)}</strong> (${this.escapeHtml(dup.customer_name || 'Customer')}) - appears multiple times</div>`;
+        if (duplicateList.length > 0) {
+          detailHtml += `<div style="font-weight:700;color:#b45309;margin-top:8px;margin-bottom:4px;">⚠️ Duplicate Numbers (${duplicateList.length}):</div>`;
+          duplicateList.slice(0, 15).forEach(dup => {
+            const p = dup.phone_number || dup.formatted_phone || dup.original_phone || 'Number';
+            detailHtml += `<div style="padding:2px 0;color:#92400e;">• <strong>${this.escapeHtml(p)}</strong> (${this.escapeHtml(dup.customer_name || 'Customer')}) - appears multiple times in queue</div>`;
           });
-          if (data.duplicates.length > 10) detailHtml += `<div style="color:#64748b;font-style:italic;">...and ${data.duplicates.length - 10} more duplicates</div>`;
+          if (duplicateList.length > 15) detailHtml += `<div style="color:#64748b;font-style:italic;">...and ${duplicateList.length - 15} more duplicates</div>`;
         }
       }
       if (content) content.innerHTML = detailHtml;

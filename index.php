@@ -764,7 +764,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
           <p style="font-size:12.5px;color:#64748b;margin-bottom:12px;">
             Select an Excel (.xlsx, .xls) or CSV file with your customer phone numbers to import into the queue.
           </p>
-          <div id="dropzoneBox" class="dropzone-box" onclick="document.getElementById('leadFileInput').click()" style="cursor:pointer;">
+          <div id="dropzoneBox" class="dropzone-box" style="cursor:pointer;">
             <div style="font-weight:700;color:#0047AB;font-size:14px;margin-bottom:4px;">Click or drag and drop Excel / CSV file</div>
             <div style="font-size:11.5px;color:#94a3b8;">Supports Microsoft Excel (.xlsx, .xls), CSV (.csv), TXT (.txt)</div>
             <input type="file" id="leadFileInput" accept=".xlsx,.xls,.csv,.txt,.tsv" style="display:none;" onchange="const f = this.files[0]; if (f) document.getElementById('selectedFileName').textContent = 'Selected: ' + f.name;">

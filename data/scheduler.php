@@ -27,8 +27,16 @@ function normalizeEthiopianPhone(string $raw): string {
     if (preg_match('/^0([97]\d{8})$/', $cleaned, $m)) {
         return '+251' . $m[1];
     }
+    // 9xxxxxxxx or 7xxxxxxxx (9 digits from Excel dropping leading 0)
+    if (preg_match('/^([97]\d{8})$/', $cleaned, $m)) {
+        return '+251' . $m[1];
+    }
     // 011xxxxxxx (Addis Ababa Landline) -> +25111xxxxxxx
-    if (preg_match('/^0([1-5]\d{8})$/', $cleaned, $m)) {
+    if (preg_match('/^0(1\d{8})$/', $cleaned, $m)) {
+        return '+251' . $m[1];
+    }
+    // 11xxxxxxx (8-9 digits Addis Ababa Landline without leading 0)
+    if (preg_match('/^(11\d{7})$/', $cleaned, $m)) {
         return '+251' . $m[1];
     }
     // 2519xxxxxxxx or 2517xxxxxxxx

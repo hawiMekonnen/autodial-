@@ -30,6 +30,10 @@ if (empty($_SESSION['dialer_user'])) {
 }
 
 function sanitizePhone(string $raw): string {
+    $info = validatePhoneNumberInfo($raw);
+    if ($info['valid'] && !empty($info['formatted'])) {
+        return $info['formatted'];
+    }
     return normalizeEthiopianPhone($raw);
 }
 
@@ -37,6 +41,11 @@ function validatePhoneNumberInfo(string $raw): array {
     $cleaned = preg_replace('/[^\d+]/', '', trim($raw));
     if (empty($cleaned)) {
         return ['valid' => false, 'error' => 'Empty phone number', 'operator' => 'Unknown', 'formatted' => ''];
+    }
+
+    // Strip leading 00251 international dial code
+    if (str_starts_with($cleaned, '00251')) {
+        $cleaned = '+251' . substr($cleaned, 5);
     }
 
     // Ethiopian Mobile Formats:
@@ -50,7 +59,17 @@ function validatePhoneNumberInfo(string $raw): array {
             'type' => 'Mobile'
         ];
     }
-    // 2519xxxxxxxx or 2517xxxxxxxx
+    // 9xxxxxxxx or 7xxxxxxxx (9 digits - typical when Excel strips the leading 0)
+    if (preg_match('/^([97]\d{8})$/', $cleaned, $m)) {
+        $prefix = substr($m[1], 0, 1);
+        return [
+            'valid' => true,
+            'operator' => $prefix === '9' ? 'Ethio Telecom' : 'Safaricom',
+            'formatted' => '+251' . $m[1],
+            'type' => 'Mobile'
+        ];
+    }
+    // 2519xxxxxxxx or 2517xxxxxxxx (12 digits)
     if (preg_match('/^251([97]\d{8})$/', $cleaned, $m)) {
         $prefix = substr($m[1], 0, 1);
         return [
@@ -70,8 +89,8 @@ function validatePhoneNumberInfo(string $raw): array {
             'type' => 'Mobile'
         ];
     }
-    // Ethiopian Landline (011xxxxxxx)
-    if (preg_match('/^011(\d{7})$/', $cleaned, $m) || preg_match('/^\+?25111(\d{7})$/', $cleaned, $m)) {
+    // Ethiopian Landline (011xxxxxxx, 11xxxxxxx, or +25111xxxxxxx)
+    if (preg_match('/^011(\d{7})$/', $cleaned, $m) || preg_match('/^11(\d{7})$/', $cleaned, $m) || preg_match('/^\+?25111(\d{7})$/', $cleaned, $m)) {
         return [
             'valid' => true,
             'operator' => 'Ethio Telecom (Fixed)',
@@ -85,6 +104,15 @@ function validatePhoneNumberInfo(string $raw): array {
             'valid' => true,
             'operator' => 'International',
             'formatted' => $cleaned,
+            'type' => 'International'
+        ];
+    }
+    // Digits without + that look like an international number (10 to 15 digits)
+    if (preg_match('/^[1-9]\d{9,14}$/', $cleaned)) {
+        return [
+            'valid' => true,
+            'operator' => 'International',
+            'formatted' => '+' . $cleaned,
             'type' => 'International'
         ];
     }
@@ -250,6 +278,16 @@ if ($action === 'get_campaign_data') {
     ]);
 }
 
+function excelColToIndex(string $cellRef): int {
+    $colLetters = preg_replace('/[^A-Z]/', '', strtoupper($cellRef));
+    if (empty($colLetters)) return 0;
+    $index = 0;
+    for ($i = 0; $i < strlen($colLetters); $i++) {
+        $index = $index * 26 + (ord($colLetters[$i]) - 64);
+    }
+    return max(0, $index - 1);
+}
+
 function extractRowsFromUploadedFile(string $filePath, string $origName): array {
     $ext = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
 
@@ -298,6 +336,7 @@ function extractRowsFromUploadedFile(string $filePath, string $origName): array 
                     foreach ($xml->sheetData->row as $row) {
                         $currentRow = [];
                         foreach ($row->c as $c) {
+                            $colIdx = isset($c['r']) ? excelColToIndex((string)$c['r']) : count($currentRow);
                             $cellType = (string)$c['t'];
                             $val = (string)$c->v;
                             if ($cellType === 's') {
@@ -308,10 +347,26 @@ function extractRowsFromUploadedFile(string $filePath, string $origName): array 
                             } else {
                                 $cellVal = $val;
                             }
-                            $currentRow[] = trim($cellVal);
+
+                            // Clean numeric formatting if scientific notation (e.g. 2.51939E+11)
+                            if (is_numeric($cellVal) && (stripos($cellVal, 'E+') !== false || stripos($cellVal, 'E-') !== false)) {
+                                $cellVal = sprintf('%.0f', (float)$cellVal);
+                            } elseif (preg_match('/^(\d+)\.0+$/', $cellVal, $mDec)) {
+                                $cellVal = $mDec[1];
+                            }
+                            $currentRow[$colIdx] = trim($cellVal);
                         }
-                        if (!empty(array_filter($currentRow))) {
-                            $rows[] = $currentRow;
+
+                        // Align row into contiguous 0-indexed array so blank columns are preserved
+                        if (!empty($currentRow)) {
+                            $maxCol = max(array_keys($currentRow));
+                            $normRow = [];
+                            for ($k = 0; $k <= $maxCol; $k++) {
+                                $normRow[$k] = $currentRow[$k] ?? '';
+                            }
+                            if (!empty(array_filter($normRow))) {
+                                $rows[] = $normRow;
+                            }
                         }
                     }
                     if (!empty($rows)) return $rows;
@@ -322,6 +377,11 @@ function extractRowsFromUploadedFile(string $filePath, string $origName): array 
 
     // 2. CSV / TXT / TSV / HTML XLS
     $content = file_get_contents($filePath);
+    // Strip UTF-8 BOM if present
+    if (str_starts_with($content, "\xEF\xBB\xBF")) {
+        $content = substr($content, 3);
+    }
+
     if (stripos($content, '<table') !== false && stripos($content, '<tr') !== false) {
         // HTML table based XLS export
         $rows = [];
@@ -402,7 +462,7 @@ if ($action === 'upload_leads') {
             $foundHeader = false;
 
             foreach ($headerLower as $idx => $h) {
-                if (strpos($h, 'phone') !== false || strpos($h, 'number') !== false || strpos($h, 'mobile') !== false || strpos($h, 'tel') !== false) {
+                if (strpos($h, 'phone') !== false || strpos($h, 'number') !== false || strpos($h, 'mobile') !== false || strpos($h, 'tel') !== false || strpos($h, 'contact') !== false || strpos($h, 'cell') !== false || strpos($h, 'msisdn') !== false || strpos($h, 'destination') !== false || strpos($h, 'recipient') !== false) {
                     $phoneIdx = $idx;
                     $foundHeader = true;
                 } elseif (strpos($h, 'name') !== false || strpos($h, 'customer') !== false || strpos($h, 'client') !== false) {
@@ -419,6 +479,13 @@ if ($action === 'upload_leads') {
 
             if ($foundHeader) {
                 continue;
+            } else {
+                // No header detected in first row: check if column 0 contains a phone number
+                $cand0 = sanitizePhone($cols[0] ?? '');
+                if (!empty($cand0) && strlen($cand0) >= 8) {
+                    $phoneIdx = 0;
+                    $nameIdx = count($cols) > 1 ? 1 : 0;
+                }
             }
         }
 
@@ -484,29 +551,21 @@ if ($action === 'upload_leads') {
     }
 
     $stmtCheck = $db->prepare("SELECT id FROM leads WHERE campaign_id = ? AND phone_number = ? AND status = 'pending'");
+    $stmtUpdate = $db->prepare("UPDATE leads SET customer_name = ?, call_time = ?, notes = ? WHERE id = ?");
     $stmtInsert = $db->prepare("INSERT INTO leads (campaign_id, customer_name, phone_number, call_time, notes, status) VALUES (?, ?, ?, ?, ?, 'pending')");
-
-    $duplicates = 0;
-    $seenPhones = [];
 
     $db->beginTransaction();
     try {
         foreach ($pendingRows as $r) {
-            // Deduplicate within the file itself
-            if (isset($seenPhones[$r['phone']])) {
-                $duplicates++;
-                continue;
-            }
-            $seenPhones[$r['phone']] = true;
-
-            // Deduplicate against existing pending leads in database
             $stmtCheck->execute([$campaignId, $r['phone']]);
-            if ($stmtCheck->fetch()) {
-                $duplicates++;
-                continue;
+            $existing = $stmtCheck->fetch();
+            if ($existing) {
+                // Update existing pending lead to reflect newly uploaded details and schedule
+                $stmtUpdate->execute([$r['name'], $r['callTime'], $r['notes'], $existing['id']]);
+            } else {
+                // Insert new lead into queue
+                $stmtInsert->execute([$campaignId, $r['name'], $r['phone'], $r['callTime'], $r['notes']]);
             }
-
-            $stmtInsert->execute([$campaignId, $r['name'], $r['phone'], $r['callTime'], $r['notes']]);
             $imported++;
         }
 
@@ -524,14 +583,12 @@ if ($action === 'upload_leads') {
     $stmtLeads->execute([$campaignId]);
     $allLeads = $stmtLeads->fetchAll();
 
-    $dupMsg = $duplicates > 0 ? " ({$duplicates} duplicate numbers skipped)" : "";
     jsonOut([
         'success' => true,
         'imported' => $imported,
-        'duplicates' => $duplicates,
         'invalid' => $invalid,
         'leads' => $allLeads,
-        'message' => "Successfully imported {$imported} leads from " . htmlspecialchars($origName) . "{$dupMsg}" . ($forceAutoSchedule ? " with system auto-scheduling." : ".")
+        'message' => "Successfully imported {$imported} customer leads from " . htmlspecialchars($origName) . ($forceAutoSchedule ? " with system auto-scheduling." : ".")
     ]);
 }
 
@@ -1318,12 +1375,14 @@ if ($action === 'verify_leads_list') {
         $entry = [
             'id' => (int)$l['id'],
             'customer_name' => $l['customer_name'],
+            'phone_number' => $raw,
             'original_phone' => $raw,
             'formatted_phone' => $norm,
             'call_time' => $l['call_time'],
             'status' => $l['status'],
             'operator' => $valInfo['operator'],
-            'is_valid' => $valInfo['valid']
+            'is_valid' => $valInfo['valid'],
+            'reason' => $valInfo['error'] ?? ''
         ];
 
         // Check Duplicates
@@ -1393,7 +1452,9 @@ if ($action === 'clean_invalid_leads') {
         $seen = [];
         $toDelete = [];
         foreach ($pendingLeads as $l) {
-            $norm = window_normalize_or_clean($l['phone_number']);
+            $val = validatePhoneNumberInfo($l['phone_number']);
+            $norm = $val['valid'] ? $val['formatted'] : preg_replace('/[^\d+]/', '', $l['phone_number']);
+            if (empty($norm)) continue;
             if (isset($seen[$norm])) {
                 $toDelete[] = (int)$l['id'];
             } else {
