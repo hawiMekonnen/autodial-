@@ -1274,12 +1274,15 @@ class SkyKinDialerApp {
         <td>${stBadge} <small style="color:#64748b;margin-left:4px;">(${this.escapeHtml(reason)})</small></td>
         <td><span style="font-size:11.5px;color:#0369a1;">${this.escapeHtml(l.call_time || '-')}</span></td>
         <td style="font-size:11.5px;color:#64748b;">${this.escapeHtml(lastAttempt)}</td>
-        <td>
-          <button class="btn btn-primary btn-sm" onclick="app.openRedialModal(${l.id})" title="Redial Customer">
+        <td style="white-space:nowrap;">
+          <button class="btn btn-primary btn-sm" onclick="app.requeueSingleLead(${l.id}, true)" title="Retry using active Retry Policy rules">
+            Retry (Apply Rule)
+          </button>
+          <button class="btn btn-secondary btn-sm" onclick="app.openRedialModal(${l.id})" style="margin-left:4px;" title="Redial Customer at custom date/time">
             Redial
           </button>
-          <button class="btn btn-secondary btn-sm" onclick="app.requeueSingleLead(${l.id})" style="margin-left:4px;" title="Move back to Calling Queue">
-            Re-queue
+          <button class="btn btn-outline btn-sm" onclick="app.requeueSingleLead(${l.id}, false)" style="margin-left:4px;border:1px solid #cbd5e1;background:#fff;color:#475569;" title="Re-queue for immediate dialing">
+            Immediate
           </button>
         </td>
       `;
@@ -1287,7 +1290,7 @@ class SkyKinDialerApp {
     });
   }
 
-  async requeueUnansweredLeads() {
+  async requeueUnansweredLeads(applyRules = true) {
     let count = 0;
     this.leads.forEach(l => {
       if (['no_answer', 'busy', 'failed'].includes(l.status)) {
@@ -1300,18 +1303,24 @@ class SkyKinDialerApp {
     this.renderUnansweredTable();
     this.updateLocalStats();
     this.renderActiveChannels();
-    this.showToast(`Re-queued ${count} unanswered leads!`, 'success');
+    this.showToast(applyRules ? `Re-queueing ${count} unanswered leads with Retry Policy...` : `Re-queuing ${count} unanswered leads for immediate dialing...`, 'info');
 
     try {
       const formData = new FormData();
       formData.append('campaign_id', this.campaign?.id || 1);
-      await fetch('api.php?action=requeue_unanswered', { method: 'POST', body: formData });
+      formData.append('apply_rules', applyRules ? '1' : '0');
+      const res = await fetch('api.php?action=requeue_unanswered', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast(data.message || `Re-queued ${count} leads!`, 'success');
+      }
+      await this.loadCampaignData();
     } catch (e) {
       this.showToast('Failed to sync re-queue with server', 'error');
     }
   }
 
-  async requeueSingleLead(leadId) {
+  async requeueSingleLead(leadId, applyRules = true) {
     const lead = this.leads.find(l => Number(l.id) === Number(leadId));
     if (lead) {
       lead.status = 'pending';
@@ -1321,14 +1330,17 @@ class SkyKinDialerApp {
       this.updateLocalStats();
       this.renderActiveChannels();
     }
-    this.showToast('Contact moved back to calling queue!', 'success');
 
     try {
       const formData = new FormData();
       formData.append('lead_id', leadId);
-      formData.append('status', 'pending');
-      formData.append('duration_sec', 0);
-      await fetch('api.php?action=update_lead_status', { method: 'POST', body: formData });
+      formData.append('apply_rules', applyRules ? '1' : '0');
+      const res = await fetch('api.php?action=requeue_single_lead', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast(data.message || 'Contact moved back to calling queue!', 'success');
+      }
+      await this.loadCampaignData();
     } catch(e) {
       this.showToast('Error syncing contact status', 'error');
     }
@@ -1705,14 +1717,20 @@ class SkyKinDialerApp {
       }
     }
 
-    // Ensure at least Line 1 is registered
+    // Ensure at least Line 1 is registered or offer Simulation Mode
     const l1Registered = this.line1.isRegistered;
     const l2Registered = this.line2.enabled && this.line2.isRegistered;
 
     if (!l1Registered && !l2Registered) {
-      this.showToast('SIP Softphone is not registered to PBX! Please click Connect in Settings to register Extension.', 'error');
-      openSipSettingsModal();
-      return;
+      const startSim = confirm("SIP Softphone is not registered to PBX (Extensions are Off).\n\n• Click OK to start in Simulation / Demo Mode (tests dialing, audio prompt, automated retries, and pause/stop controls without live PBX)\n• Click Cancel to open SIP Settings and register extension.");
+      if (startSim) {
+        this.isSimulationMode = true;
+      } else {
+        openSipSettingsModal();
+        return;
+      }
+    } else {
+      this.isSimulationMode = false;
     }
 
     this.isRunning = true;
@@ -1722,7 +1740,9 @@ class SkyKinDialerApp {
     this.btnStop.disabled = false;
 
     this.renderCampaignHeader();
-    const lineMode = (this.line2.enabled && l2Registered) ? 'Dual-Line (2 Concurrent Numbers)' : 'Single Line';
+    const lineMode = this.isSimulationMode
+      ? 'Simulation / Demo Mode'
+      : ((this.line2.enabled && l2Registered) ? 'Dual-Line (2 Concurrent Numbers)' : 'Single Line');
     this.showToast(`Auto-Dialer active [${lineMode}]: Monitoring queue...`, 'success');
     this.logLiveEvent(`Campaign started [${lineMode}]. Scheduler loop active.`, 'info');
     this.startSchedulerLoop();
@@ -1743,13 +1763,22 @@ class SkyKinDialerApp {
       this.processOutboundQueue();
     } else {
       this.stopSchedulerLoop();
+      if (this._pacingTimeout) {
+        clearTimeout(this._pacingTimeout);
+        this._pacingTimeout = null;
+      }
     }
+    this.renderActiveChannels();
   }
 
   stopCampaign() {
     this.isRunning = false;
     this.isPaused = false;
     this.stopSchedulerLoop();
+    if (this._pacingTimeout) {
+      clearTimeout(this._pacingTimeout);
+      this._pacingTimeout = null;
+    }
     if (this._displayCountdownTimer) {
       clearInterval(this._displayCountdownTimer);
       this._displayCountdownTimer = null;
@@ -1761,6 +1790,18 @@ class SkyKinDialerApp {
     this.btnPause.className = 'btn btn-warning';
     this.btnStop.disabled = true;
 
+    // Reset any leads that were currently dialing/calling back to 'pending'
+    this.activeChannels.forEach(ch => {
+      if (ch.timerInterval) clearInterval(ch.timerInterval);
+      if (ch.simTimeout) clearTimeout(ch.simTimeout);
+      if (ch.callEndTimeout) clearTimeout(ch.callEndTimeout);
+      if (ch.lead && (ch.lead.status === 'calling' || ch.status === 'dialing' || ch.status === 'ringing')) {
+        ch.lead.status = 'pending';
+        ch.lead.duration_sec = 0;
+        this.updateLeadStatusBackend(ch.lead.id, 'pending', 0, 'Stopped by User');
+      }
+    });
+
     // Terminate any in-flight SIP or IVR audio on both lines
     this.sipHangup(1);
     this.sipHangup(2);
@@ -1769,17 +1810,14 @@ class SkyKinDialerApp {
       this.activeAudioPlayer = null;
     }
 
-    this.logLiveEvent('Auto-Dialer stopped. Telephony channels released.', 'danger');
-
-    this.activeChannels.forEach(ch => {
-      if (ch.timerInterval) clearInterval(ch.timerInterval);
-    });
     this.activeChannels.clear();
     this.line1.activeChannelId = null;
     this.line2.activeChannelId = null;
 
     this.renderActiveChannels();
     this.renderCampaignHeader();
+    this.renderLeadsTables();
+    this.logLiveEvent('Auto-Dialer stopped by user. All telephony channels released.', 'danger');
     this.showToast('Auto-Dialer Stopped', 'info');
   }
 
@@ -1990,13 +2028,67 @@ class SkyKinDialerApp {
       // Proceed to the next customer in the queue for this line
       if (this.isRunning && !this.isPaused) {
         const delay = Math.max(1, pacingDelay);
-        setTimeout(() => {
+        if (this._pacingTimeout) clearTimeout(this._pacingTimeout);
+        this._pacingTimeout = setTimeout(() => {
           if (this.isRunning && !this.isPaused) {
             this.processOutboundQueue();
           }
         }, delay * 1000);
       }
     };
+
+    // Simulation / Demo Mode when live PBX softphone is not connected
+    if (this.isSimulationMode) {
+      this.logLiveEvent(`[Line ${lineNum}][Demo Mode] Dialing ${lead.phone_number} (${lead.customer_name || 'Customer'})...`, 'info');
+      channelData.status = 'ringing';
+      lead.status = 'calling';
+      this.renderActiveChannels();
+      this.renderLeadsTables();
+
+      let callSec = 0;
+      channelData.simTimeout = setTimeout(() => {
+        if (!this.isRunning || this.isPaused) return;
+
+        channelData.status = 'answered';
+        lead.status = 'answered';
+        this.logLiveEvent(`[Line ${lineNum}][Demo Mode] Call answered by ${lead.phone_number}! Playing audio: "${this.campaign?.ivr_audio_name || 'Human Greeting'}"`, 'success');
+        this.renderActiveChannels();
+        this.renderLeadsTables();
+        this.updateLeadStatusBackend(lead.id, 'answered', 1);
+
+        const audioSrc = this.campaign?.ivr_audio_file || 'assets/audio/welcome_human_voice.wav';
+        const simAudio = new Audio(audioSrc);
+        this.activeAudioPlayer = simAudio;
+        simAudio.play().catch(() => {});
+
+        channelData.timerInterval = setInterval(() => {
+          if (!this.isRunning) {
+            clearInterval(channelData.timerInterval);
+            return;
+          }
+          callSec++;
+          channelData.duration = callSec;
+          lead.duration_sec = callSec;
+          this.renderActiveChannels();
+        }, 1000);
+
+        simAudio.onended = () => {
+          if (simAudio) simAudio.pause();
+          this.activeAudioPlayer = null;
+          finishCall('completed', callSec || 4);
+        };
+
+        channelData.callEndTimeout = setTimeout(() => {
+          if (this.activeChannels.has(channelId)) {
+            if (simAudio) { simAudio.pause(); this.activeAudioPlayer = null; }
+            finishCall('completed', callSec || 6);
+          }
+        }, 6000);
+
+      }, 1500);
+
+      return;
+    }
 
     if (!lineObj.isRegistered && !lineObj.ua) {
       this.showToast(`Cannot dial ${lead.phone_number}: Line ${lineNum} (${lineObj.ext}) is not registered!`, 'error');
@@ -2112,6 +2204,23 @@ class SkyKinDialerApp {
 
     // 2. Auto-Dialer Running
     if (this.isRunning) {
+      if (this.isPaused) {
+        this.channelsContainer.innerHTML = `
+          <div style="grid-column:1/-1;background:#fffbeb;border:1.5px solid #fde68a;border-radius:10px;padding:16px 20px;text-align:center;">
+            <div style="font-weight:700;color:#b45309;font-size:14px;margin-bottom:4px;display:flex;align-items:center;justify-content:center;gap:7px;">
+              <span style="width:9px;height:9px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>
+              Auto-Dialer Paused
+            </div>
+            <div style="font-size:12.5px;color:#78350f;margin-bottom:6px;">
+              Queue dispatching is temporarily paused. In-flight calls have completed.
+            </div>
+            <div style="font-size:12px;color:#92400e;">
+              Click <strong style="color:#15803d;background:#dcfce7;padding:2px 8px;border-radius:6px;">Resume</strong> to continue dialing, or <strong style="color:#b91c1c;background:#fee2e2;padding:2px 8px;border-radius:6px;">Stop</strong> to cancel.
+            </div>
+          </div>
+        `;
+        return;
+      }
       if (!next) {
         this.channelsContainer.innerHTML = `
           <div style="grid-column:1/-1;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:16px;text-align:center;">
@@ -2990,6 +3099,8 @@ class SkyKinDialerApp {
     const retryMode = document.getElementById('cfgRetryDateMode')?.value || 'same_day';
     const retryDelay = document.getElementById('cfgRetryDelayMin')?.value || 15;
     const customDate = document.getElementById('cfgRetryCustomDate')?.value || '';
+    const pacingDelay = document.getElementById('pacingDelayInput')?.value || 2;
+    const maxConcurrent = document.getElementById('maxConcurrentInput')?.value || 2;
 
     try {
       const formData = new FormData();
@@ -2998,6 +3109,8 @@ class SkyKinDialerApp {
       formData.append('retry_date_mode', retryMode);
       formData.append('retry_delay_min', retryDelay);
       formData.append('retry_custom_date', customDate);
+      formData.append('pacing_delay_sec', pacingDelay);
+      formData.append('max_concurrent', maxConcurrent);
 
       const res = await fetch('api.php?action=save_campaign_settings', { method: 'POST', body: formData });
       const data = await res.json();

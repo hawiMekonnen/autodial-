@@ -1052,13 +1052,90 @@ if ($action === 'reset_leads') {
     jsonOut(['success' => true, 'message' => 'All leads reset to pending.']);
 }
 
-// 7b. Re-queue Unanswered / Missed Leads back to Pending
+// 7b. Re-queue Unanswered / Missed Leads back to Pending (with Retry Rules support)
 if ($action === 'requeue_unanswered') {
     $campaignId = (int)($_POST['campaign_id'] ?? 1);
-    $stmt = $db->prepare("UPDATE leads SET status = 'pending', duration_sec = 0 WHERE campaign_id = ? AND status IN ('no_answer', 'busy', 'failed')");
+    $applyRules = isset($_POST['apply_rules']) ? in_array(strtolower(trim((string)$_POST['apply_rules'])), ['1', 'true', 'yes', 'on']) : true;
+
+    $camp = $db->query("SELECT * FROM campaigns WHERE id = {$campaignId}")->fetch() ?: [];
+    $retryMode = $camp['retry_date_mode'] ?? 'same_day';
+    $retryDelayMin = max(1, (int)($camp['retry_delay_min'] ?? 15));
+    $retryCustomDate = $camp['retry_custom_date'] ?? '';
+
+    $stmt = $db->prepare("SELECT id, retry_count, phone_number, customer_name FROM leads WHERE campaign_id = ? AND status IN ('no_answer', 'busy', 'failed') ORDER BY id ASC");
     $stmt->execute([$campaignId]);
-    $count = $stmt->rowCount();
-    jsonOut(['success' => true, 'message' => "Re-queued {$count} unanswered leads back into active calling queue!"]);
+    $unansweredLeads = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $now = time();
+    $updatedCount = 0;
+    $stmtUpd = $db->prepare("UPDATE leads SET status = 'pending', call_time = ?, duration_sec = 0, retry_count = retry_count + 1, error_message = ? WHERE id = ?");
+
+    foreach ($unansweredLeads as $i => $u) {
+        if ($applyRules) {
+            if ($retryMode === 'next_day') {
+                $callTime = 'Tomorrow, ' . date('h:i A', $now + ($i * 60));
+            } elseif ($retryMode === 'custom_date' && !empty($retryCustomDate)) {
+                $callTime = $retryCustomDate . ' ' . date('h:i A', $now + ($i * 60));
+            } else {
+                $delaySec = max(60, ($retryDelayMin * 60) + ($i * 60));
+                $callTime = 'Today, ' . date('h:i A', $now + $delaySec);
+            }
+            $note = "Re-queued via Retry Policy ({$callTime})";
+        } else {
+            $callTime = 'Immediate';
+            $note = 'Re-queued for Immediate Dialing';
+        }
+
+        $stmtUpd->execute([$callTime, $note, $u['id']]);
+        $updatedCount++;
+    }
+
+    jsonOut([
+        'success' => true,
+        'count' => $updatedCount,
+        'message' => "Successfully re-queued {$updatedCount} unanswered leads back into active calling queue!"
+    ]);
+}
+
+// 7c. Re-queue Single Unanswered Lead
+if ($action === 'requeue_single_lead') {
+    $leadId = (int)($_POST['lead_id'] ?? 0);
+    $applyRules = isset($_POST['apply_rules']) ? in_array(strtolower(trim((string)$_POST['apply_rules'])), ['1', 'true', 'yes', 'on']) : true;
+
+    $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch();
+    if (!$lead) {
+        jsonOut(['success' => false, 'error' => 'Lead not found.'], 404);
+    }
+
+    $camp = $db->query("SELECT * FROM campaigns WHERE id = {$lead['campaign_id']}")->fetch() ?: [];
+    $retryMode = $camp['retry_date_mode'] ?? 'same_day';
+    $retryDelayMin = max(1, (int)($camp['retry_delay_min'] ?? 15));
+    $retryCustomDate = $camp['retry_custom_date'] ?? '';
+
+    $now = time();
+    if ($applyRules) {
+        if ($retryMode === 'next_day') {
+            $callTime = 'Tomorrow, ' . date('h:i A', $now);
+        } elseif ($retryMode === 'custom_date' && !empty($retryCustomDate)) {
+            $callTime = $retryCustomDate . ' ' . date('h:i A', $now);
+        } else {
+            $delaySec = max(60, $retryDelayMin * 60);
+            $callTime = 'Today, ' . date('h:i A', $now + $delaySec);
+        }
+        $note = "Re-queued via Retry Policy ({$callTime})";
+    } else {
+        $callTime = 'Immediate';
+        $note = 'Re-queued for Immediate Dialing';
+    }
+
+    $stmt = $db->prepare("UPDATE leads SET status = 'pending', call_time = ?, duration_sec = 0, retry_count = retry_count + 1, error_message = ? WHERE id = ?");
+    $stmt->execute([$callTime, $note, $leadId]);
+
+    jsonOut([
+        'success' => true,
+        'call_time' => $callTime,
+        'message' => "Lead {$lead['phone_number']} re-queued for {$callTime}!"
+    ]);
 }
 
 // 8. Delete Lead / Clear All Leads
@@ -1320,12 +1397,14 @@ if ($action === 'change_password') {
 // 16. Save Campaign Pacing & Retry Rules
 if ($action === 'save_campaign_settings') {
     $campaignId = (int)($_POST['campaign_id'] ?? 1);
-    $pacingDelay = max(1, (int)($_POST['pacing_delay_sec'] ?? 2));
-    $maxConcurrent = max(1, min(2, (int)($_POST['max_concurrent'] ?? 2)));
-    $maxRetries = max(0, min(10, (int)($_POST['max_retries'] ?? 2)));
-    $retryDelayMin = max(1, (int)($_POST['retry_delay_min'] ?? 15));
-    $retryDateMode = trim($_POST['retry_date_mode'] ?? 'same_day');
-    $retryCustomDate = trim($_POST['retry_custom_date'] ?? '');
+    $campCur = $db->query("SELECT * FROM campaigns WHERE id = {$campaignId}")->fetch() ?: [];
+
+    $pacingDelay = isset($_POST['pacing_delay_sec']) ? max(1, (int)$_POST['pacing_delay_sec']) : (int)($campCur['pacing_delay_sec'] ?? 2);
+    $maxConcurrent = isset($_POST['max_concurrent']) ? max(1, min(2, (int)$_POST['max_concurrent'])) : (int)($campCur['max_concurrent'] ?? 2);
+    $maxRetries = isset($_POST['max_retries']) ? max(0, min(10, (int)$_POST['max_retries'])) : (int)($campCur['max_retries'] ?? 2);
+    $retryDelayMin = isset($_POST['retry_delay_min']) ? max(1, (int)$_POST['retry_delay_min']) : (int)($campCur['retry_delay_min'] ?? 15);
+    $retryDateMode = isset($_POST['retry_date_mode']) ? trim($_POST['retry_date_mode']) : ($campCur['retry_date_mode'] ?? 'same_day');
+    $retryCustomDate = isset($_POST['retry_custom_date']) ? trim($_POST['retry_custom_date']) : ($campCur['retry_custom_date'] ?? '');
 
     $stmt = $db->prepare("UPDATE campaigns SET pacing_delay_sec = ?, max_concurrent = ?, max_retries = ?, retry_delay_min = ?, retry_date_mode = ?, retry_custom_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
     $stmt->execute([$pacingDelay, $maxConcurrent, $maxRetries, $retryDelayMin, $retryDateMode, $retryCustomDate, $campaignId]);

@@ -461,9 +461,15 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             </div>
             <div style="font-size:12px;color:#64748b;">Customers who did not answer, were busy, or did not listen to the IVR audio.</div>
           </div>
-          <div style="display:flex;gap:8px;">
-            <button class="btn btn-primary btn-sm" onclick="app.requeueUnansweredLeads()">
-              Re-queue All to Calling Queue
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button id="btnUnansweredRetryRules" class="btn btn-secondary btn-sm" onclick="app.openRetrySettingsModal()" style="border-color:#93c5fd;color:#0047AB;" title="Configure Call Retry and Scheduling Rules">
+              ⚙️ Retry Rules
+            </button>
+            <button class="btn btn-primary btn-sm" onclick="app.requeueUnansweredLeads(true)" title="Re-queue all unanswered calls according to active Retry Policy">
+              Re-queue All (Apply Retry Rules)
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="app.requeueUnansweredLeads(false)" style="border:1px solid #cbd5e1;background:#fff;color:#475569;" title="Re-queue all unanswered calls for immediate dialing">
+              Re-queue All (Immediate)
             </button>
             <button class="btn btn-secondary btn-sm" onclick="app.exportUnansweredCsv()">
               Export to CSV
