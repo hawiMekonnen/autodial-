@@ -524,7 +524,8 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <div style="display:flex;align-items:center;gap:6px;">
               <label style="font-size:12px;font-weight:700;color:#334155;white-space:nowrap;">Date:</label>
               <select id="historyDateSelect" class="form-control" style="font-size:12.5px;min-width:160px;" onchange="app.handleHistoryDateFilter(this.value)">
-                <option value="all">All Past Dates</option>
+                <option value="all">All Dates</option>
+                <option value="today">Today</option>
                 <option value="yesterday">Yesterday</option>
               </select>
             </div>
@@ -1195,6 +1196,10 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
     const panel = document.getElementById(tabId);
     if (panel) panel.classList.add('active');
+
+    if (tabId === 'tabCallHistory' && window.app && typeof window.app.renderHistoryTable === 'function') {
+      window.app.renderHistoryTable();
+    }
   }
 
   function updateClock() {

@@ -808,9 +808,19 @@ class SkyKinDialerApp {
     return this.leads.filter(l => l.status === 'pending' || l.is_today || l.effective_date === today || (!l.effective_date && !l.is_past));
   }
 
-  getPastLeads() {
+  getHistoryLeads() {
     const today = this.serverToday || new Date().toISOString().split('T')[0];
-    return this.leads.filter(l => l.is_past || (l.effective_date && l.effective_date < today));
+    return this.leads.filter(l => {
+      // 1. Any lead that has been dialed / carried out (status is not pending)
+      if (l.status && l.status !== 'pending') return true;
+      // 2. Any lead from previous days
+      if (l.is_past || (l.effective_date && l.effective_date < today)) return true;
+      return false;
+    });
+  }
+
+  getPastLeads() {
+    return this.getHistoryLeads();
   }
 
   
@@ -881,7 +891,7 @@ class SkyKinDialerApp {
     if (badgePending) badgePending.textContent = todayPending;
 
     const badgeHistory = document.getElementById('badgeHistoryCount');
-    if (badgeHistory) badgeHistory.textContent = this.getPastLeads().length;
+    if (badgeHistory) badgeHistory.textContent = this.getHistoryLeads().length;
   }
 
   updateLocalStats() {
@@ -990,19 +1000,23 @@ class SkyKinDialerApp {
     const tbody = document.getElementById('historyTableBody');
     if (!tbody) return;
 
+    const today = this.serverToday || new Date().toISOString().split('T')[0];
+    const yestDate = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+
     // Populate History Date Filter Dropdown if not filled
     const dateSelect = document.getElementById('historyDateSelect');
-    if (dateSelect && this.availableDates) {
-      const currentSelected = dateSelect.value;
-      const today = this.serverToday || new Date().toISOString().split('T')[0];
-      const pastDates = this.availableDates.filter(d => d !== today);
+    if (dateSelect) {
+      const currentSelected = dateSelect.value || 'all';
+      const allDates = Array.isArray(this.availableDates) ? [...this.availableDates] : [];
+      if (!allDates.includes(today)) allDates.unshift(today);
 
-      let optionsHtml = '<option value="all">All Past Dates</option><option value="yesterday">Yesterday</option>';
-      pastDates.forEach(d => {
+      let optionsHtml = '<option value="all">All Dates</option><option value="today">Today</option><option value="yesterday">Yesterday</option>';
+      const olderDates = allDates.filter(d => d !== today && d !== yestDate);
+      olderDates.forEach(d => {
         optionsHtml += `<option value="${d}">${d}</option>`;
       });
       dateSelect.innerHTML = optionsHtml;
-      if (currentSelected && (currentSelected === 'all' || currentSelected === 'yesterday' || pastDates.includes(currentSelected))) {
+      if (currentSelected && (currentSelected === 'all' || currentSelected === 'today' || currentSelected === 'yesterday' || olderDates.includes(currentSelected))) {
         dateSelect.value = currentSelected;
       }
     }
@@ -1014,15 +1028,16 @@ class SkyKinDialerApp {
     const query = searchInput?.value.toLowerCase().trim() || '';
     const statusFilter = document.getElementById('historyStatusFilter')?.value || 'all';
 
-    const yestDate = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-    const pastLeads = this.getPastLeads();
+    const historyLeads = this.getHistoryLeads();
 
-    const filtered = pastLeads.filter(l => {
-      const effDate = l.effective_date || (l.created_at ? l.created_at.split(' ')[0] : '');
+    const filtered = historyLeads.filter(l => {
+      const effDate = l.effective_date || (l.created_at ? l.created_at.split(' ')[0] : today);
 
       // Date match
       if (customDate) {
         if (effDate !== customDate) return false;
+      } else if (dateFilter === 'today') {
+        if (effDate !== today) return false;
       } else if (dateFilter === 'yesterday') {
         if (effDate !== yestDate) return false;
       } else if (dateFilter !== 'all') {
@@ -1046,6 +1061,12 @@ class SkyKinDialerApp {
       }
 
       return true;
+    });
+
+    // Sort newest calls first
+    filtered.sort((a, b) => {
+      if (b.id && a.id) return Number(b.id) - Number(a.id);
+      return 0;
     });
 
     const countTag = document.getElementById('historyTotalRecordsTag');
@@ -1199,13 +1220,13 @@ class SkyKinDialerApp {
   }
 
   exportHistoryCsv() {
-    const pastLeads = this.getPastLeads();
-    if (pastLeads.length === 0) {
+    const historyLeads = this.getHistoryLeads();
+    if (historyLeads.length === 0) {
       this.showToast('No historical records to export.', 'info');
       return;
     }
     let csv = "Date,Customer Name,Phone Number,Scheduled Time,Status,Duration (sec),Notes\n";
-    pastLeads.forEach(l => {
+    historyLeads.forEach(l => {
       const effDate = l.effective_date || (l.created_at ? l.created_at.split(' ')[0] : '');
       csv += `"${effDate}","${(l.customer_name || '').replace(/"/g, '""')}","${l.phone_number}","${l.call_time || ''}","${l.status}","${l.duration_sec || 0}","${(l.notes || '').replace(/"/g, '""')}"\n`;
     });
@@ -1376,7 +1397,8 @@ class SkyKinDialerApp {
       return false;
     }
     const scheduledTs = this.getLeadScheduledTimestamp(lead);
-    return scheduledTs > 0 && Date.now() > scheduledTs;
+    // Scheduled minute has elapsed (current time is 60+ seconds past scheduled timestamp)
+    return scheduledTs > 0 && Date.now() >= (scheduledTs + 60000);
   }
 
   getStatusBadge(st, lead = null) {
@@ -1523,8 +1545,9 @@ class SkyKinDialerApp {
      Scheduled Call Time Parsers & Precise Time Engine
      ───────────────────────────────────────────────────────── */
   isLeadDueForCall(lead) {
-    if (!lead || !lead.call_time) return true;
-    const timeStr = String(lead.call_time).trim();
+    if (!lead) return false;
+    if (this.isLeadPastDue(lead)) return false;
+    const timeStr = String(lead.call_time || '').trim();
     if (timeStr === '' || timeStr.toLowerCase() === 'immediate' || timeStr.toLowerCase() === 'now') {
       return true; // Immediate calls are always ready
     }
@@ -1532,6 +1555,7 @@ class SkyKinDialerApp {
     const scheduledTs = this.getLeadScheduledTimestamp(lead);
     if (scheduledTs <= 0) return true;
 
+    // Due when current time is at or after scheduled time (and not past due)
     return Date.now() >= scheduledTs;
   }
 
@@ -1863,12 +1887,11 @@ class SkyKinDialerApp {
         return !s || s === 'immediate' || s === 'now';
       });
 
-      // 2. Scheduled leads whose time has arrived (scheduled time <= current time)
+      // 2. Scheduled leads whose time is DUE NOW (scheduled time arrived and NOT past due)
       const dueScheduledLeads = pendingLeads.filter(l => {
         const s = String(l.call_time || '').trim().toLowerCase();
         if (!s || s === 'immediate' || s === 'now') return false;
-        const ts = this.getLeadScheduledTimestamp(l);
-        return ts > 0 && now >= ts;
+        return this.isLeadDueForCall(l);
       });
 
       const dueLeads = [...immediateLeads, ...dueScheduledLeads];
@@ -1939,12 +1962,11 @@ class SkyKinDialerApp {
       return ts > now;
     });
 
-    // Due right now leads: scheduled time arrived within last 60 seconds
+    // Due right now leads: reached scheduled timestamp, and NOT past due
     const dueNowLeads = pending.filter(l => {
       const s = String(l.call_time || '').trim().toLowerCase();
       if (!s || s === 'immediate' || s === 'now') return false;
-      const ts = this.getLeadScheduledTimestamp(l);
-      return ts > 0 && now >= ts && (now - ts) <= 60000;
+      return this.isLeadDueForCall(l);
     });
 
     // Priority: Immediate > Due Now > Soonest Future
