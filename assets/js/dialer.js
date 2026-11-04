@@ -2329,23 +2329,46 @@ class SkyKinDialerApp {
   }
 
   async resetLeads() {
+    const now = Date.now();
     this.leads.forEach(l => {
       l.status = 'pending';
       l.duration_sec = 0;
       l.error_message = '';
+      l.retry_count = 0;
+
+      // If the lead's scheduled date or time has passed, set to Immediate so it calls immediately!
+      if (this.isLeadPastDue(l) || !l.call_time) {
+        l.call_time = 'Immediate';
+        l.is_past = false;
+      } else {
+        const ts = this.getLeadScheduledTimestamp(l);
+        if (ts > 0 && now >= (ts + 60000)) {
+          l.call_time = 'Immediate';
+          l.is_past = false;
+        }
+      }
     });
     this.renderLeadsTables();
     this.renderUnansweredTable();
     this.updateLocalStats();
     this.renderActiveChannels();
-    this.showToast('All leads reset to pending.', 'success');
+    this.showToast('All leads reset to pending. Past-due contacts set to Immediate.', 'success');
 
     try {
       const formData = new FormData();
       formData.append('campaign_id', this.campaign?.id || 1);
-      await fetch('api.php?action=reset_leads', { method: 'POST', body: formData });
+      const res = await fetch('api.php?action=reset_leads', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data.success) {
+        await this.loadCampaignData();
+      }
     } catch (e) {
       this.showToast('Failed to sync reset with database', 'error');
+    }
+
+    // If auto-dialer is active, immediately dispatch the queue so calls start right away!
+    if (this.isRunning && !this.isPaused) {
+      this.processOutboundQueue();
     }
   }
 

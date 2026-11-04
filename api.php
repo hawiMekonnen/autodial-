@@ -3,6 +3,8 @@
  * SkyKin Automatic Dialer - Backend API
  */
 
+date_default_timezone_set(getenv('APP_TIMEZONE') ?: 'Africa/Addis_Ababa');
+
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: SAMEORIGIN');
@@ -131,6 +133,9 @@ function validatePhoneNumberInfo(string $raw): array {
 function extractLeadDate(?string $callTime, ?string $createdAt): string {
     $timeStr = trim((string)$callTime);
     if (!empty($timeStr)) {
+        if (stripos($timeStr, 'Tomorrow') !== false) {
+            return date('Y-m-d', strtotime('+1 day'));
+        }
         if (function_exists('parseAnyDateTime')) {
             $ts = parseAnyDateTime($timeStr);
             if ($ts !== null && $ts > 0) {
@@ -158,6 +163,52 @@ function extractLeadDate(?string $callTime, ?string $createdAt): string {
         }
     }
     return date('Y-m-d');
+}
+
+function isLeadDateTimePassed(?string $callTime, ?string $createdAt): bool {
+    $s = trim((string)$callTime);
+    if (empty($s) || strtolower($s) === 'immediate' || strtolower($s) === 'now') {
+        return false;
+    }
+
+    $today = date('Y-m-d');
+    $now = time();
+
+    // 1. Check if effective date is in the past
+    $effDate = extractLeadDate($s, $createdAt);
+    if ($effDate < $today) {
+        return true;
+    }
+    if ($effDate > $today) {
+        return false;
+    }
+
+    // 2. Effective date is TODAY. Check time component.
+    if (preg_match('/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)/i', $s, $m)) {
+        $hours = (int)$m[1];
+        $minutes = (int)$m[2];
+        $seconds = isset($m[3]) && $m[3] !== '' ? (int)$m[3] : 0;
+        $ampm = strtoupper($m[4]);
+        if ($ampm === 'PM' && $hours < 12) $hours += 12;
+        elseif ($ampm === 'AM' && $hours === 12) $hours = 0;
+
+        $target = strtotime(sprintf('%s %02d:%02d:%02d', $today, $hours, $minutes, $seconds));
+        if ($target !== false) {
+            return $now >= ($target + 60);
+        }
+    }
+
+    if (preg_match('/(\d{1,2}):(\d{2})(?::(\d{2}))?/', $s, $m)) {
+        $hours = (int)$m[1];
+        $minutes = (int)$m[2];
+        $seconds = isset($m[3]) && $m[3] !== '' ? (int)$m[3] : 0;
+        $target = strtotime(sprintf('%s %02d:%02d:%02d', $today, $hours, $minutes, $seconds));
+        if ($target !== false) {
+            return $now >= ($target + 60);
+        }
+    }
+
+    return false;
 }
 
 // 1. Get Campaign Dashboard Data
@@ -1047,9 +1098,32 @@ if ($action === 'delete_audio') {
 // 7. Reset Leads
 if ($action === 'reset_leads') {
     $campaignId = (int)($_POST['campaign_id'] ?? 1);
-    $db->prepare("UPDATE leads SET status = 'pending', duration_sec = 0, dtmf_response = '', error_message = '' WHERE campaign_id = ?")
-       ->execute([$campaignId]);
-    jsonOut(['success' => true, 'message' => 'All leads reset to pending.']);
+    $today = date('Y-m-d');
+
+    $stmt = $db->prepare("SELECT id, call_time, created_at FROM leads WHERE campaign_id = ?");
+    $stmt->execute([$campaignId]);
+    $leads = $stmt->fetchAll();
+
+    $stmtMakeImmediate = $db->prepare("UPDATE leads SET status = 'pending', call_time = 'Immediate', duration_sec = 0, dtmf_response = '', error_message = '', retry_count = 0 WHERE id = ?");
+    $stmtKeepTime = $db->prepare("UPDATE leads SET status = 'pending', duration_sec = 0, dtmf_response = '', error_message = '', retry_count = 0 WHERE id = ?");
+
+    $db->beginTransaction();
+    try {
+        foreach ($leads as $l) {
+            if (isLeadDateTimePassed($l['call_time'] ?? '', $l['created_at'] ?? '')) {
+                // Scheduled date or time has passed -> set to Immediate so it calls immediately!
+                $stmtMakeImmediate->execute([$l['id']]);
+            } else {
+                $stmtKeepTime->execute([$l['id']]);
+            }
+        }
+        $db->commit();
+    } catch (Exception $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        jsonOut(['success' => false, 'error' => $e->getMessage()], 500);
+    }
+
+    jsonOut(['success' => true, 'message' => 'All leads reset to pending. Past-due contacts set to Immediate.']);
 }
 
 // 7b. Re-queue Unanswered / Missed Leads back to Pending (with Retry Rules support)
