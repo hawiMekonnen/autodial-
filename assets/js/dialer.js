@@ -1996,19 +1996,6 @@ class SkyKinDialerApp {
       this.renderActiveChannels();
       this.renderLeadsTables();
 
-      // If call completed or answered, deduplicate any duplicate pending entries with identical phone number
-      if (finalStatus === 'completed' || finalStatus === 'ivr_completed' || finalStatus === 'answered') {
-        const currentNormPhone = window.skykinNormalizeEtDial(lead.phone_number);
-        this.leads.forEach(otherLead => {
-          if (Number(otherLead.id) !== Number(lead.id) && otherLead.status === 'pending') {
-            if (window.skykinNormalizeEtDial(otherLead.phone_number) === currentNormPhone) {
-              otherLead.status = 'completed';
-              otherLead.duration_sec = durationSec;
-              this.updateLeadStatusBackend(otherLead.id, 'completed', durationSec, 'Deduplicated (Already Answered)');
-            }
-          }
-        });
-      }
 
       const updRes = await this.updateLeadStatusBackend(lead.id, finalStatus, durationSec, errorMsg);
       if (updRes && updRes.retry_scheduled) {
