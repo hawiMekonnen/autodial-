@@ -227,6 +227,29 @@ class DialerDB {
                 status TEXT DEFAULT 'success',
                 payload_sample TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+
+            // Scheduled Callbacks table
+            "CREATE TABLE IF NOT EXISTS scheduled_callbacks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER,
+                campaign_id INTEGER,
+                customer_name TEXT NOT NULL,
+                phone_number TEXT NOT NULL,
+                scheduled_time DATETIME NOT NULL,
+                assigned_agent TEXT DEFAULT 'Agent1',
+                status TEXT DEFAULT 'pending',
+                notes TEXT DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+
+            // DNC (Do Not Call) Compliance table
+            "CREATE TABLE IF NOT EXISTS dnc_numbers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone_number TEXT UNIQUE NOT NULL,
+                reason TEXT DEFAULT 'Customer opt-out',
+                added_by TEXT DEFAULT 'Agent1',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )"
         ];
 
@@ -249,6 +272,9 @@ class DialerDB {
             $this->pdo->exec("ALTER TABLE leads ADD COLUMN call_time TEXT DEFAULT 'Immediate'");
         } catch (Exception $e) {}
         try {
+            $this->pdo->exec("ALTER TABLE leads ADD COLUMN currency TEXT DEFAULT 'ETB'");
+        } catch (Exception $e) {}
+        try {
             $this->pdo->exec("ALTER TABLE call_logs ADD COLUMN call_time TEXT DEFAULT 'Immediate'");
         } catch (Exception $e) {}
         try {
@@ -262,6 +288,9 @@ class DialerDB {
 
         // Add Retry and Schedule policy columns to campaigns
         foreach ([
+            'type'                  => "'predictive'",
+            'ivr_language'          => "'amharic'",
+            'ivr_message_text'      => "''",
             'calling_method'        => "'auto_schedule'",
             'schedule_strategy'     => "'interval'",
             'schedule_interval_mins'=> "2",
@@ -288,7 +317,9 @@ class DialerDB {
             'line2_enabled'  => "1",
             'sip_server'     => "'webcc.skyconnectsolutions.et'",
             'sip_port'       => "'443'",
-            'sip_domain'     => "'client1.skykin.local'"
+            'sip_domain'     => "'client1.skykin.local'",
+            'agent_status'   => "'ready'",
+            'last_heartbeat' => "CURRENT_TIMESTAMP"
         ] as $col => $def) {
             try {
                 $this->pdo->exec("ALTER TABLE users ADD COLUMN {$col} TEXT DEFAULT {$def}");
