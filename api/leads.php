@@ -6,7 +6,7 @@
  * Supports:
  * - Single or Batch contact injection (JSON or Form POST)
  * - Fields: "name" and "phone" only (no campaign parameter required)
- * - Automatic Ethiopian phone normalization (+2519..., +2517..., 09..., 07...)
+ * - International phone normalization E.164
  * - Intelligent System Auto-Scheduling (staggers calls starting at the present moment)
  * - Audit logging to api_lead_logs
  * - Live endpoint self-documentation via GET request
@@ -225,13 +225,13 @@ try {
             $rawSched = $item['call_time'] ?? $item['schedule'] ?? '';
         }
 
-        $phone = normalizeEthiopianPhone($rawPhone);
+        $phone = normalizePhoneNumber($rawPhone);
         if (empty($phone) || strlen($phone) < 8) {
             $invalid++;
             continue;
         }
 
-        if (empty($rawName) || normalizeEthiopianPhone($rawName) === $phone) {
+        if (empty($rawName) || normalizePhoneNumber($rawName) === $phone) {
             $rawName = 'Customer (' . substr($phone, -4) . ')';
         }
 

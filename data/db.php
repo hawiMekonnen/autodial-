@@ -118,23 +118,39 @@ class DialerDB {
 
     private function initSqliteSchema() {
         $queries = [
-            // Users table (SkyKin agents)
+            // Users table (Roles: admin, viewer)
             "CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 full_name TEXT NOT NULL,
-                extension TEXT NOT NULL,
-                role TEXT DEFAULT 'agent',
-                domain TEXT DEFAULT 'client1.skykin.local',
-                sip_extension TEXT DEFAULT '101',
-                sip_password TEXT DEFAULT '1234',
-                sip_extension2 TEXT DEFAULT '102',
-                sip_password2 TEXT DEFAULT '1234',
-                line2_enabled INTEGER DEFAULT 1,
-                sip_server TEXT DEFAULT 'webcc.skyconnectsolutions.et',
-                sip_port TEXT DEFAULT '443',
-                sip_domain TEXT DEFAULT 'client1.skykin.local',
+                extension TEXT DEFAULT '100',
+                role TEXT DEFAULT 'admin',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+
+            // Settings table
+            "CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+
+            // Configurable Languages table
+            "CREATE TABLE IF NOT EXISTS languages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                is_default INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+
+            // Caller IDs table
+            "CREATE TABLE IF NOT EXISTS caller_ids (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                phone_number TEXT UNIQUE NOT NULL,
+                is_default INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
 
@@ -142,15 +158,15 @@ class DialerDB {
             "CREATE TABLE IF NOT EXISTS campaigns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
-                type TEXT DEFAULT 'predictive',
+                type TEXT DEFAULT 'automated_ivr',
                 status TEXT DEFAULT 'idle',
-                caller_id_name TEXT DEFAULT 'SkyKin Support',
-                caller_id_number TEXT DEFAULT '+251911002233',
-                ivr_language TEXT DEFAULT 'amharic',
+                caller_id_name TEXT DEFAULT '',
+                caller_id_number TEXT DEFAULT '',
+                ivr_language TEXT DEFAULT 'en',
                 ivr_message_text TEXT DEFAULT '',
-                ivr_audio_name TEXT DEFAULT 'Human Welcome Recording (WAV)',
-                ivr_audio_file TEXT DEFAULT 'assets/audio/welcome_human_voice.wav',
-                fusionpbx_ivr_path TEXT DEFAULT '/var/lib/freeswitch/recordings/welcome_human_voice.wav',
+                ivr_audio_name TEXT DEFAULT '',
+                ivr_audio_file TEXT DEFAULT '',
+                fusionpbx_ivr_path TEXT DEFAULT '',
                 pacing_delay_sec INTEGER DEFAULT 2,
                 max_concurrent INTEGER DEFAULT 2,
                 max_retries INTEGER DEFAULT 2,
@@ -166,7 +182,8 @@ class DialerDB {
                 schedule_window_end TEXT DEFAULT '17:00',
                 schedule_batch_size INTEGER DEFAULT 5,
                 schedule_start_time TEXT DEFAULT 'now',
-                created_by TEXT DEFAULT 'Agent1',
+                smart_schedule_plan TEXT DEFAULT '',
+                created_by TEXT DEFAULT 'admin',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
@@ -175,9 +192,10 @@ class DialerDB {
             "CREATE TABLE IF NOT EXISTS leads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 campaign_id INTEGER NOT NULL,
-                customer_name TEXT DEFAULT 'Customer',
+                customer_name TEXT DEFAULT 'Contact',
                 phone_number TEXT NOT NULL,
                 call_time TEXT DEFAULT 'Immediate',
+                custom_data TEXT DEFAULT '{}',
                 notes TEXT DEFAULT '',
                 status TEXT DEFAULT 'pending',
                 duration_sec INTEGER DEFAULT 0,
@@ -197,20 +215,21 @@ class DialerDB {
                 customer_name TEXT,
                 phone_number TEXT,
                 call_time TEXT DEFAULT 'Immediate',
-                agent_extension TEXT,
                 status TEXT,
                 duration_sec INTEGER DEFAULT 0,
+                dtmf_response TEXT DEFAULT '',
                 audio_played TEXT DEFAULT '',
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
 
-            // Audio Files table (Human Recordings / FusionPBX IVRs)
+            // Audio Files table
             "CREATE TABLE IF NOT EXISTS audio_recordings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 filename TEXT NOT NULL,
                 filepath TEXT NOT NULL,
                 fusionpbx_path TEXT DEFAULT '',
+                language_code TEXT DEFAULT 'en',
                 duration_sec INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
@@ -229,7 +248,7 @@ class DialerDB {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
 
-            // Scheduled Callbacks table
+            // Scheduled Unanswered Callbacks
             "CREATE TABLE IF NOT EXISTS scheduled_callbacks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lead_id INTEGER,
@@ -237,18 +256,17 @@ class DialerDB {
                 customer_name TEXT NOT NULL,
                 phone_number TEXT NOT NULL,
                 scheduled_time DATETIME NOT NULL,
-                assigned_agent TEXT DEFAULT 'Agent1',
                 status TEXT DEFAULT 'pending',
                 notes TEXT DEFAULT '',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
 
-            // DNC (Do Not Call) Compliance table
+            // DNC Compliance table
             "CREATE TABLE IF NOT EXISTS dnc_numbers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone_number TEXT UNIQUE NOT NULL,
-                reason TEXT DEFAULT 'Customer opt-out',
-                added_by TEXT DEFAULT 'Agent1',
+                reason TEXT DEFAULT 'Contact opt-out',
+                added_by TEXT DEFAULT 'admin',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )"
         ];
@@ -281,9 +299,9 @@ class DialerDB {
             $this->pdo->exec("ALTER TABLE call_logs ADD COLUMN audio_played TEXT DEFAULT ''");
         } catch (Exception $e) {}
         try {
-            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN ivr_audio_name TEXT DEFAULT 'Human Welcome Recording (WAV)'");
-            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN ivr_audio_file TEXT DEFAULT 'assets/audio/welcome_human_voice.wav'");
-            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN fusionpbx_ivr_path TEXT DEFAULT '/var/lib/freeswitch/recordings/welcome_human_voice.wav'");
+            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN ivr_audio_name TEXT DEFAULT 'ivr2'");
+            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN ivr_audio_file TEXT DEFAULT 'assets/audio/1793961705_ahununu_waiting.wav'");
+            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN fusionpbx_ivr_path TEXT DEFAULT '/var/lib/freeswitch/recordings/1793961705_ahununu_waiting.wav'");
         } catch (Exception $e) {}
 
         // Add Retry and Schedule policy columns to campaigns
@@ -298,10 +316,13 @@ class DialerDB {
             'schedule_window_end'   => "'17:00'",
             'schedule_batch_size'   => "5",
             'schedule_start_time'   => "'now'",
-            'max_retries'           => "2",
-            'retry_delay_min'       => "15",
+            'max_retries'           => "3",
+            'retry_delay_min'       => "120",
             'retry_date_mode'       => "'same_day'",
-            'retry_custom_date'     => "''"
+            'retry_custom_date'     => "''",
+            'dial_ratio'            => "2.1",
+            'max_abandon_rate'      => "2.4",
+            'calling_hours'         => "'standard'"
         ] as $col => $def) {
             try {
                 $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN {$col} " . (is_numeric($def) ? "INTEGER" : "TEXT") . " DEFAULT {$def}");
@@ -326,39 +347,45 @@ class DialerDB {
             } catch (Exception $e) {}
         }
 
-        // Seed default SkyKin agents with secure password
-        $defaultPasswordHash = password_hash('123Newadissagentone', PASSWORD_DEFAULT);
-        $seedUsers = [
-            ['Agent1', $defaultPasswordHash, 'Agent 1', '101', 'agent', 'client1.skykin.local', '101', '1234', '102', '1234', 1, 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['Agent2', $defaultPasswordHash, 'Agent 2', '102', 'agent', 'client1.skykin.local', '102', '1234', '101', '1234', 1, 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['agent', $defaultPasswordHash, 'SkyKin Agent', '101', 'agent', 'client1.skykin.local', '101', '1234', '102', '1234', 1, 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['101', $defaultPasswordHash, 'Agent 101', '101', 'agent', 'client1.skykin.local', '101', '1234', '102', '1234', 1, 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local'],
-            ['admin', $defaultPasswordHash, 'Administrator', '101', 'admin', 'client1.skykin.local', '101', '1234', '102', '1234', 1, 'webcc.skyconnectsolutions.et', '443', 'client1.skykin.local']
-        ];
-
-        $insUser = $this->pdo->prepare("INSERT OR IGNORE INTO users (username, password_hash, full_name, extension, role, domain, sip_extension, sip_password, sip_extension2, sip_password2, line2_enabled, sip_server, sip_port, sip_domain) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        foreach ($seedUsers as $u) {
-            $insUser->execute($u);
+        // Seed default administrator if users table is empty
+        $stmtUsers = $this->pdo->query("SELECT COUNT(*) as count FROM users");
+        if ((int)$stmtUsers->fetchColumn() === 0) {
+            $defaultPasswordHash = password_hash('admin123', PASSWORD_DEFAULT);
+            $insUser = $this->pdo->prepare("INSERT INTO users (username, password_hash, full_name, extension, role) VALUES (?, ?, ?, ?, ?)");
+            $insUser->execute(['admin', $defaultPasswordHash, 'Administrator', '100', 'admin']);
         }
 
-        // Seed audio recordings list
-        $stmtAud = $this->pdo->query("SELECT COUNT(*) as count FROM audio_recordings");
-        if ((int)$stmtAud->fetchColumn() === 0) {
-            $audioItems = [
-                ['Human Welcome Recording (WAV)', 'welcome_human_voice.wav', 'assets/audio/welcome_human_voice.wav', '/var/lib/freeswitch/recordings/welcome_human_voice.wav', 12],
-                ['Opening Long Audio (WAV)', '1788952093_opening_long.wav', 'assets/audio/1788952093_opening_long.wav', '/var/lib/freeswitch/recordings/1788952093_opening_long.wav', 24]
-            ];
-            $insAud = $this->pdo->prepare("INSERT INTO audio_recordings (name, filename, filepath, fusionpbx_path, duration_sec) VALUES (?, ?, ?, ?, ?)");
-            foreach ($audioItems as $a) {
-                $insAud->execute($a);
+        // Seed default languages if empty
+        try {
+            $stmtLang = $this->pdo->query("SELECT COUNT(*) as count FROM languages");
+            if ((int)$stmtLang->fetchColumn() === 0) {
+                $insLang = $this->pdo->prepare("INSERT INTO languages (code, name, is_default) VALUES (?, ?, ?)");
+                $insLang->execute(['en', 'English', 1]);
+                $insLang->execute(['am', 'Amharic', 0]);
+                $insLang->execute(['om', 'Afaan Oromoo', 0]);
             }
-        }
+        } catch (Exception $e) {}
 
-        // Seed default Campaign if none exists (starts clean with 0 leads)
-        $stmt = $this->pdo->query("SELECT COUNT(*) as count FROM campaigns");
-        if ((int)$stmt->fetchColumn() === 0) {
-            $this->pdo->exec("INSERT INTO campaigns (name, status, caller_id_name, caller_id_number, ivr_audio_name, ivr_audio_file, fusionpbx_ivr_path, pacing_delay_sec, max_concurrent, total_leads, completed_leads) 
-                VALUES ('SkyKin Automated Outbound Campaign', 'idle', 'SkyKin Support', '+251911002233', 'Human Welcome Recording (WAV)', 'assets/audio/welcome_human_voice.wav', '/var/lib/freeswitch/recordings/welcome_human_voice.wav', 2, 2, 0, 0)");
-        }
+        // Seed default settings if empty
+        try {
+            $stmtSet = $this->pdo->query("SELECT COUNT(*) as count FROM settings");
+            if ((int)$stmtSet->fetchColumn() === 0) {
+                $defaults = [
+                    'company_name' => 'SkyConnect',
+                    'timezone' => 'Africa/Addis_Ababa',
+                    'currency' => 'USD',
+                    'default_country_code' => '+251',
+                    'available_lines' => '2',
+                    'default_window_start' => '09:00',
+                    'default_window_end' => '17:00',
+                    'max_retries' => '2',
+                    'retry_delay_min' => '15'
+                ];
+                $insDef = $this->pdo->prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
+                foreach ($defaults as $k => $v) {
+                    $insDef->execute([$k, $v]);
+                }
+            }
+        } catch (Exception $e) {}
     }
 }

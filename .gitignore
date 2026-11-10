@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# Backups
+data/backups/
+
 # Logs & Temp files
 *.log
 *.tmp

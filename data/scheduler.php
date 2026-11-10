@@ -13,79 +13,91 @@ if (!function_exists('getDialerTimezone')) {
 @date_default_timezone_set(getDialerTimezone());
 
 /**
- * Normalizes Ethiopian phone numbers into E.164 (+2519... or +2517...)
+ * Generic E.164 phone number normalizer using configurable default country code
  */
-if (!function_exists('normalizeEthiopianPhone')) {
-function normalizeEthiopianPhone(string $raw): string {
+if (!function_exists('normalizePhoneNumber')) {
+function normalizePhoneNumber(string $raw, string $defaultCountryCode = '+251'): string {
     $cleaned = preg_replace('/[^\d+]/', '', trim($raw));
     if (empty($cleaned)) return '';
 
-    if (str_starts_with($cleaned, '00251')) {
-        $cleaned = '+251' . substr($cleaned, 5);
+    if (str_starts_with($cleaned, '+')) {
+        $digits = preg_replace('/\D/', '', $cleaned);
+        if (strlen($digits) >= 7 && strlen($digits) <= 15) {
+            return '+' . $digits;
+        }
+        return '';
     }
-    // 09xxxxxxxx or 07xxxxxxxx -> +2519xxxxxxxx / +2517xxxxxxxx
-    if (preg_match('/^0([97]\d{8})$/', $cleaned, $m)) {
-        return '+251' . $m[1];
+
+    if (str_starts_with($cleaned, '00')) {
+        $digits = substr($cleaned, 2);
+        if (strlen($digits) >= 7 && strlen($digits) <= 15) {
+            return '+' . $digits;
+        }
     }
-    // 9xxxxxxxx or 7xxxxxxxx (9 digits from Excel dropping leading 0)
-    if (preg_match('/^([97]\d{8})$/', $cleaned, $m)) {
-        return '+251' . $m[1];
+
+    $digits = preg_replace('/\D/', '', $cleaned);
+    if (empty($digits)) return '';
+
+    // If starts with 0 (national trunk prefix, e.g. 0939777880, 0712345678, 011...)
+    if (str_starts_with($digits, '0') && strlen($digits) >= 8) {
+        $national = substr($digits, 1);
+        $cc = ltrim($defaultCountryCode, '+');
+        return '+' . $cc . $national;
     }
-    // 011xxxxxxx (Addis Ababa Landline) -> +25111xxxxxxx
-    if (preg_match('/^0(1\d{8})$/', $cleaned, $m)) {
-        return '+251' . $m[1];
+
+    // If 9 digits starting with 7 or 9 (Ethiopian mobile without leading zero, e.g. 939777880 from Excel)
+    if (preg_match('/^[79]\d{8}$/', $digits)) {
+        $cc = ltrim($defaultCountryCode, '+');
+        return '+' . $cc . $digits;
     }
-    // 11xxxxxxx (8-9 digits Addis Ababa Landline without leading 0)
-    if (preg_match('/^(11\d{7})$/', $cleaned, $m)) {
-        return '+251' . $m[1];
+
+    // If 12 digits starting with 251 (e.g. 251939777880)
+    if (preg_match('/^251[79]\d{8}$/', $digits)) {
+        return '+' . $digits;
     }
-    // 2519xxxxxxxx or 2517xxxxxxxx
-    if (preg_match('/^251([1-9]\d{8})$/', $cleaned, $m)) {
-        return '+251' . $m[1];
+
+    // If length is already 10-15 digits
+    if (strlen($digits) >= 10 && strlen($digits) <= 15) {
+        return '+' . $digits;
     }
-    if (preg_match('/^\+251([1-9]\d{8})$/', $cleaned)) {
-        return $cleaned;
-    }
-    // Standard international numbers
-    if (preg_match('/^\+[1-9]\d{7,14}$/', $cleaned)) {
-        return $cleaned;
-    }
-    if (preg_match('/^[1-9]\d{7,14}$/', $cleaned)) {
-        return '+' . $cleaned;
-    }
-    return '';
+
+    // Default: append country code
+    $cc = ltrim($defaultCountryCode, '+');
+    return '+' . $cc . $digits;
 }
 }
 
 /**
- * Validates and identifies phone number operator
+ * Backward compatibility alias
+ */
+if (!function_exists('normalizeEthiopianPhone')) {
+function normalizeEthiopianPhone(string $raw): string {
+    return normalizePhoneNumber($raw, '+251');
+}
+}
+
+/**
+ * Validates and identifies phone number type
  */
 if (!function_exists('validatePhoneNumber')) {
-function validatePhoneNumber(string $raw): array {
+function validatePhoneNumber(string $raw, string $defaultCountryCode = '+251'): array {
     $cleaned = preg_replace('/[^\d+]/', '', trim($raw));
     if (empty($cleaned)) {
         return ['valid' => false, 'error' => 'Empty phone number', 'operator' => 'Unknown', 'formatted' => ''];
     }
 
-    $normalized = normalizeEthiopianPhone($raw);
+    $normalized = normalizePhoneNumber($raw, $defaultCountryCode);
     if (!empty($normalized)) {
-        if (preg_match('/^\+251(9\d{8})$/', $normalized)) {
-            return ['valid' => true, 'operator' => 'Ethio Telecom', 'formatted' => $normalized, 'type' => 'Mobile'];
-        }
-        if (preg_match('/^\+251(7\d{8})$/', $normalized)) {
-            return ['valid' => true, 'operator' => 'Safaricom', 'formatted' => $normalized, 'type' => 'Mobile'];
-        }
-        if (preg_match('/^\+251(11\d{7})$/', $normalized)) {
-            return ['valid' => true, 'operator' => 'Ethio Telecom (Fixed)', 'formatted' => $normalized, 'type' => 'Landline'];
-        }
-        if (preg_match('/^\+[1-9]\d{6,14}$/', $normalized)) {
-            return ['valid' => true, 'operator' => 'International', 'formatted' => $normalized, 'type' => 'International'];
+        $digits = substr($normalized, 1);
+        $len = strlen($digits);
+        if ($len >= 7 && $len <= 15) {
+            return ['valid' => true, 'operator' => 'Standard', 'formatted' => $normalized, 'type' => 'Mobile'];
         }
     }
 
     $digits = preg_replace('/\D/', '', $cleaned);
     $len = strlen($digits);
-    if ($len < 9) {
+    if ($len < 7) {
         return ['valid' => false, 'error' => "Phone number too short ({$len} digits)", 'operator' => 'Invalid', 'formatted' => $cleaned];
     }
     if ($len > 15) {
@@ -269,7 +281,65 @@ function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, arra
 
     $schedules = [];
 
-    if ($strategy === 'window') {
+    if ($strategy === 'smart') {
+        $lines = 2;
+        try {
+            $stmtLines = $db->query("SELECT value FROM settings WHERE key = 'available_lines'");
+            $linesVal = (int)$stmtLines->fetchColumn();
+            if ($linesVal > 0) $lines = $linesVal;
+        } catch (Exception $e) {}
+
+        $startParts = explode(':', $winStart);
+        $startH = (int)($startParts[0] ?? 9);
+        $startM = (int)($startParts[1] ?? 0);
+
+        $endParts = explode(':', $winEnd);
+        $endH = (int)($endParts[0] ?? 17);
+        $endM = (int)($endParts[1] ?? 0);
+
+        $curH = (int)date('G', $baseTs);
+        $curM = (int)date('i', $baseTs);
+        $curTotalMin = $curH * 60 + $curM;
+        $startTotalMin = $startH * 60 + $startM;
+        $endTotalMin = $endH * 60 + $endM;
+
+        if ($curTotalMin < $startTotalMin) {
+            $cursorTs = strtotime(date('Y-m-d', $baseTs) . ' ' . $winStart);
+        } else {
+            // Prioritize dialing today starting from current time
+            $cursorTs = (int)(ceil(($baseTs + 30) / 60) * 60);
+        }
+
+        $slotIntervalSecs = 60;
+        $lineCounter = 0;
+        // Extend evening calling window for today up to 21:00 (9 PM) so late afternoon batches dial today
+        $effectiveDayEnd = max($endTotalMin, 21 * 60);
+
+        for ($i = 0; $i < $count; $i++) {
+            if ((int)date('w', $cursorTs) === 0) {
+                $nextDay = strtotime('+1 day', $cursorTs);
+                $cursorTs = strtotime(date('Y-m-d', $nextDay) . ' ' . $winStart);
+            }
+
+            $dayDate = date('Y-m-d', $cursorTs);
+            $dayEndTs = strtotime($dayDate . ' ' . sprintf('%02d:%02d', floor($effectiveDayEnd / 60), $effectiveDayEnd % 60));
+            if ($cursorTs >= $dayEndTs) {
+                $nextDay = strtotime('+1 day', $cursorTs);
+                if ((int)date('w', $nextDay) === 0) $nextDay = strtotime('+1 day', $nextDay);
+                $cursorTs = strtotime(date('Y-m-d', $nextDay) . ' ' . $winStart);
+                $dayDate = date('Y-m-d', $cursorTs);
+            }
+
+            $timePart = date('h:i A', $cursorTs);
+            $schedules[] = ($dayDate === $todayDate) ? "Today, {$timePart}" : "{$dayDate} {$timePart}";
+
+            $lineCounter++;
+            if ($lineCounter >= $lines) {
+                $lineCounter = 0;
+                $cursorTs += $slotIntervalSecs;
+            }
+        }
+    } elseif ($strategy === 'window') {
         $startWindowTs = strtotime($todayDate . ' ' . $winStart);
         $endWindowTs = strtotime($todayDate . ' ' . $winEnd);
 
@@ -309,5 +379,196 @@ function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, arra
     }
 
     return $schedules;
+}
+}
+
+
+if (!function_exists('generateSmartSchedulePlan')) {
+function generateSmartSchedulePlan(PDO $db, int $campaignId, array $options = []): array {
+    $camp = [];
+    if ($campaignId > 0) {
+        try {
+            $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ?");
+            $stmt->execute([$campaignId]);
+            $camp = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        } catch (Exception $e) {}
+    }
+
+    // 1. Fetch system settings
+    $settings = [];
+    try {
+        $stmt = $db->query("SELECT key, value FROM settings");
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $settings[$row['key']] = $row['value'];
+        }
+    } catch (Exception $e) {}
+
+    $tz = !empty($options['timezone']) ? $options['timezone'] : ($settings['timezone'] ?? getDialerTimezone());
+    @date_default_timezone_set($tz);
+
+    $availableLines = (int)($options['available_lines'] ?? $settings['available_lines'] ?? $camp['max_concurrent'] ?? 2);
+    if ($availableLines < 1) $availableLines = 1;
+
+    $hoursStart = $options['calling_hours_start'] ?? $settings['allowed_calling_hours_start'] ?? $camp['schedule_window_start'] ?? '09:00';
+    $hoursEnd = $options['calling_hours_end'] ?? $settings['allowed_calling_hours_end'] ?? $camp['schedule_window_end'] ?? '17:00';
+
+    $maxRetries = (int)($options['max_retries'] ?? $settings['max_attempts_per_contact'] ?? $camp['max_retries'] ?? 2);
+    $retryGapHours = (int)($options['retry_gap_hours'] ?? $settings['retry_delay_hours'] ?? 3);
+    if ($retryGapHours < 1) $retryGapHours = 3;
+
+    // 2. Count contacts to schedule
+    $totalContacts = (int)($options['total_contacts'] ?? 0);
+    if ($totalContacts <= 0 && $campaignId > 0) {
+        try {
+            $stmt = $db->prepare("SELECT count(*) FROM leads WHERE campaign_id = ? AND status = 'pending'");
+            $stmt->execute([$campaignId]);
+            $totalContacts = (int)$stmt->fetchColumn();
+        } catch (Exception $e) {}
+    }
+    if ($totalContacts <= 0) {
+        $totalContacts = 10; // Default sample batch if completely empty
+    }
+
+    // 3. Analyze Historical Answer Rates by Hour
+    $hourlyRates = [];
+    $totalHistoryCalls = 0;
+    try {
+        $stmt = $db->query("SELECT EXTRACT(HOUR FROM timestamp) as hr, count(*) as cnt, sum(CASE WHEN status ILIKE 'answered' THEN 1 ELSE 0 END) as ans FROM call_logs GROUP BY hr ORDER BY hr");
+        while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $hr = (int)$r['hr'];
+            $cnt = (int)$r['cnt'];
+            $ans = (int)$r['ans'];
+            $totalHistoryCalls += $cnt;
+            $hourlyRates[$hr] = $cnt > 0 ? round(($ans / $cnt), 2) : 0.50;
+        }
+    } catch (Exception $e) {}
+
+    $hasHistory = ($totalHistoryCalls >= 15);
+    $historyExplanation = $hasHistory
+        ? "Plan optimized using historical answer rates from " . number_format($totalHistoryCalls) . " logged calls."
+        : "Initial baseline distribution applied (standard business answer peaks: 10:00 to 12:00 and 14:00 to 16:30). Insufficient call history exists yet.";
+
+    // 4. Calculate Batches and Timeline
+    $startH = (int)explode(':', $hoursStart)[0];
+    $endH = (int)explode(':', $hoursEnd)[0];
+    if ($endH <= $startH) $endH = $startH + 8;
+
+    $callsPerHourPerLine = 24; // 1 call every 2.5 minutes on average
+    $maxCallsPerHour = $availableLines * $callsPerHourPerLine;
+
+    $now = time();
+    $currentHour = (int)date('G', $now);
+    $currentDate = date('Y-m-d', $now);
+
+    // Determine starting date and hour
+    $planDate = $currentDate;
+    $planHour = max($startH, $currentHour + 1);
+    if ($planHour >= $endH) {
+        // Schedule starting tomorrow morning
+        $planDate = date('Y-m-d', strtotime('+1 day', $now));
+        $planHour = $startH;
+    }
+
+    $batches = [];
+    $remaining = $totalContacts;
+    $batchNum = 1;
+    $totalAnsweredEst = 0;
+
+    while ($remaining > 0) {
+        // Skip Sunday
+        $dayOfWeek = date('w', strtotime($planDate));
+        if ($dayOfWeek == 0) {
+            $planDate = date('Y-m-d', strtotime('+1 day', strtotime($planDate)));
+            $planHour = $startH;
+            continue;
+        }
+
+        $slotStart = sprintf('%02d:00', $planHour);
+        $slotEnd = sprintf('%02d:00', $planHour + 1);
+        $hourSlotLabel = "{$slotStart} to {$slotEnd}";
+
+        // Optimal response weighting for this hour
+        $ansProb = 0.65;
+        if ($hasHistory && isset($hourlyRates[$planHour])) {
+            $ansProb = max(0.20, min(0.95, $hourlyRates[$planHour]));
+        } else {
+            if (($planHour >= 10 && $planHour <= 12) || ($planHour >= 14 && $planHour <= 16)) {
+                $ansProb = 0.75;
+            } elseif ($planHour == 12 || $planHour == 13) {
+                $ansProb = 0.50; // Lunch hour
+            } else {
+                $ansProb = 0.60;
+            }
+        }
+
+        $batchCount = min($remaining, $maxCallsPerHour);
+        $batchAnsEst = (int)round($batchCount * $ansProb);
+        $totalAnsweredEst += $batchAnsEst;
+
+        $note = ($ansProb >= 0.70)
+            ? "Scheduled during prime response window."
+            : (($ansProb <= 0.52) ? "Standard pace window (midday break)." : "Regular business window.");
+
+        $dayName = date('l', strtotime($planDate));
+        $batches[] = [
+            'batch_number' => $batchNum++,
+            'date' => $planDate,
+            'day_name' => $dayName,
+            'hour_slot' => $hourSlotLabel,
+            'time_start' => $slotStart,
+            'contacts_count' => $batchCount,
+            'active_lines' => min($availableLines, max(1, (int)ceil($batchCount / $callsPerHourPerLine))),
+            'estimated_answered' => $batchAnsEst,
+            'answer_probability' => round($ansProb * 100) . '%',
+            'explanation' => $note
+        ];
+
+        $remaining -= $batchCount;
+
+        // Advance to next hour
+        $planHour++;
+        if ($planHour >= $endH) {
+            $planDate = date('Y-m-d', strtotime('+1 day', strtotime($planDate)));
+            $planHour = $startH;
+        }
+    }
+
+    $lastBatch = end($batches);
+    $completionDateTime = $lastBatch ? ($lastBatch['date'] . ' at ' . substr($lastBatch['hour_slot'], -5)) : 'Immediate';
+
+    // Estimated time comparison
+    // Sequential single-line dial with 5 min gap: totalContacts * 5 mins
+    $seqMinutes = $totalContacts * 5;
+    $smartMinutes = max(15, count($batches) * 60);
+    $timeSavedMinutes = max(0, $seqMinutes - $smartMinutes);
+    $timeSavedHours = round($timeSavedMinutes / 60, 1);
+    $timeSavedText = ($timeSavedHours >= 1.0)
+        ? "{$timeSavedHours} hours saved"
+        : "{$timeSavedMinutes} minutes saved";
+
+    $rulesUsed = [
+        "Calling window strictly enforced: {$hoursStart} to {$hoursEnd}.",
+        "Full capacity utilized across {$availableLines} active telephony lines.",
+        "Contacts concentrated into high-response response windows.",
+        "Retry gap of {$retryGapHours} hours applied to alternate time windows.",
+        $historyExplanation
+    ];
+
+    return [
+        'campaign_id' => $campaignId,
+        'total_contacts' => $totalContacts,
+        'available_lines' => $availableLines,
+        'calling_hours' => "{$hoursStart} to {$hoursEnd}",
+        'expected_completion' => $completionDateTime,
+        'estimated_answered_count' => $totalAnsweredEst,
+        'estimated_answered_rate' => $totalContacts > 0 ? round(($totalAnsweredEst / $totalContacts) * 100, 1) . '%' : '0%',
+        'estimated_time_saved' => $timeSavedText,
+        'total_batches' => count($batches),
+        'batches' => $batches,
+        'rules_used' => $rulesUsed,
+        'has_history' => $hasHistory,
+        'accepted' => !empty($camp['smart_schedule_plan']),
+        'created_at' => date('Y-m-d H:i:s')
+    ];
 }
 }

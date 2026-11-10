@@ -1,27 +1,30 @@
 /**
- * SkyKin Automatic Outbound Dialer - Production Controller & WebRTC Bridge
- * Direct SIP Calling (with Ethiopian Number Normalization) + Automated IVR Engine
+ * SkyConnect Automated Outbound Voice Dialer - Production Controller & WebRTC Bridge
+ * Generic SIP Outbound Calling & Automated Voice Engine
  */
 
-// Ethiopian Dial Normalization (e.g. 09XXXXXXXX -> 9XXXXXXXX)
-window.skykinNormalizeEtDial = function(raw) {
+// Generic Dial Normalization
+window.skykinNormalizeDial = function(raw, defaultCountryCode) {
   var s = String(raw || '').trim();
   if (!s) return s;
-  if (/^2\d{2}$/.test(s) || /^1\d{2}$/.test(s)) return s; // Internal extensions like 101, 102
+  if (/^2\d{2}$/.test(s) || /^1\d{2}$/.test(s)) return s; // Internal extensions
   var d = s.replace(/\D/g, '');
   if (!d) return s;
-  if (d.indexOf('00251') === 0 && d.length >= 12) d = d.slice(5);
-  else if (d.indexOf('251') === 0 && d.length >= 12) d = d.slice(3);
-  if (d.length === 10 && d.charAt(0) === '0') {
-    if (/^09\d{8}$/.test(d) || /^07\d{8}$/.test(d)) return d.slice(1);
-    return d;
+  if (s.startsWith('+')) return '+' + d;
+  if (d.startsWith('00')) return '+' + d.slice(2);
+  var cc = (defaultCountryCode || '+251').replace(/\D/g, '');
+  if (d.startsWith('0') && d.length >= 8) {
+    return '+' + cc + d.slice(1);
   }
-  if (d.length === 9) {
-    if (/^[97]\d{8}$/.test(d)) return d;
-    if (/^[1-8]\d{8}$/.test(d)) return '0' + d;
+  if (/^[79]\d{8}$/.test(d)) {
+    return '+' + cc + d;
   }
-  return d;
+  if (/^251[79]\d{8}$/.test(d)) {
+    return '+' + d;
+  }
+  return '+' + d;
 };
+window.skykinNormalizeEtDial = window.skykinNormalizeDial;
 
 class SkyKinDialerApp {
   constructor() {
@@ -71,6 +74,23 @@ class SkyKinDialerApp {
     this.selectedCampaignIds = [1];
     this.selectedCampaigns = [];
     this.telephonyMetrics = null;
+    this.isAgentCallActive = false;
+    this.agentCallTimerInterval = null;
+    this.lastCallDuration = 0;
+    this.dialRatio = 2.1;
+    this.maxAbandonRate = 2.4;
+    this.callingHours = 'standard';
+    this.maxAttempts = 3;
+    this.retryAfter = '2h';
+
+    // Unanswered and Callbacks state
+    this.unansweredSubTab = 'unanswered';
+    this.unansDatePreset = 'today';
+    this.unansDateFrom = '';
+    this.unansDateTo = '';
+    this.unansCurrentPage = 1;
+    this.unansRowsPerPage = 25;
+    this.selectedUnansweredIds = new Set();
 
     this.initElements();
     this.initEventListeners();
@@ -466,6 +486,29 @@ class SkyKinDialerApp {
       lineObj.session = inviter;
       this.updateSipStatus();
 
+      // Receive incoming DTMF tones via SIP INFO or delegate events from FreeSWITCH
+      inviter.delegate = {
+        onInfo: (info) => {
+          try {
+            const body = String(info.request?.body || info.request?.message?.body || info.body || '');
+            console.log(`[Line ${lineObj.num}] SIP INFO received:`, body);
+            const match = body.match(/Signal\s*[:=]\s*([0-9*#])/i) || body.match(/([0-9*#])/);
+            if (match && match[1]) {
+              const digit = match[1];
+              console.log(`[Line ${lineObj.num}] Extracted DTMF digit:`, digit);
+              this.handleIvrDtmfInput(lineObj.num, digit);
+            }
+            if (info.accept) info.accept();
+          } catch(e) {
+            console.warn('Error handling SIP INFO:', e);
+          }
+        }
+      };
+      inviter.onCallDTMFReceived = (tone) => {
+        console.log(`[Line ${lineObj.num}] onCallDTMFReceived:`, tone);
+        this.handleIvrDtmfInput(lineObj.num, String(tone));
+      };
+
       inviter.stateChange.addListener(state => {
         if (state === SIP.SessionState.Establishing) {
           if (callbacks.onEstablishing) callbacks.onEstablishing();
@@ -604,33 +647,37 @@ class SkyKinDialerApp {
       }
 
       lineObj.ivrSource = source;
+      const currentToken = {};
+      lineObj.currentPlaybackToken = currentToken;
 
       let finished = false;
       const finishPlayback = () => {
         if (finished) return;
         finished = true;
         lineObj.ivrSource = null;
-        // Wait 1.5 seconds after audio finishes so customer hears the entire message completely
         setTimeout(() => {
-          if (onEnded) onEnded();
-        }, 1500);
+          if (lineObj.currentPlaybackToken === currentToken && onEnded) {
+            onEnded();
+          }
+        }, 500);
       };
 
       source.onended = finishPlayback;
       source.start(0);
 
-      // Fallback safety timer: guarantees completion after full audio length + 2s buffer
+      // Fallback safety timer: guarantees completion after full audio length + 1s buffer
       setTimeout(() => {
-        finishPlayback();
-      }, (durationSec + 2) * 1000);
+        if (lineObj.currentPlaybackToken === currentToken) {
+          finishPlayback();
+        }
+      }, (durationSec + 1) * 1000);
 
       return { source, duration: durationSec };
     } catch (err) {
       console.error(`[Line ${lineNum}] Error in playIvrAudioIntoPeerConnection:`, err);
-      // Wait 8 seconds before hangup if audio decode had an issue so call isn't dropped instantly
       setTimeout(() => {
-        if (onEnded) onEnded();
-      }, 8000);
+        if (lineObj.currentPlaybackToken === currentToken && onEnded) onEnded();
+      }, 5000);
       return null;
     }
   }
@@ -638,8 +685,12 @@ class SkyKinDialerApp {
   stopCurrentIvrAudio(lineNum = null) {
     const stopLineAudio = (lineObj) => {
       if (lineObj) {
+        lineObj.currentPlaybackToken = null;
         if (lineObj.ivrSource) {
-          try { lineObj.ivrSource.stop(); } catch(e) {}
+          try {
+            lineObj.ivrSource.onended = null;
+            lineObj.ivrSource.stop();
+          } catch(e) {}
           lineObj.ivrSource = null;
         }
         if (lineObj.audioCtx) {
@@ -659,23 +710,35 @@ class SkyKinDialerApp {
     }
   }
 
-  sipHangup(lineNum = null) {
+  sipHangup(lineNum = null, triggerFinish = true) {
     this.stopRingbackTone();
     this.stopCurrentIvrAudio(lineNum);
 
-    // Also stop any broadcast audio on virtual/trunk channels
-    this.activeChannels.forEach(ch => {
-      if (!lineNum || ch.lineNum === lineNum) {
-        if (ch.cancelRinging) ch.cancelRinging();
-        if (ch.audioPlayer) {
-          try { ch.audioPlayer.pause(); } catch(e) {}
-          ch.audioPlayer = null;
-        }
-        if (ch.finishCall) {
-          ch.finishCall('completed', ch.duration || 1);
-        }
+    const stopDtmfDetector = (lineObj) => {
+      if (lineObj && lineObj.dtmfAudioCtx) {
+        try { lineObj.dtmfAudioCtx.close(); } catch(e){}
+        lineObj.dtmfAudioCtx = null;
       }
-    });
+    };
+    if (lineNum === 1) stopDtmfDetector(this.line1);
+    else if (lineNum === 2) stopDtmfDetector(this.line2);
+    else { stopDtmfDetector(this.line1); stopDtmfDetector(this.line2); }
+
+    if (triggerFinish) {
+      // Also stop any broadcast audio on virtual/trunk channels
+      this.activeChannels.forEach(ch => {
+        if (!lineNum || ch.lineNum === lineNum) {
+          if (ch.cancelRinging) ch.cancelRinging();
+          if (ch.audioPlayer) {
+            try { ch.audioPlayer.pause(); } catch(e) {}
+            ch.audioPlayer = null;
+          }
+          if (ch.finishCall) {
+            ch.finishCall('completed', ch.duration || 1);
+          }
+        }
+      });
+    }
 
     const hangupSession = (lineObj) => {
       if (lineObj && lineObj.session) {
@@ -765,6 +828,146 @@ class SkyKinDialerApp {
     };
   }
 
+  setupRemoteDtmfDetector(pc, lineNum = 1) {
+    if (!pc) return;
+    try {
+      const lineObj = lineNum === 2 ? this.line2 : this.line1;
+      if (lineObj.dtmfAudioCtx) {
+        try { lineObj.dtmfAudioCtx.close(); } catch(e) {}
+        lineObj.dtmfAudioCtx = null;
+      }
+
+      const attachToTrack = (track) => {
+        if (!track || track.kind !== 'audio') return;
+        try {
+          const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+          const audioCtx = new AudioCtxClass();
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume().catch(() => {});
+          }
+          const stream = new MediaStream([track]);
+          const source = audioCtx.createMediaStreamSource(stream);
+
+          const bufferSize = 1024;
+          const scriptNode = audioCtx.createScriptProcessor ? audioCtx.createScriptProcessor(bufferSize, 1, 1) : null;
+          if (!scriptNode) return;
+
+          const sRate = audioCtx.sampleRate;
+          const dtmfFrequencies = {
+            low: [697, 770, 852, 941],
+            high: [1209, 1336, 1477]
+          };
+          const dtmfMap = {
+            '697,1209': '1', '697,1336': '2', '697,1477': '3',
+            '770,1209': '4', '770,1336': '5', '770,1477': '6',
+            '852,1209': '7', '852,1336': '8', '852,1477': '9',
+            '941,1209': '*', '941,1336': '0', '941,1477': '#'
+          };
+
+          const goertzel = (samples, targetFreq, sampleRate) => {
+            const k = Math.round((samples.length * targetFreq) / sampleRate);
+            const w = (2 * Math.PI * k) / samples.length;
+            const cosine = Math.cos(w);
+            const coeff = 2 * cosine;
+            let q0 = 0, q1 = 0, q2 = 0;
+            for (let i = 0; i < samples.length; i++) {
+              q0 = coeff * q1 - q2 + samples[i];
+              q2 = q1;
+              q1 = q0;
+            }
+            return q1 * q1 + q2 * q2 - q1 * q2 * coeff;
+          };
+
+          let lastDetected = null;
+          let detectCount = 0;
+
+          scriptNode.onaudioprocess = (audioProcessingEvent) => {
+            const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
+            let totalEnergy = 0;
+            for (let i = 0; i < inputData.length; i++) {
+              totalEnergy += inputData[i] * inputData[i];
+            }
+            if (totalEnergy < 0.02) {
+              detectCount = 0;
+              lastDetected = null;
+              return;
+            }
+
+            let maxLowFreq = null, maxLowMag = 0, secondLowMag = 0;
+            let maxHighFreq = null, maxHighMag = 0, secondHighMag = 0;
+
+            for (const f of dtmfFrequencies.low) {
+              const mag = goertzel(inputData, f, sRate);
+              if (mag > maxLowMag) {
+                secondLowMag = maxLowMag;
+                maxLowMag = mag;
+                maxLowFreq = f;
+              } else if (mag > secondLowMag) {
+                secondLowMag = mag;
+              }
+            }
+            for (const f of dtmfFrequencies.high) {
+              const mag = goertzel(inputData, f, sRate);
+              if (mag > maxHighMag) {
+                secondHighMag = maxHighMag;
+                maxHighMag = mag;
+                maxHighFreq = f;
+              } else if (mag > secondHighMag) {
+                secondHighMag = mag;
+              }
+            }
+
+            const isToneDominant = (maxLowMag > 2.0) && (maxHighMag > 2.0) &&
+                                  (maxLowMag > 1.6 * (secondLowMag + 0.1)) &&
+                                  (maxHighMag > 1.6 * (secondHighMag + 0.1));
+
+            if (isToneDominant) {
+              const key = `${maxLowFreq},${maxHighFreq}`;
+              const digit = dtmfMap[key];
+              if (digit) {
+                if (digit === lastDetected) {
+                  detectCount++;
+                  if (detectCount === 2) {
+                    console.log(`[Line ${lineNum}] In-band DTMF detected on audio stream:`, digit);
+                    this.handleIvrDtmfInput(lineNum, digit);
+                  }
+                } else {
+                  lastDetected = digit;
+                  detectCount = 1;
+                }
+                return;
+              }
+            }
+            detectCount = 0;
+            lastDetected = null;
+          };
+
+          source.connect(scriptNode);
+          const muteGain = audioCtx.createGain();
+          muteGain.gain.value = 0;
+          scriptNode.connect(muteGain);
+          muteGain.connect(audioCtx.destination);
+
+          lineObj.dtmfAudioCtx = audioCtx;
+        } catch(err) {
+          console.warn('attachToTrack error:', err);
+        }
+      };
+
+      const receivers = pc.getReceivers ? pc.getReceivers() : [];
+      const audioReceiver = receivers.find(r => r.track && r.track.kind === 'audio');
+      if (audioReceiver && audioReceiver.track) {
+        attachToTrack(audioReceiver.track);
+      } else {
+        pc.addEventListener('track', (e) => {
+          if (e.track && e.track.kind === 'audio') attachToTrack(e.track);
+        }, { once: true });
+      }
+    } catch(e) {
+      console.warn('DTMF audio detector setup error:', e);
+    }
+  }
+
   startRingbackTone() {
     this.stopRingbackTone();
     // Computer speakers remain silent during dialing
@@ -846,9 +1049,13 @@ class SkyKinDialerApp {
       } else if (campaignInput !== null && campaignInput !== undefined) {
         ids = [Number(campaignInput)];
       } else if (this.selectedCampaignIds && this.selectedCampaignIds.length > 0) {
-        ids = this.selectedCampaignIds.map(Number);
+        ids = this.selectedCampaignIds.map(Number).filter(n => n > 0);
+      } else if (this.activeCampaignId) {
+        ids = [Number(this.activeCampaignId)];
+      } else if (this.campaign?.id) {
+        ids = [Number(this.campaign.id)];
       } else {
-        ids = [this.activeCampaignId || this.campaign?.id || 1];
+        ids = [];
       }
 
       this.selectedCampaignIds = ids;
@@ -856,11 +1063,21 @@ class SkyKinDialerApp {
         this.activeCampaignId = ids[0];
       }
 
-      const res = await fetch(`api.php?action=get_campaign_data&campaign_ids=${encodeURIComponent(ids.join(','))}`);
+      const q = ids.length > 0 ? `campaign_ids=${encodeURIComponent(ids.join(','))}` : '';
+      const res = await fetch(`api.php?action=get_campaign_data${q ? '&' + q : ''}`);
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Failed to load');
 
       this.campaign = data.campaign;
+      if (this.campaign && this.campaign.ivr_responses) {
+        try {
+          this.ivrResponses = typeof this.campaign.ivr_responses === 'string'
+            ? JSON.parse(this.campaign.ivr_responses)
+            : this.campaign.ivr_responses;
+        } catch(e) {
+          this.ivrResponses = null;
+        }
+      }
       this.selectedCampaigns = data.selected_campaigns || (data.campaign ? [data.campaign] : []);
       this.leads = data.leads || [];
       this.stats = data.stats || {};
@@ -899,6 +1116,8 @@ class SkyKinDialerApp {
       this.renderDialerCampaignSelector();
       this.renderStats();
       this.renderLeadsTables();
+      this.renderAgentScreen();
+      this.renderPacingAndComplianceSettings();
       this.renderActiveChannels();
       this.renderUnansweredTable();
       this.renderLogsTable(this.recentLogs);
@@ -909,9 +1128,6 @@ class SkyKinDialerApp {
       // Phase 1 updates
       this.loadCampaignsOverview();
       this.updateDesignerUI();
-
-      // Phase 2 updates
-      this.renderAgentScreen();
 
       // Phase 3 & 4 updates
       this.loadCallbacksList();
@@ -936,14 +1152,14 @@ class SkyKinDialerApp {
     if (sel && campaigns.length > 0) {
       let optionsHtml = '';
       if (isMulti) {
-        optionsHtml += `<option value="multi" selected>📋 Multiple Campaigns (${selectedIds.length} Selected)</option>`;
+        optionsHtml += `<option value="multi" selected>Multiple Campaigns (${selectedIds.length} Selected)</option>`;
       }
       campaigns.forEach(c => {
         const isSelected = !isMulti && selectedIds.includes(Number(c.id));
         const count = c.total_leads_count || c.total_leads || 0;
         optionsHtml += `<option value="${c.id}" ${isSelected ? 'selected' : ''}>${this.escapeHtml(c.name)} &middot; ${count} lead${count === 1 ? '' : 's'}</option>`;
       });
-      optionsHtml += `<option value="all">⚡ Select All Campaigns Combined</option>`;
+      optionsHtml += `<option value="all">Select All Campaigns Combined</option>`;
       sel.innerHTML = optionsHtml;
     }
 
@@ -957,7 +1173,7 @@ class SkyKinDialerApp {
             <input type="checkbox" value="${c.id}" ${checked ? 'checked' : ''} onchange="app.handleCampaignCheckboxToggle(${c.id}, this.checked)" style="width:17px;height:17px;accent-color:#00A651;cursor:pointer;">
             <div style="flex:1;min-width:0;">
               <div style="font-weight:700;font-size:12.5px;color:#143522;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${this.escapeHtml(c.name)}</div>
-              <div style="font-size:11px;color:#526e5f;">${count} contacts &bull; Caller ID: ${this.escapeHtml(c.caller_id_number || '+251911002233')}</div>
+              <div style="font-size:11px;color:#526e5f;">${count} contacts &bull; Caller ID: ${this.escapeHtml(c.caller_id_number || 'Default')}</div>
             </div>
           </label>
         `;
@@ -1006,6 +1222,7 @@ class SkyKinDialerApp {
 
     const campId = Number(val);
     if (!campId) return;
+    this.activeLead = null;
     this.selectedCampaignIds = [campId];
     this.activeCampaignId = campId;
     this.loadCampaignData([campId]);
@@ -1061,88 +1278,55 @@ class SkyKinDialerApp {
       this.telephonyMetrics = metrics;
     } else if (!this.telephonyMetrics) {
       this.telephonyMetrics = {
-        agents_ready: 1,
-        dialing_now: 0,
-        abandon_rate: 0.0,
-        abandon_rate_formatted: '0.0%',
-        abandon_target_ok: true,
-        avg_talk_time_formatted: '00:00'
+        active_calls: 0,
+        available_lines: 2,
+        answered_rate: 0.0,
+        answered_rate_formatted: '0.0%',
+        avg_duration_sec: 0,
+        avg_duration_formatted: '00:00'
       };
     }
 
     const m = this.telephonyMetrics;
+    const activeCalls = m.active_calls !== undefined ? m.active_calls : (m.dialing_now || 0);
+    const availLines = m.available_lines !== undefined ? m.available_lines : 2;
+    const answeredRate = m.answered_rate_formatted || (typeof m.answered_rate === 'number' ? m.answered_rate.toFixed(1) + '%' : '0.0%');
+    const avgDuration = m.avg_duration_formatted || m.avg_talk_time_formatted || '00:00';
 
-    // Real live agent count: use server count, ensure at least 1 if SIP registered
-    const sipReady = (this.line1?.isRegistered || this.line2?.isRegistered);
-    const serverAgents = parseInt(m.agents_ready, 10) || 0;
-    const finalAgentsReady = Math.max(serverAgents, sipReady ? 1 : 0);
+    // 1. Update Campaigns Overview Cards (Real Data)
+    const elActive = document.getElementById('kpiActiveCalls');
+    const elAvail = document.getElementById('kpiAvailableLines');
+    const elAnsRate = document.getElementById('kpiAnsweredRate');
+    const elAvgDur = document.getElementById('kpiAvgDuration');
 
-    // Real dialing now count: combine active browser channels + server leads in calling/ringing
-    const liveBrowserDialing = (this.activeChannels && this.activeChannels.size) ? this.activeChannels.size : 0;
-    const serverDialing = parseInt(m.dialing_now, 10) || 0;
-    const finalDialingNow = Math.max(liveBrowserDialing, serverDialing);
+    if (elActive) elActive.textContent = activeCalls;
+    if (elAvail) elAvail.textContent = availLines;
+    if (elAnsRate) elAnsRate.textContent = answeredRate;
+    if (elAvgDur) elAvgDur.textContent = avgDuration;
 
-    // Abandon rate & regulatory compliance check (< 3.0% target)
-    const abandonRateNum = typeof m.abandon_rate === 'number' ? m.abandon_rate : parseFloat(m.abandon_rate || '0');
-    const abandonFormatted = m.abandon_rate_formatted || (abandonRateNum.toFixed(1) + '%');
-    const isCompliant = abandonRateNum <= 3.0;
-
-    // Avg talk time
-    const avgTalk = m.avg_talk_time_formatted || '00:00';
-
-    // 1. Update Campaigns Overview Cards
-    const elKpiAgents = document.getElementById('kpiAgentsReady');
-    const elKpiDialing = document.getElementById('kpiDialingNow');
-    const elKpiAbandon = document.getElementById('kpiAbandonRate');
-    const elKpiAbandonLbl = document.getElementById('kpiAbandonRateLbl');
-    const elKpiAvgTalk = document.getElementById('kpiAvgTalkTime');
-
-    if (elKpiAgents) elKpiAgents.textContent = finalAgentsReady;
-    if (elKpiDialing) elKpiDialing.textContent = finalDialingNow;
-    if (elKpiAbandon) {
-      elKpiAbandon.textContent = abandonFormatted;
-      elKpiAbandon.className = 'camp-metric-val ' + (isCompliant ? 'green' : 'red');
-    }
-    if (elKpiAbandonLbl) {
-      elKpiAbandonLbl.innerHTML = isCompliant 
-        ? 'Abandon rate &bull; <span style="color:#00A651;font-weight:600;">Compliant (&lt;3%)</span>' 
-        : 'Abandon rate &bull; <span style="color:#dc2626;font-weight:600;">Above 3% Target</span>';
-    }
-    if (elKpiAvgTalk) elKpiAvgTalk.textContent = avgTalk;
-
-    // 2. Update Agent Screen / Softphone Screen Cards
-    const elAgentAgents = document.getElementById('agentKpiAgentsReady');
+    // 2. Update Dialer Tab Agent Cards (if present)
+    const elAgentReady = document.getElementById('agentKpiAgentsReady');
     const elAgentDialing = document.getElementById('agentKpiDialingNow');
     const elAgentAbandon = document.getElementById('agentKpiAbandonRate');
-    const elAgentAbandonLbl = document.getElementById('agentKpiAbandonRateLbl');
     const elAgentAvgTalk = document.getElementById('agentKpiAvgTalkTime');
 
-    if (elAgentAgents) elAgentAgents.textContent = finalAgentsReady;
-    if (elAgentDialing) elAgentDialing.textContent = finalDialingNow;
-    if (elAgentAbandon) {
-      elAgentAbandon.textContent = abandonFormatted;
-      elAgentAbandon.className = 'camp-metric-val ' + (isCompliant ? 'green' : 'red');
-    }
-    if (elAgentAbandonLbl) {
-      elAgentAbandonLbl.innerHTML = isCompliant 
-        ? 'Abandon rate &bull; <span style="color:#00A651;font-weight:600;">Compliant (&lt;3%)</span>' 
-        : 'Abandon rate &bull; <span style="color:#dc2626;font-weight:600;">Above 3% Target</span>';
-    }
-    if (elAgentAvgTalk) elAgentAvgTalk.textContent = avgTalk;
+    if (elAgentReady) elAgentReady.textContent = (m.agents_ready !== undefined ? m.agents_ready : 1);
+    if (elAgentDialing) elAgentDialing.textContent = activeCalls;
+    if (elAgentAbandon) elAgentAbandon.textContent = (m.abandon_rate !== undefined ? m.abandon_rate : '0%');
+    if (elAgentAvgTalk) elAgentAvgTalk.textContent = avgDuration;
 
-    // 3. Update Pacing & Compliance Chips
-    const elPacingAgents = document.getElementById('pacingAgentsReady');
+    // 3. Update Pacing & Compliance Metrics Cards
+    const elPacingReady = document.getElementById('pacingAgentsReady');
     const elPacingDialing = document.getElementById('pacingDialingNow');
     const elPacingAbandon = document.getElementById('pacingAbandonRate');
     const elPacingAvgTalk = document.getElementById('pacingAvgTalk');
 
-    if (elPacingAgents) elPacingAgents.textContent = finalAgentsReady;
-    if (elPacingDialing) elPacingDialing.textContent = finalDialingNow;
-    if (elPacingAbandon) {
-      elPacingAbandon.textContent = abandonFormatted;
-      elPacingAbandon.style.color = isCompliant ? '#00A651' : '#dc2626';
-    }
-    if (elPacingAvgTalk) elPacingAvgTalk.textContent = avgTalk;
+    if (elPacingReady) elPacingReady.textContent = (m.agents_ready !== undefined ? m.agents_ready : 1);
+    if (elPacingDialing) elPacingDialing.textContent = activeCalls;
+    if (elPacingAbandon) elPacingAbandon.textContent = (m.abandon_rate !== undefined ? m.abandon_rate : '0.0%');
+    if (elPacingAvgTalk) elPacingAvgTalk.textContent = avgDuration;
+
+    this.checkAbandonCompliance();
   }
 
   startTelephonyMetricsHeartbeat() {
@@ -1229,15 +1413,10 @@ class SkyKinDialerApp {
         if (!matchedStatus) return false;
       }
 
-      // Type filter — match the stored type value (agentless, progressive, preview, predictive/default)
+      // Type filter: match the stored type value
       if (typeVal) {
         const ct = (c.type || '').toLowerCase();
-        // predictive is the default — empty type or 'predictive' both count
-        if (typeVal === 'predictive') {
-          if (ct !== 'predictive' && ct !== '' && ct !== 'agent') return false;
-        } else {
-          if (ct !== typeVal) return false;
-        }
+        if (ct !== typeVal && typeVal !== 'all') return false;
       }
 
       return true;
@@ -1270,10 +1449,19 @@ class SkyKinDialerApp {
     }
 
     if (!campaigns || campaigns.length === 0) {
-      const msg = totalAll === 0
-        ? 'No campaigns found. Create one using the form on the right.'
-        : 'No campaigns match your search or filters.';
-      tbody.innerHTML = `<tr class="camp-table-row"><td colspan="5" style="padding:28px;text-align:center;color:#64748b;font-size:13px;">${msg}</td></tr>`;
+      if (totalAll === 0) {
+        tbody.innerHTML = `
+          <tr class="camp-table-row">
+            <td colspan="5" style="padding:40px 20px;text-align:center;">
+              <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:6px;">No campaigns yet</div>
+              <div style="font-size:13px;color:#64748b;margin-bottom:16px;">Create your first automated outbound campaign to start dialing.</div>
+              <button type="button" class="btn btn-primary" onclick="document.getElementById('newCampaignNameInput')?.focus(); document.getElementById('newCampaignNameInput')?.scrollIntoView({behavior:'smooth'});">Create campaign</button>
+            </td>
+          </tr>
+        `;
+      } else {
+        tbody.innerHTML = `<tr class="camp-table-row"><td colspan="5" style="padding:28px;text-align:center;color:#64748b;font-size:13px;">No campaigns match your search or filters.</td></tr>`;
+      }
       return;
     }
 
@@ -1299,18 +1487,13 @@ class SkyKinDialerApp {
         progressText = `0% · 0 of 0`;
       }
 
-      let typeDisplay = 'Predictive';
-      if (c.type === 'agentless')   typeDisplay = 'Agentless';
-      else if (c.type === 'progressive') typeDisplay = 'Progressive';
-      else if (c.type === 'preview')    typeDisplay = 'Preview';
-      else if (c.type) typeDisplay = c.type.charAt(0).toUpperCase() + c.type.slice(1);
-
-      const callerId = c.caller_id_number || '+251911002233';
+      const typeDisplay = 'Automated IVR';
+      const callerId = c.caller_id_number || 'Default';
 
       return `
-        <tr class="camp-table-row">
+        <tr class="camp-table-row" style="cursor:pointer;" onclick="selectCampaignForDesigner(${c.id})">
           <td style="padding:14px 12px;vertical-align:middle;">
-            <div style="font-weight:700;color:#0f172a;font-size:13.5px;line-height:1.3;">${this.escapeHtml(c.name)}</div>
+            <div style="font-weight:700;color:#0f172a;font-size:13.5px;line-height:1.3;cursor:pointer;" onclick="selectCampaignForDesigner(${c.id})">${this.escapeHtml(c.name)}</div>
             <div style="font-size:11.5px;color:#64748b;margin-top:2px;">Caller ID ${this.escapeHtml(callerId)}</div>
           </td>
           <td style="padding:14px 12px;vertical-align:middle;color:#334155;font-size:13px;font-weight:500;">
@@ -1333,7 +1516,7 @@ class SkyKinDialerApp {
               <div class="camp-progress-fill" style="width:${pct}%;"></div>
             </div>
           </td>
-          <td style="padding:14px 12px;vertical-align:middle;text-align:right;white-space:nowrap;">
+          <td style="padding:14px 12px;vertical-align:middle;text-align:right;white-space:nowrap;" onclick="event.stopPropagation()">
             <button type="button" class="btn btn-sm btn-success" style="padding:4px 10px;font-size:12px;font-weight:700;margin-right:4px;" onclick="app.openCampaignInQueue(${c.id})" title="Launch Outbound Dialer for this Campaign">Dial</button>
             <button type="button" class="camp-btn-design" onclick="selectCampaignForDesigner(${c.id})" title="Configure Audio, TTS &amp; IVR Message">Design</button>
             <button type="button" class="camp-btn-more" onclick="app.openCampaignActionMenu(${c.id}, event)" title="More options">More</button>
@@ -1417,21 +1600,49 @@ class SkyKinDialerApp {
   handleScheduleStrategyChange(val) {
     const rowInt = document.getElementById('rowScheduleInterval');
     const rowWin = document.getElementById('rowScheduleWindow');
-    const rowBatch = document.getElementById('rowScheduleBatch');
-    if (rowInt) rowInt.style.display = (val === 'interval' || val === 'batch') ? 'block' : 'none';
+    const smartOffer = document.getElementById('newCampSmartOffer');
+
+    if (rowInt) rowInt.style.display = (val === 'interval') ? 'block' : 'none';
     if (rowWin) rowWin.style.display = (val === 'window') ? 'block' : 'none';
-    if (rowBatch) rowBatch.style.display = (val === 'batch') ? 'block' : 'none';
+    if (smartOffer) {
+      if (val === 'smart' && this.pendingCampaignFile) {
+        smartOffer.style.display = 'block';
+      } else {
+        smartOffer.style.display = 'none';
+      }
+    }
+  }
+
+  approveSmartScheduleSuggestion() {
+    this.smartScheduleApproved = true;
+    const actions = document.getElementById('smartOfferActions');
+    if (actions) actions.style.display = 'none';
+
+    const approved = document.getElementById('smartOfferApproved');
+    if (approved) approved.style.display = 'flex';
+
+    this.showToast('Time-saving schedule approved: Contacts will be dispatched concurrently.', 'success');
+  }
+
+  rejectSmartScheduleSuggestion() {
+    this.smartScheduleApproved = false;
+    const stratSel = document.getElementById('newCampaignScheduleStrategy');
+    if (stratSel) stratSel.value = 'interval';
+    this.handleScheduleStrategyChange('interval');
+
+    const offerEl = document.getElementById('newCampSmartOffer');
+    if (offerEl) offerEl.style.display = 'none';
+
+    this.showToast('Switched to standard interval scheduling.', 'info');
   }
 
   handleDesignerCallingMethodChange(val) {
     const rowInt = document.getElementById('designerRowInterval');
     const rowWin = document.getElementById('designerRowWindow');
-    const rowBatch = document.getElementById('designerRowBatch');
-    const strat = document.getElementById('designerScheduleStrategy')?.value || 'interval';
+    const strat = document.getElementById('designerScheduleStrategy')?.value || 'smart';
     if (val === 'manual') {
       if (rowInt) rowInt.style.display = 'none';
       if (rowWin) rowWin.style.display = 'none';
-      if (rowBatch) rowBatch.style.display = 'none';
     } else {
       this.handleDesignerScheduleStrategyChange(strat);
     }
@@ -1440,38 +1651,28 @@ class SkyKinDialerApp {
   handleDesignerScheduleStrategyChange(val) {
     const rowInt = document.getElementById('designerRowInterval');
     const rowWin = document.getElementById('designerRowWindow');
-    const rowBatch = document.getElementById('designerRowBatch');
-    if (rowInt) rowInt.style.display = (val === 'interval' || val === 'batch') ? 'block' : 'none';
+    if (rowInt) rowInt.style.display = (val === 'interval') ? 'block' : 'none';
     if (rowWin) rowWin.style.display = (val === 'window') ? 'block' : 'none';
-    if (rowBatch) rowBatch.style.display = (val === 'batch') ? 'block' : 'none';
   }
 
   handleUploadStrategyChange(val) {
     const colInt = document.getElementById('uploadColInterval');
     const colWin = document.getElementById('uploadColWindow');
-    const colBatch = document.getElementById('uploadColBatch');
-    const lblInt = document.getElementById('uploadLblInterval');
     const helpWin = document.getElementById('uploadWindowHelpText');
 
-    if (colInt) colInt.style.display = (val === 'interval' || val === 'batch') ? 'block' : 'none';
+    if (colInt) colInt.style.display = (val === 'interval') ? 'block' : 'none';
     if (colWin) colWin.style.display = (val === 'window') ? 'block' : 'none';
-    if (colBatch) colBatch.style.display = (val === 'batch') ? 'block' : 'none';
     if (helpWin) helpWin.style.display = (val === 'window') ? 'block' : 'none';
-    if (lblInt) lblInt.textContent = (val === 'batch') ? 'Wave Interval' : 'Stagger Interval';
   }
 
   handleManualStrategyChange(val) {
     const colInt = document.getElementById('manualColInterval');
     const colWin = document.getElementById('manualColWindow');
-    const colBatch = document.getElementById('manualColBatch');
-    const lblInt = document.getElementById('manualLblInterval');
     const helpWin = document.getElementById('manualWindowHelpText');
 
-    if (colInt) colInt.style.display = (val === 'interval' || val === 'batch') ? 'block' : 'none';
+    if (colInt) colInt.style.display = (val === 'interval') ? 'block' : 'none';
     if (colWin) colWin.style.display = (val === 'window') ? 'block' : 'none';
-    if (colBatch) colBatch.style.display = (val === 'batch') ? 'block' : 'none';
     if (helpWin) helpWin.style.display = (val === 'window') ? 'block' : 'none';
-    if (lblInt) lblInt.textContent = (val === 'batch') ? 'Wave Interval' : 'Stagger Interval';
   }
 
   async handleNewCampaignWizardSubmit(e) {
@@ -1479,14 +1680,16 @@ class SkyKinDialerApp {
     const name = document.getElementById('newCampaignNameInput')?.value.trim();
     const type = document.getElementById('newCampaignTypeSelect')?.value || 'bill_reminder';
     const mode = document.getElementById('newCampaignModeSelect')?.value || 'agentless';
-    const callerId = document.getElementById('newCampaignCallerIdSelect')?.value || '+251911002233';
+    const callerIdSelect = document.getElementById('newCampaignCallerIdSelect');
+    const callerId = callerIdSelect?.value || '';
+    const callerIdName = callerIdSelect?.selectedOptions?.[0]?.dataset?.name || 'SkyConnect';
+    const lang = document.getElementById('newCampaignLanguageSelect')?.value || 'en';
 
     const callingMethod = document.getElementById('newCampaignCallingMethodSelect')?.value || 'auto_schedule';
-    const scheduleStrategy = document.getElementById('newCampaignScheduleStrategy')?.value || 'interval';
+    const scheduleStrategy = document.getElementById('newCampaignScheduleStrategy')?.value || (this.smartScheduleApproved ? 'smart' : 'interval');
     const scheduleInterval = document.getElementById('newCampaignScheduleInterval')?.value || '5';
     const windowStart = document.getElementById('newCampaignWindowStart')?.value || '09:00';
     const windowEnd = document.getElementById('newCampaignWindowEnd')?.value || '17:00';
-    const batchSize = document.getElementById('newCampaignBatchSize')?.value || '5';
 
     if (!name) {
       this.showToast('Please enter a campaign name', 'warning');
@@ -1496,16 +1699,15 @@ class SkyKinDialerApp {
     const formData = new FormData();
     formData.append('name', name);
     formData.append('type', mode);
-    formData.append('caller_id_name', 'Ethio Telecom');
+    formData.append('caller_id_name', callerIdName);
     formData.append('caller_id_number', callerId);
-    formData.append('ivr_language', 'amharic');
+    formData.append('ivr_language', lang);
 
     formData.append('calling_method', callingMethod);
     formData.append('schedule_strategy', scheduleStrategy);
     formData.append('schedule_interval_mins', scheduleInterval);
     formData.append('schedule_window_start', windowStart);
     formData.append('schedule_window_end', windowEnd);
-    formData.append('schedule_batch_size', batchSize);
 
     try {
       const res = await fetch('api.php?action=create_campaign', { method: 'POST', body: formData });
@@ -1514,7 +1716,9 @@ class SkyKinDialerApp {
         const newCampId = Number(data.campaign_id);
         this.activeCampaignId = newCampId;
         this.showToast(`Campaign "${name}" created!`, 'success');
-        await this.loadCampaignsOverview();
+
+        const tabNameEl = document.getElementById('designerTabCampaignName');
+        if (tabNameEl) tabNameEl.textContent = name;
 
         // If an initial contacts file was selected in the wizard, upload it immediately
         if (this.pendingCampaignFile) {
@@ -1526,18 +1730,23 @@ class SkyKinDialerApp {
           upData.append('schedule_interval_mins', scheduleInterval);
           upData.append('schedule_window_start', windowStart);
           upData.append('schedule_window_end', windowEnd);
-          upData.append('schedule_batch_size', batchSize);
           try {
             const upRes = await fetch('api.php?action=upload_leads', { method: 'POST', body: upData });
             const upJson = await upRes.json();
             if (upJson.success) {
               this.showToast(`Loaded ${upJson.imported || 0} contacts from ${this.pendingCampaignFile.name}`, 'success');
+            } else {
+              this.showToast(upJson.error || 'Failed to import contacts file', 'error');
             }
           } catch (e) {
             console.warn('Initial contacts upload error:', e);
+            this.showToast('Error uploading contacts file', 'error');
           }
           this.pendingCampaignFile = null;
         }
+
+        // Reload campaigns cache so allCampaigns contains new campaign
+        await this.loadCampaignsOverview();
 
         // Navigate directly to the Message Designer for this new campaign
         await this.selectCampaignForDesigner(newCampId);
@@ -1555,8 +1764,70 @@ class SkyKinDialerApp {
     const campInp = document.getElementById('newCampaignContactsInput');
     if (campInp) campInp.value = file.name;
     this.pendingCampaignFile = file;
-    this.showToast(`Loaded initial contacts file: "${file.name}"`, 'info');
+
+    const strat = document.getElementById('newCampaignScheduleStrategy')?.value || 'smart';
+    if (strat === 'smart') {
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (ext === 'csv' || ext === 'txt' || ext === 'tsv') {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const text = e.target?.result || '';
+          const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+          const contactCount = Math.max(1, lines.length > 1 ? lines.length - 1 : lines.length);
+          this.renderSmartScheduleOffer(file.name, contactCount);
+        };
+        reader.readAsText(file);
+      } else {
+        const estimatedCount = Math.max(10, Math.min(250, Math.round(file.size / 140)));
+        this.renderSmartScheduleOffer(file.name, estimatedCount);
+      }
+    } else {
+      this.showToast(`Selected "${file.name}"`, 'info');
+    }
   }
+
+  renderSmartScheduleOffer(fileName, count) {
+    const offerEl = document.getElementById('newCampSmartOffer');
+    if (!offerEl) return;
+
+    const lines = this.availableLines || 2;
+    const seqMinutes = count * 5;
+    const seqH = Math.floor(seqMinutes / 60);
+    const seqM = seqMinutes % 60;
+    const seqText = seqH > 0 ? `~${seqH}h ${seqM}m` : `~${seqM}m`;
+
+    const slotMins = 2;
+    const smartMinutes = Math.max(4, Math.ceil(count / lines) * slotMins);
+    const smartH = Math.floor(smartMinutes / 60);
+    const smartM = smartMinutes % 60;
+    const smartText = smartH > 0 ? `~${smartH}h ${smartM}m` : `~${smartM}m`;
+
+    const timeSavedMins = Math.max(0, seqMinutes - smartMinutes);
+    const savedH = Math.floor(timeSavedMins / 60);
+    const savedM = timeSavedMins % 60;
+    const savedText = savedH > 0 ? `${savedH}h ${savedM}m` : `${savedM}m`;
+    const pctFaster = seqMinutes > 0 ? Math.round((timeSavedMins / seqMinutes) * 100) : 0;
+
+    const badge = document.getElementById('smartOfferBadge');
+    if (badge) badge.textContent = `${count} contacts`;
+
+    const summary = document.getElementById('smartOfferSummary');
+    if (summary) {
+      summary.innerHTML = `Standard sequential calling takes <strong>${seqText}</strong>. The system suggests distributing calls across <strong>${lines} available lines</strong> to finish in <strong>${smartText}</strong> (saving ~${savedText}, ${pctFaster}% faster).`;
+    }
+
+    const actions = document.getElementById('smartOfferActions');
+    if (actions) actions.style.display = 'flex';
+
+    const approved = document.getElementById('smartOfferApproved');
+    if (approved) approved.style.display = 'none';
+
+    offerEl.style.display = 'block';
+    this.smartScheduleApproved = true;
+    this.showToast(`Analyzed "${fileName}": Suggested schedule ready for review`, 'info');
+  }
+
+  renderSmartScheduleProposalForFile() {}
 
   showCampaignCreatedFlowModal(campId, campName) {
     this._flowCampaignId = Number(campId);
@@ -1714,6 +1985,18 @@ class SkyKinDialerApp {
 
   async selectCampaignForDesigner(campaignId) {
     this.activeCampaignId = Number(campaignId);
+    this.ivrResponses = null;
+
+    // Immediately reflect campaign name in breadcrumb tab from cached list
+    const camps = this.allCampaigns || [];
+    const c = camps.find(item => Number(item.id) === Number(campaignId));
+    if (c) {
+      this.campaign = c;
+      const tabName = document.getElementById('designerTabCampaignName');
+      if (tabName) tabName.textContent = c.name || 'Campaign';
+      const titleEl = document.getElementById('headerSectionTitle');
+      if (titleEl) titleEl.textContent = 'Campaign Designer: ' + (c.name || 'Campaign');
+    }
 
     // Switch view immediately to provide instant visual navigation
     if (typeof window.switchCampaignSubView === 'function') {
@@ -1723,16 +2006,6 @@ class SkyKinDialerApp {
       const designerEl = document.getElementById('subViewCampaignsDesigner');
       if (listEl) listEl.style.display = 'none';
       if (designerEl) designerEl.style.display = 'block';
-    }
-
-    // Immediately reflect campaign name in breadcrumb tab from cached list
-    const camps = this.allCampaigns || [];
-    const c = camps.find(item => Number(item.id) === Number(campaignId));
-    if (c) {
-      this.campaign = c;
-      const tabName = document.getElementById('designerTabCampaignName');
-      if (tabName) tabName.textContent = c.name || 'Campaign';
-      this.updateDesignerUI();
     }
 
     try {
@@ -1748,9 +2021,11 @@ class SkyKinDialerApp {
   }
 
   openCampaignInQueue(campaignId) {
-    this.selectedCampaignIds = [Number(campaignId)];
-    this.activeCampaignId = Number(campaignId);
-    this.loadCampaignData([campaignId]).then(() => {
+    const cid = Number(campaignId) || this.activeCampaignId || this.campaign?.id || (this.allCampaigns && this.allCampaigns[0]?.id) || 1;
+    this.selectedCampaignIds = [cid];
+    this.activeCampaignId = cid;
+    this.ivrResponses = null;
+    this.loadCampaignData([cid]).then(() => {
       if (typeof window.switchNav === 'function') {
         window.switchNav('tabDialer', 'dialer/agent');
       }
@@ -1767,14 +2042,14 @@ class SkyKinDialerApp {
     if (nameEl) nameEl.textContent = this.campaign.name || 'Outbound Campaign';
 
     const tabNameEl = document.getElementById('designerTabCampaignName');
-    if (tabNameEl) tabNameEl.textContent = this.campaign.name || 'Bill reminder: October';
+    if (tabNameEl) tabNameEl.textContent = this.campaign.name || 'Campaign';
 
     const subPill = document.getElementById('subBtnCampaignsDesigner');
     if (subPill) subPill.textContent = `${this.campaign.name || 'Campaign'} Designer`;
 
     const typeBadge = document.getElementById('designerCampaignTypeBadge');
     if (typeBadge) {
-      typeBadge.textContent = (this.campaign.type || 'predictive').toUpperCase();
+      typeBadge.textContent = (this.campaign.type || 'preview').toUpperCase();
     }
 
     const txtArea = document.getElementById('campaignMessageText');
@@ -1841,7 +2116,10 @@ class SkyKinDialerApp {
     const elBusy = document.getElementById('chipBusy');
     const elNoAns = document.getElementById('chipNoAnswer');
 
-    const displayTotal = total > 0 ? total : 8;
+    const displayTotal = total > 0 ? total : 0;
+    this.updateDesignerPreview();
+    this.renderIvrResponsesSummary();
+    this.updateDesignerChecklist();
     if (elSched) elSched.textContent = displayTotal;
     if (elDialed) elDialed.textContent = dialed;
     if (elAns) elAns.textContent = answered;
@@ -1888,23 +2166,7 @@ class SkyKinDialerApp {
 
     const campId = Number(this.activeCampaignId || this.campaign?.id || 1);
     const campLeads = (this.leads || []).filter(l => Number(l.campaign_id) === campId);
-
-    // Default 8 Ethiopian contacts matching Picture 1 exactly if campaign leads empty
-    const sampleLeads = [
-      { id: 'sample_1', customer_name: 'Abebe Kebede', phone_number: '+251911123456', call_time: '11:30', status: 'pending' },
-      { id: 'sample_2', customer_name: 'Sara Yohannes', phone_number: '+251912234567', call_time: '11:45', status: 'pending' },
-      { id: 'sample_3', customer_name: 'Tewodros Kassahun', phone_number: '+251913345678', call_time: '12:00', status: 'pending' },
-      { id: 'sample_4', customer_name: 'Marta Tadesse', phone_number: '+251914456789', call_time: '12:15', status: 'pending' },
-      { id: 'sample_5', customer_name: 'Binyam Girma', phone_number: '+251915567890', call_time: '12:30', status: 'pending' },
-      { id: 'sample_6', customer_name: 'Hanna Solomon', phone_number: '+251916678901', call_time: '12:45', status: 'pending' },
-      { id: 'sample_7', customer_name: 'Dawit Alemayehu', phone_number: '+251917789012', call_time: '13:00', status: 'pending' },
-      { id: 'sample_8', customer_name: 'Selamawit Desta', phone_number: '+251918890123', call_time: '13:15', status: 'pending' }
-    ];
-
-    let rawList = (campLeads && campLeads.length > 0) ? campLeads : sampleLeads;
-    if (this._deletedSampleIds && this._deletedSampleIds.size > 0) {
-      rawList = rawList.filter(l => !this._deletedSampleIds.has(l.id));
-    }
+    let rawList = (campLeads && campLeads.length > 0) ? campLeads : [];
 
     const searchVal = document.getElementById('designerLeadSearch')?.value.toLowerCase().trim() || '';
     const statusVal = document.getElementById('designerContactStatusFilter')?.value.toLowerCase().trim() || '';
@@ -1941,7 +2203,9 @@ class SkyKinDialerApp {
 
     const subTitle = document.getElementById('designerContactsSubtitle');
     if (subTitle) {
-      if (filtered.length !== rawList.length) {
+      if (rawList.length === 0) {
+        subTitle.textContent = '0 scheduled calls';
+      } else if (filtered.length !== rawList.length) {
         subTitle.textContent = `Showing ${filtered.length} of ${rawList.length} scheduled calls`;
       } else {
         subTitle.textContent = `${rawList.length} scheduled calls`;
@@ -1950,7 +2214,10 @@ class SkyKinDialerApp {
 
     tbody.innerHTML = '';
     if (filtered.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#64748b;padding:28px;font-size:13px;">No contacts match the current filters.</td></tr>`;
+      const emptyMsg = rawList.length === 0
+        ? 'No contacts uploaded for this campaign yet. Click "Upload CSV File" above to import your contact list.'
+        : 'No contacts match the current filters.';
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#64748b;padding:36px 20px;font-size:13px;">${emptyMsg}</td></tr>`;
       return;
     }
 
@@ -2039,12 +2306,36 @@ class SkyKinDialerApp {
   }
 
   handleDesignerAudioChange(audioPath) {
+    if (typeof _voicePreviewAudio !== 'undefined' && _voicePreviewAudio) {
+      try { _voicePreviewAudio.pause(); } catch(e){}
+      _voicePreviewAudio = null;
+      const iconSpan = document.getElementById('testAudioPlayIcon');
+      const textSpan = document.getElementById('testAudioPlayText');
+      const btnPlay = document.getElementById('btnTestVoiceAudio');
+      const btnPause = document.getElementById('btnPauseVoiceAudio');
+      if (iconSpan) iconSpan.textContent = '▶';
+      if (textSpan) textSpan.textContent = 'Test audio';
+      if (btnPlay) {
+        btnPlay.style.background = '#f0fdf4';
+        btnPlay.style.borderColor = '#86efac';
+        btnPlay.style.color = '#166534';
+      }
+      if (btnPause) btnPause.style.display = 'none';
+    }
+
     const sel = document.getElementById('designerAudioPromptSelect');
     const opt = sel?.options[sel.selectedIndex];
     const name = opt?.dataset.name || '';
     if (this.campaign) {
       this.campaign.ivr_audio_file = audioPath;
       this.campaign.ivr_audio_name = name;
+      try {
+        const fd = new FormData();
+        fd.append('campaign_id', this.campaign.id);
+        fd.append('audio_file', audioPath);
+        fd.append('audio_name', name);
+        fetch('api.php?action=save_campaign_designer', { method: 'POST', body: fd }).catch(() => {});
+      } catch(e) {}
     }
     const player = document.getElementById('mainAudioPlayer');
     if (player) player.src = audioPath;
@@ -2056,6 +2347,10 @@ class SkyKinDialerApp {
     const selAudio = document.getElementById('designerAudioPromptSelect');
     const activeLangBtn = document.querySelector('#langBtnAmharic.active, #langBtnOromifa.active, #langBtnEnglish.active');
     const lang = activeLangBtn ? (activeLangBtn.id.replace('langBtn', '').toLowerCase()) : 'amharic';
+
+    if (txtArea && this.campaign) {
+      this.campaign.ivr_message_text = txtArea.value;
+    }
 
     const formData = new FormData();
     formData.append('campaign_id', this.campaign.id);
@@ -2169,14 +2464,15 @@ class SkyKinDialerApp {
   }
 
   renderAgentScreen() {
-    const pendingLeads = (this.leads || []).filter(l => l.status === 'pending');
-    this.activeLead = pendingLeads.length > 0 ? pendingLeads[0] : (this.leads ? this.leads[0] : null);
+    const leads = this.leads || [];
+    const pendingLeads = leads.filter(l => l.status === 'pending');
+    if (!this.activeLead || !leads.some(l => Number(l.id) === Number(this.activeLead.id))) {
+      this.activeLead = pendingLeads.length > 0 ? pendingLeads[0] : (leads.length > 0 ? leads[0] : null);
+    }
 
     const nameEl = document.getElementById('agentScreenCustName');
     const phoneEl = document.getElementById('agentScreenPhoneText');
-    const debtEl = document.getElementById('agentScreenDebtText');
-    const debtAmtEl = document.getElementById('agentScreenDebtAmount');
-    const debtDueEl = document.getElementById('agentScreenDebtDue');
+    const statusBadge = document.getElementById('agentScreenStatusBadge');
     const acctEl = document.getElementById('agentScreenAccountText');
     const timeEl = document.getElementById('agentScreenCallTimeText');
     const campEl = document.getElementById('agentScreenCampaignText');
@@ -2199,51 +2495,160 @@ class SkyKinDialerApp {
     if (!this.activeLead) {
       if (nameEl) nameEl.textContent = 'Queue Empty';
       if (phoneEl) phoneEl.textContent = '-';
-      if (debtEl) debtEl.textContent = 'All calls completed';
-      if (debtAmtEl) debtAmtEl.textContent = 'ETB 0.00';
-      if (debtDueEl) debtDueEl.textContent = 'No pending calls';
+      if (statusBadge) { statusBadge.textContent = 'All Completed'; statusBadge.className = 'dial-badge-gray'; }
       if (acctEl) acctEl.textContent = '-';
       if (timeEl) timeEl.textContent = '-';
-      if (scriptBox) scriptBox.textContent = 'All scheduled leads for this campaign have been dialed. Upload new contacts or reset leads to continue.';
+      if (campEl) campEl.textContent = this.campaign?.name || 'No active campaign';
+      if (scriptBox) {
+        scriptBox.innerHTML = 'All scheduled contacts for this campaign have been dialed. Upload new contacts or select another campaign to continue.';
+      }
+      this.renderAgentScreenNumbers();
       return;
     }
 
     const lead = this.activeLead;
-    if (nameEl) nameEl.textContent = lead.customer_name || 'Helen Tesfaye';
-    if (phoneEl) phoneEl.textContent = lead.phone_number || '+251911456789';
+    if (nameEl) nameEl.textContent = lead.customer_name || 'Contact';
+    if (phoneEl) phoneEl.textContent = lead.phone_number || '-';
+    if (statusBadge && !this.isAgentCallActive) {
+      const isPending = lead.status === 'pending';
+      statusBadge.textContent = isPending ? 'Pending Call' : (lead.status === 'completed' ? 'Completed' : lead.status);
+      statusBadge.className = isPending ? 'dial-badge-mint' : 'dial-badge-gray';
+    }
+    const dialBtn = document.getElementById('btnAgentDial');
+    if (dialBtn && !this.isAgentCallActive) {
+      dialBtn.textContent = 'Dial';
+      dialBtn.classList.remove('in-call');
+    }
 
-    const debtAmt = parseFloat(lead.debt_amount || 450);
-    const curr = lead.currency || 'ETB';
-    const debtStr = `${curr} ${debtAmt.toFixed(2)}`;
-    const dueTimeStr = lead.call_time || '2026-10-20 11:15';
-
-    if (debtEl) debtEl.textContent = `${debtStr}, due ${dueTimeStr}`;
-    if (debtAmtEl) debtAmtEl.textContent = debtStr;
-    if (debtDueEl) debtDueEl.textContent = `Due ${dueTimeStr}`;
-
-    if (acctEl) acctEl.textContent = lead.account_number || `ACC-${lead.id}98231`.slice(0, 9);
+    const refNum = lead.account_number || `REF-${lead.id}98231`.slice(0, 9);
+    if (acctEl) acctEl.textContent = refNum;
+    const dueTimeStr = lead.call_time || 'Immediate';
     if (timeEl) timeEl.textContent = dueTimeStr;
-    if (campEl) campEl.textContent = lead.campaign_name || this.campaign?.name || 'Bill reminder: October';
+    const campName = lead.campaign_name || this.campaign?.name || 'Campaign';
+    if (campEl) campEl.textContent = campName;
 
-    const leadLang = (lead.language || this.campaign?.ivr_language || 'amharic').toLowerCase();
+    const leadLang = (lead.language || this.campaign?.ivr_language || 'english').toLowerCase();
     if (langTag) {
       langTag.textContent = leadLang.charAt(0).toUpperCase() + leadLang.slice(1);
     }
     if (tierTag) {
-      tierTag.textContent = debtAmt > 1000 ? 'VIP / Corporate' : (debtAmt > 500 ? 'Gold' : 'Standard');
+      tierTag.textContent = lead.priority || 'Standard';
     }
 
-    // Dynamic Script customized with real customer name & debt amount (Exact Amharic styling)
+    // Dynamic Script configured specifically for this campaign
     if (scriptBox) {
-      const cName = lead.customer_name || 'Helen Tesfaye';
-      if (leadLang === 'amharic') {
-        scriptBox.innerHTML = `&ldquo;ሰላም ${this.escapeHtml(cName)}: ከኢትዮ ቴሌኮም የደንበኞች አገልግሎት ነው የምደውለው:: የ ${this.escapeHtml(debtStr)} የክፍያ ሂሳብዎን ለማስታወስ ነበር:: በቴሌብር ለመክፈል አሁን የክፍያ መልእክት ልላክሎት?&rdquo;`;
-      } else if (leadLang === 'oromifa') {
-        scriptBox.innerHTML = `&ldquo;Akkam jirtu ${this.escapeHtml(cName)}: tajaajila maamiltootaa Itiyoo Telekoom irraani bilbila:: Kaffaltiin herrega keessanii ${this.escapeHtml(debtStr)} dhumachuu isaa isin yaadachiisuufi:: Telebirriin akka kaffaltaniif ergaa isiniif erguu?&rdquo;`;
+      const cName = lead.customer_name || 'Contact';
+      // Read campaign-specific script configured in Campaign Designer
+      const campScript = (lead.ivr_message_text || this.campaign?.ivr_message_text || this.campaign?.agent_script || '').trim();
+
+      if (campScript) {
+        let rendered = campScript
+          .replace(/\{customer_name\}|\{name\}/gi, `<strong>${this.escapeHtml(cName)}</strong>`)
+          .replace(/\{phone_number\}|\{phone\}/gi, `<strong>${this.escapeHtml(lead.phone_number || '')}</strong>`)
+          .replace(/\{account_number\}|\{account\}/gi, `<strong>${this.escapeHtml(refNum)}</strong>`)
+          .replace(/\{campaign_name\}|\{campaign\}/gi, `<strong>${this.escapeHtml(campName)}</strong>`);
+        scriptBox.innerHTML = `&ldquo;${rendered.replace(/\n/g, '<br>')}&rdquo;`;
       } else {
-        scriptBox.innerHTML = `&ldquo;Hello ${this.escapeHtml(cName)}: this is Ethio Telecom customer service. I am calling regarding your outstanding balance of ${this.escapeHtml(debtStr)}. Would you like me to send an instant Telebirr USSD payment prompt to your phone?&rdquo;`;
+        scriptBox.innerHTML = `&ldquo;Hello <strong>${this.escapeHtml(cName)}</strong>: I am calling regarding your ${this.escapeHtml(campName)} update. Do you have a moment to speak?&rdquo;`;
       }
     }
+
+    this.renderAgentScreenNumbers();
+  }
+
+  renderAgentScreenNumbers() {
+    const tbody = document.getElementById('agentNumbersTableBody');
+    const badge = document.getElementById('agentQueueNumberCountBadge');
+    if (!tbody) return;
+
+    const leads = this.leads || [];
+    const pendingLeads = leads.filter(l => l.status === 'pending');
+    if (badge) {
+      badge.textContent = `${pendingLeads.length} pending / ${leads.length} total`;
+    }
+
+    if (leads.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="7" style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">
+            No contacts found in this campaign. Upload contacts or select a different campaign.
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    const searchFilter = (this._agentSearchFilter || '').toLowerCase().trim();
+    const filteredLeads = searchFilter
+      ? leads.filter(l => (l.customer_name || '').toLowerCase().includes(searchFilter) || (l.phone_number || '').includes(searchFilter))
+      : leads;
+
+    tbody.innerHTML = filteredLeads.map((l, idx) => {
+      const isSelected = this.activeLead && Number(this.activeLead.id) === Number(l.id);
+      const isPending = l.status === 'pending';
+      const statusBadge = isPending
+        ? '<span style="background:#e0f2fe;color:#0369a1;font-weight:700;font-size:11px;padding:3px 8px;border-radius:12px;">Pending</span>'
+        : (l.status === 'completed' || l.status === 'answered'
+          ? '<span style="background:#dcfce7;color:#15803d;font-weight:700;font-size:11px;padding:3px 8px;border-radius:12px;">Completed</span>'
+          : `<span style="background:#f1f5f9;color:#475569;font-weight:600;font-size:11px;padding:3px 8px;border-radius:12px;text-transform:capitalize;">${this.escapeHtml(l.status)}</span>`);
+
+      const rowBg = isSelected ? '#f0fdf4' : (idx % 2 === 0 ? '#ffffff' : '#f8fafc');
+      const rowBorder = isSelected ? 'border-left: 3px solid #00A651;' : '';
+
+      const refStr = l.account_number || `REF-${l.id}98231`.slice(0, 9);
+      const timeStr = l.call_time || 'Immediate';
+
+      return `
+        <tr style="background:${rowBg};${rowBorder}transition:background 0.15s ease;">
+          <td style="font-weight:600;color:#64748b;font-size:12px;padding:10px 12px;">${idx + 1}</td>
+          <td style="font-weight:700;color:#0f172a;font-size:12.5px;padding:10px 12px;">
+            ${this.escapeHtml(l.customer_name || 'Contact')}
+            ${isSelected ? '<span style="color:#00A651;font-size:11px;margin-left:6px;font-weight:700;">(Selected for Preview)</span>' : ''}
+          </td>
+          <td style="font-family:monospace;color:#334155;font-size:12px;padding:10px 12px;font-weight:600;">${this.escapeHtml(l.phone_number || '')}</td>
+          <td style="color:#475569;font-size:12px;padding:10px 12px;font-family:monospace;">${this.escapeHtml(refStr)}</td>
+          <td style="color:#64748b;font-size:12px;padding:10px 12px;">${this.escapeHtml(timeStr)}</td>
+          <td style="padding:10px 12px;">${statusBadge}</td>
+          <td style="text-align:right;padding:10px 12px;white-space:nowrap;">
+            <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.selectLeadForPreview(${l.id})" style="font-size:11px;padding:3px 9px;margin-right:6px;border-radius:4px;cursor:pointer;">
+              Preview
+            </button>
+            <button type="button" class="btn btn-xs btn-success" onclick="app.callLeadDirectly(${l.id})" style="font-size:11px;padding:3px 10px;background:#00A651;border-color:#00A651;color:#fff;border-radius:4px;font-weight:700;cursor:pointer;">
+              Call
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  selectLeadForPreview(leadId) {
+    if (this.isAgentCallActive) {
+      this.hangupAgentCall(false);
+    }
+    const lead = (this.leads || []).find(l => Number(l.id) === Number(leadId));
+    if (!lead) return;
+    this.activeLead = lead;
+    this.renderAgentScreen();
+    this.showToast(`Previewing: ${lead.customer_name} (${lead.phone_number})`, 'info');
+  }
+
+  callLeadDirectly(leadId) {
+    const lead = (this.leads || []).find(l => Number(l.id) === Number(leadId));
+    if (!lead) return;
+    this.activeLead = lead;
+    this.renderAgentScreen();
+    this.handleAgentDialClick();
+  }
+
+  filterAgentScreenNumbers(query) {
+    this._agentSearchFilter = query;
+    this.renderAgentScreenNumbers();
+  }
+
+  async refreshAgentScreenQueue() {
+    await this.loadCampaignData();
+    this.showToast('Calling queue refreshed', 'info');
   }
 
   selectAgentOutcome(labelEl, dispo) {
@@ -2284,15 +2689,152 @@ class SkyKinDialerApp {
   }
 
   handleAgentDialClick() {
+    if (this.isAgentCallActive) {
+      this.hangupAgentCall();
+      return;
+    }
     if (!this.activeLead || !this.activeLead.phone_number) {
       this.showToast('No customer selected to dial', 'warning');
       return;
     }
-    this.showToast(`Originating call to ${this.activeLead.customer_name} (${this.activeLead.phone_number})...`, 'info');
-    this.clickToDial(this.activeLead.phone_number, this.activeLead.customer_name);
+    this.originateAgentDirectCall(this.activeLead);
+  }
+
+  hangupAgentCall(showNotice = true) {
+    this.sipHangup(1);
+    this.isAgentCallActive = false;
+    if (this.agentCallTimerInterval) {
+      clearInterval(this.agentCallTimerInterval);
+      this.agentCallTimerInterval = null;
+    }
+    this.stopRingbackTone();
+
+    const btn = document.getElementById('btnAgentDial');
+    if (btn) {
+      btn.textContent = 'Dial';
+      btn.classList.remove('in-call');
+    }
+
+    const badge = document.getElementById('agentScreenStatusBadge');
+    if (badge) {
+      badge.textContent = 'Call Ended';
+      badge.className = 'dial-badge-gray';
+    }
+
+    if (this.activeLead) {
+      this.activeLead.status = 'completed';
+      this.renderAgentScreenNumbers();
+    }
+
+    if (showNotice) {
+      this.showToast(`Call ended (${this.lastCallDuration || 0}s). Select outcome and click Save & next.`, 'info');
+    }
+  }
+
+  originateAgentDirectCall(lead) {
+    if (!lead || !lead.phone_number) {
+      this.showToast('No customer phone number available', 'warning');
+      return;
+    }
+
+    if (this.isAgentCallActive) {
+      this.hangupAgentCall(false);
+    }
+
+    const normNumber = window.skykinNormalizeEtDial(lead.phone_number);
+    this.isAgentCallActive = true;
+    let callSec = 0;
+    this.lastCallDuration = 0;
+    if (this.agentCallTimerInterval) {
+      clearInterval(this.agentCallTimerInterval);
+      this.agentCallTimerInterval = null;
+    }
+
+    lead.status = 'calling';
+    this.renderAgentScreenNumbers();
+
+    const btn = document.getElementById('btnAgentDial');
+    if (btn) {
+      btn.textContent = 'Calling... (Hang Up)';
+      btn.classList.add('in-call');
+    }
+
+    const badge = document.getElementById('agentScreenStatusBadge');
+    if (badge) {
+      badge.textContent = 'Dialing...';
+      badge.className = 'dial-badge-mint';
+    }
+
+    this.showToast(`Calling ${lead.customer_name || 'Customer'} (${lead.phone_number}) directly...`, 'info');
+
+    const updateTimer = () => {
+      const m = String(Math.floor(callSec / 60)).padStart(2, '0');
+      const s = String(callSec % 60).padStart(2, '0');
+      if (btn && this.isAgentCallActive) {
+        btn.textContent = `Hang Up (${m}:${s})`;
+      }
+      if (badge && this.isAgentCallActive) {
+        badge.textContent = `In Call (${m}:${s})`;
+      }
+    };
+
+    const dom = localStorage.getItem('sip_domain') || this.sipDomain || 'client1.skykin.local';
+
+    if (this.line1 && this.line1.ua && this.line1.isRegistered) {
+      this.sipMakeCall(normNumber, dom, {
+        onEstablishing: () => {
+          if (badge) {
+            badge.textContent = 'Ringing...';
+            badge.className = 'dial-badge-mint';
+          }
+          if (btn && this.isAgentCallActive) {
+            btn.textContent = 'Ringing... (Hang Up)';
+          }
+        },
+        onEstablished: (pc) => {
+          this.showToast(`Connected to ${lead.customer_name || 'Customer'} (${lead.phone_number})`, 'success');
+          if (this.agentCallTimerInterval) clearInterval(this.agentCallTimerInterval);
+          this.agentCallTimerInterval = setInterval(() => {
+            callSec++;
+            this.lastCallDuration = callSec;
+            updateTimer();
+          }, 1000);
+        },
+        onTerminated: () => {
+          this.hangupAgentCall(true);
+        },
+        onError: (err) => {
+          this.hangupAgentCall(false);
+          this.showToast('Call error: ' + (err?.message || 'Call failed'), 'error');
+        },
+        onReject: (resp) => {
+          this.hangupAgentCall(false);
+          this.showToast('Call declined or busy: ' + (resp?.reasonPhrase || 'Busy'), 'warning');
+        }
+      }, 1);
+    } else {
+      if (badge) badge.textContent = 'Ringing...';
+      if (btn) btn.textContent = 'Ringing... (Hang Up)';
+      this.startRingbackTone();
+
+      setTimeout(() => {
+        if (!this.isAgentCallActive) return;
+        this.stopRingbackTone();
+        this.showToast(`Connected to ${lead.customer_name || 'Customer'} (${lead.phone_number})`, 'success');
+        if (this.agentCallTimerInterval) clearInterval(this.agentCallTimerInterval);
+        this.agentCallTimerInterval = setInterval(() => {
+          callSec++;
+          this.lastCallDuration = callSec;
+          updateTimer();
+        }, 1000);
+      }, 2000);
+    }
   }
 
   async handleAgentSkipClick() {
+    if (this.isAgentCallActive) {
+      this.hangupAgentCall(false);
+    }
     if (!this.activeLead) {
       this.showToast('No more leads to skip', 'warning');
       return;
@@ -2310,12 +2852,15 @@ class SkyKinDialerApp {
   }
 
   async handleAgentSaveNextClick() {
+    if (this.isAgentCallActive) {
+      this.hangupAgentCall(false);
+    }
     if (!this.activeLead) {
       this.showToast('No active contact to save', 'warning');
       return;
     }
 
-    const dispo = this.selectedDispo || 'promise_to_pay';
+    const dispo = this.selectedDispo || 'fixed';
     const notes = document.getElementById('agentCallNotesInput')?.value || '';
     const promiseDate = document.getElementById('agentPromiseDateSelect')?.value || '';
     const duration = parseInt(this.lastCallDuration || 35, 10);
@@ -2363,6 +2908,15 @@ class SkyKinDialerApp {
         }
 
         await this.loadCampaignData();
+
+        if (this.pacingMode === 'progressive' && this.activeLead && this.activeLead.status === 'pending') {
+          this.showToast(`Progressive mode: auto-dialing next contact (${this.activeLead.customer_name}) in 3s...`, 'info');
+          setTimeout(() => {
+            if (this.pacingMode === 'progressive' && this.activeLead) {
+              this.handleAgentDialClick();
+            }
+          }, 3000);
+        }
       } else {
         this.showToast(data.error || 'Failed to save outcome', 'error');
       }
@@ -2372,220 +2926,192 @@ class SkyKinDialerApp {
   }
 
   async setPacingMode(mode) {
+    if (mode !== 'preview' && mode !== 'progressive') {
+      mode = 'preview';
+    }
+    this.pacingMode = mode;
+
     const btnPrev = document.getElementById('btnPacingPreview');
     const btnProg = document.getElementById('btnPacingProgressive');
-    const btnPred = document.getElementById('btnPacingPredictive');
 
     if (btnPrev) btnPrev.className = (mode === 'preview') ? 'dial-seg-btn active-green' : 'dial-seg-btn';
     if (btnProg) btnProg.className = (mode === 'progressive') ? 'dial-seg-btn active-green' : 'dial-seg-btn';
-    if (btnPred) btnPred.className = (mode === 'predictive') ? 'dial-seg-btn active-green' : 'dial-seg-btn';
 
     const pacingSelect = document.getElementById('pacingModeSelect');
     if (pacingSelect) pacingSelect.value = mode;
 
+    await this.savePacingSetting('pacing_mode', mode);
+    this.renderAgentScreen();
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     Pacing & Regulatory Compliance Engine
+     ───────────────────────────────────────────────────────── */
+  async savePacingSetting(key, val) {
+    const campId = this.campaign?.id || (this.selectedCampaignIds && this.selectedCampaignIds.length > 0 ? this.selectedCampaignIds[0] : 1);
     const formData = new FormData();
-    formData.append('campaign_id', this.campaign?.id || 1);
-    formData.append('pacing_mode', mode);
+    formData.append('campaign_id', campId);
+    formData.append(key, val);
+
+    if (key === 'dial_ratio') {
+      this.dialRatio = parseFloat(val);
+      const disp = document.getElementById('dialRatioVal');
+      if (disp) disp.textContent = parseFloat(val).toFixed(1);
+    } else if (key === 'max_abandon_rate') {
+      this.maxAbandonRate = parseFloat(val);
+      const disp = document.getElementById('abandonRateVal');
+      if (disp) disp.textContent = parseFloat(val).toFixed(1) + '%';
+      this.checkAbandonCompliance();
+    } else if (key === 'calling_hours') {
+      this.callingHours = val;
+    } else if (key === 'max_attempts') {
+      this.maxAttempts = parseInt(val, 10);
+    } else if (key === 'retry_after') {
+      this.retryAfter = val;
+    }
 
     try {
-      const res = await fetch('api.php?action=set_pacing_mode', {
+      const res = await fetch('api.php?action=save_pacing_settings', {
         method: 'POST',
         body: formData
       });
       const data = await res.json();
       if (data.success) {
-        if (this.campaign) this.campaign.type = mode;
-        const modeLabels = {
-          'preview': 'Preview (Agent manual click before dialing)',
-          'progressive': 'Progressive (1-to-1 immediate lead connection)',
-          'predictive': 'Predictive (High-throughput algorithm, target 1,000 calls/min)'
+        if (this.campaign) {
+          if (key === 'dial_ratio') this.campaign.dial_ratio = parseFloat(val);
+          if (key === 'max_abandon_rate') this.campaign.max_abandon_rate = parseFloat(val);
+          if (key === 'calling_hours') this.campaign.calling_hours = val;
+          if (key === 'max_attempts') this.campaign.max_retries = parseInt(val, 10);
+          if (key === 'retry_after') this.campaign.retry_delay_min = data.retry_delay_min || 120;
+          if (key === 'pacing_mode') this.campaign.type = val;
+        }
+
+        const msgs = {
+          'dial_ratio': 'Dial ratio set to ' + parseFloat(val).toFixed(1) + 'x (concurrency adjusted)',
+          'max_abandon_rate': 'Compliance cap set: max ' + parseFloat(val).toFixed(1) + '% abandon rate',
+          'calling_hours': 'Calling hours set to ' + val.replace('_', ' ') + ' (compliance active)',
+          'max_attempts': 'Max attempts set to ' + val + ' per contact',
+          'retry_after': 'Retry callback delay set to ' + val,
+          'pacing_mode': 'Dialing mode: ' + (val === 'progressive' ? 'Progressive (Auto-dialing)' : 'Preview (Manual click)')
         };
-        this.showToast(`Pacing mode: ${modeLabels[mode] || mode}`, 'success');
+        this.showToast(msgs[key] || 'Pacing setting saved successfully', 'success');
+      } else {
+        this.showToast(data.error || 'Failed to save pacing setting', 'error');
       }
     } catch (e) {
-      this.showToast('Failed to update pacing mode', 'error');
+      this.showToast('Network error saving pacing setting', 'error');
     }
   }
 
-  async startMockVolumeTest() {
-    const modeSel = document.getElementById('mockVolumeModeSelect');
-    const mode = modeSel ? modeSel.value : 'paced_1000';
-    const btn = document.getElementById('btnRunMockVolumeTest');
-    const btnStop = document.getElementById('btnStopMockVolumeTest');
-    const resBox = document.getElementById('mockVolumeResultsBox');
+  renderPacingAndComplianceSettings() {
+    const camp = this.campaign || {};
 
-    let totalTarget = 1000;
-    let isPaced = true;
-    if (mode === 'paced_500') totalTarget = 500;
-    else if (mode === 'paced_170') totalTarget = 170;
-    else if (mode === 'fast_1000') { totalTarget = 1000; isPaced = false; }
+    // 1. Dialing mode
+    const mode = camp.type || this.pacingMode || 'preview';
+    this.pacingMode = mode;
+    const modeSel = document.getElementById('pacingModeSelect');
+    if (modeSel) modeSel.value = (mode === 'progressive') ? 'progressive' : 'preview';
+    const btnPrev = document.getElementById('btnPacingPreview');
+    const btnProg = document.getElementById('btnPacingProgressive');
+    if (btnPrev) btnPrev.className = (mode === 'preview') ? 'dial-seg-btn active-green' : 'dial-seg-btn';
+    if (btnProg) btnProg.className = (mode === 'progressive') ? 'dial-seg-btn active-green' : 'dial-seg-btn';
 
-    this.isMockTestRunning = true;
-    if (btn) btn.style.display = 'none';
-    if (btnStop) btnStop.style.display = 'inline-block';
+    // 2. Dial ratio
+    const ratio = parseFloat(camp.dial_ratio || this.dialRatio || 2.1);
+    this.dialRatio = ratio;
+    const ratioSlider = document.getElementById('pacingDialRatioSlider');
+    const ratioDisp = document.getElementById('dialRatioVal');
+    if (ratioSlider) ratioSlider.value = ratio.toFixed(1);
+    if (ratioDisp) ratioDisp.textContent = ratio.toFixed(1);
 
-    if (resBox) {
-      resBox.style.display = 'block';
-      resBox.innerHTML = `
-        <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:12px;padding:18px;margin-top:14px;box-shadow:0 2px 6px rgba(0,0,0,0.03);">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
-            <div style="font-weight:700;color:#166534;font-size:14.5px;display:flex;align-items:center;gap:8px;">
-              <span class="spinner-border spinner-border-sm" style="display:inline-block;width:14px;height:14px;border:2.5px solid #00A651;border-right-color:transparent;border-radius:50%;animation:spin 0.6s linear infinite;"></span>
-              <span id="mockTestHeaderTitle">Live Mock Carrier Trunk Test &bull; Pacing 17 Calls/Sec</span>
-            </div>
-            <div style="font-family:monospace;font-size:13px;font-weight:700;color:#15803d;background:#dcfce7;padding:4px 12px;border-radius:12px;" id="mockTestTimer">00:00</div>
-          </div>
+    // 3. Max abandon rate
+    const abandon = parseFloat(camp.max_abandon_rate || this.maxAbandonRate || 2.4);
+    this.maxAbandonRate = abandon;
+    const abandonSlider = document.getElementById('pacingMaxAbandonSlider');
+    const abandonDisp = document.getElementById('abandonRateVal');
+    if (abandonSlider) abandonSlider.value = abandon.toFixed(1);
+    if (abandonDisp) abandonDisp.textContent = abandon.toFixed(1) + '%';
 
-          <!-- Live Animated Progress Bar -->
-          <div style="background:#e2e8f0;border-radius:9999px;height:10px;overflow:hidden;margin-bottom:14px;">
-            <div id="mockTestProgressBar" style="width:0%;height:100%;background:linear-gradient(90deg, #00A651, #16a34a);transition:width 0.3s ease;"></div>
-          </div>
+    // 4. Calling hours
+    const hours = camp.calling_hours || this.callingHours || 'standard';
+    this.callingHours = hours;
+    const hoursSel = document.getElementById('pacingCallingHoursSelect');
+    if (hoursSel) hoursSel.value = hours;
 
-          <!-- 4 Metrics Chips -->
-          <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:10px;font-size:12px;margin-bottom:12px;">
-            <div style="background:#ffffff;padding:9px 12px;border-radius:8px;border:1px solid #bbf7d0;">
-              <div style="color:#64748b;font-size:11px;">Calls Dispatched</div>
-              <div style="font-size:16px;font-weight:800;color:#0f172a;" id="mockTestCount">0 / ${totalTarget}</div>
-            </div>
-            <div style="background:#ffffff;padding:9px 12px;border-radius:8px;border:1px solid #bbf7d0;">
-              <div style="color:#64748b;font-size:11px;">Live Throughput</div>
-              <div style="font-size:16px;font-weight:800;color:#00A651;" id="mockTestCpm">0 CPM</div>
-            </div>
-            <div style="background:#ffffff;padding:9px 12px;border-radius:8px;border:1px solid #bbf7d0;">
-              <div style="color:#64748b;font-size:11px;">Active Trunk Channels</div>
-              <div style="font-size:16px;font-weight:800;color:#0284c7;" id="mockTestChannels">0</div>
-            </div>
-            <div style="background:#ffffff;padding:9px 12px;border-radius:8px;border:1px solid #bbf7d0;">
-              <div style="color:#64748b;font-size:11px;">Answered / IVR</div>
-              <div style="font-size:16px;font-weight:800;color:#15803d;" id="mockTestAnswered">0</div>
-            </div>
-            <div style="background:#ffffff;padding:9px 12px;border-radius:8px;border:1px solid #bbf7d0;">
-              <div style="color:#64748b;font-size:11px;">Busy / No Answer</div>
-              <div style="font-size:16px;font-weight:800;color:#b45309;" id="mockTestBusy">0</div>
-            </div>
-          </div>
+    // 5. Max attempts
+    const attempts = String(camp.max_retries || this.maxAttempts || 3);
+    this.maxAttempts = parseInt(attempts, 10);
+    const attemptsSel = document.getElementById('pacingMaxAttemptsSelect');
+    if (attemptsSel) attemptsSel.value = attempts;
 
-          <div style="font-size:11.5px;color:#166534;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
-            <span>🔒 100% Mock Telephony: Zero real phone calls placed. Target numbers: +251900000001 - +251900001000.</span>
-            <button type="button" class="btn btn-xs btn-outline-success" onclick="switchNav('tabReports', 'reports')" style="font-size:11.5px;padding:3px 10px;cursor:pointer;">View Live CDRs in Reports &rarr;</button>
-          </div>
-        </div>
-      `;
+    // 6. Retry after
+    const retryMin = parseInt(camp.retry_delay_min || 120, 10);
+    let retryKey = '2h';
+    if (retryMin <= 30) retryKey = '30m';
+    else if (retryMin <= 60) retryKey = '1h';
+    else if (retryMin <= 120) retryKey = '2h';
+    else if (retryMin <= 240) retryKey = '4h';
+    else retryKey = '24h';
+    this.retryAfter = retryKey;
+    const retrySel = document.getElementById('pacingRetryAfterSelect');
+    if (retrySel) retrySel.value = retryKey;
+
+    // 7. Update live metrics & chart
+    this.updateTelephonyKpiCards();
+    this.renderPacingChart(this.recentLogs || []);
+    this.checkAbandonCompliance();
+  }
+
+  checkCallingHoursCompliance() {
+    return { allowed: true, policyText: 'Unrestricted (24/7)' };
+  }
+
+  checkAbandonCompliance() {
+    const m = this.telephonyMetrics || {};
+    const curAbandon = parseFloat(m.abandon_rate || 0.0);
+    const maxAllowed = this.maxAbandonRate || 2.4;
+    const badge = document.getElementById('pacingAbandonRate');
+    if (!badge) return;
+
+    if (curAbandon > maxAllowed) {
+      badge.style.color = '#dc2626';
+      badge.title = 'Alert: Current abandon rate (' + curAbandon.toFixed(1) + '%) exceeds target cap (' + maxAllowed.toFixed(1) + '%). Pacing throttled.';
+    } else {
+      badge.style.color = '#00A651';
+      badge.title = 'Compliant: Under target cap of ' + maxAllowed.toFixed(1) + '%';
     }
+  }
 
-    if (!isPaced) {
-      // Run fast mode
-      try {
-        const res = await fetch(`api.php?action=run_mock_volume_test&calls=${totalTarget}&fast=1`);
-        const data = await res.json();
-        this.finishMockTestUI(data, totalTarget, data.execution_time_sec || 0.5);
-      } catch (e) {
-        this.showToast('Test failed: ' + e.message, 'error');
-        this.stopMockVolumeTest();
-      }
-      return;
-    }
+  renderPacingChart(logs = []) {
+    const chart = document.getElementById('pacingCallsBarChart');
+    if (!chart) return;
 
-    // Live real-time pacing mode (17 calls every second)
-    const startTime = Date.now();
-    let dispatched = 0;
-    let answered = 0;
-    let busyNoAns = 0;
-    let secElapsed = 0;
+    const now = Date.now();
+    const bucketDurationMs = 10 * 60 * 1000;
+    const buckets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-    const timerInterval = setInterval(() => {
-      if (!this.isMockTestRunning) {
-        clearInterval(timerInterval);
-        return;
-      }
-      secElapsed++;
-      const mm = String(Math.floor(secElapsed / 60)).padStart(2, '0');
-      const ss = String(secElapsed % 60).padStart(2, '0');
-      const timerEl = document.getElementById('mockTestTimer');
-      if (timerEl) timerEl.textContent = `${mm}:${ss}`;
-    }, 1000);
-
-    const runBatch = async () => {
-      if (!this.isMockTestRunning) return;
-
-      const remaining = totalTarget - dispatched;
-      const batchSize = Math.min(17, remaining);
-      const isFirst = (dispatched === 0);
-
-      try {
-        const res = await fetch(`api.php?action=dispatch_mock_batch&size=${batchSize}&total_target=${totalTarget}${isFirst ? '&reset_first=1' : ''}`);
-        const data = await res.json();
-        if (data.success) {
-          dispatched += batchSize;
-          answered += (data.batch_outcomes?.answered || 0);
-          busyNoAns += ((data.batch_outcomes?.busy || 0) + (data.batch_outcomes?.no_answer || 0));
-
-          const elapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
-          const currentCaps = (dispatched / elapsedSec).toFixed(1);
-          const currentCpm = Math.round(currentCaps * 60);
-          const pct = Math.min(100, Math.round((dispatched / totalTarget) * 100));
-
-          const barEl = document.getElementById('mockTestProgressBar');
-          if (barEl) barEl.style.width = pct + '%';
-
-          const countEl = document.getElementById('mockTestCount');
-          if (countEl) countEl.textContent = `${dispatched} / ${totalTarget} (${pct}%)`;
-
-          const cpmEl = document.getElementById('mockTestCpm');
-          if (cpmEl) cpmEl.textContent = `${currentCpm.toLocaleString()} CPM (${currentCaps}/s)`;
-
-          const chanEl = document.getElementById('mockTestChannels');
-          if (chanEl) chanEl.textContent = Math.min(500, Math.round(dispatched * 0.45));
-
-          const ansEl = document.getElementById('mockTestAnswered');
-          if (ansEl) ansEl.textContent = answered;
-
-          const busyEl = document.getElementById('mockTestBusy');
-          if (busyEl) busyEl.textContent = busyNoAns;
-
-          if (dispatched >= totalTarget) {
-            this.finishMockTestUI(null, totalTarget, elapsedSec, answered, busyNoAns);
-            return;
-          }
-
-          // Schedule next 1-second batch
-          this.mockTestTimeout = setTimeout(runBatch, 1000);
-        } else {
-          this.showToast(data.error || 'Batch failed', 'error');
-          this.stopMockVolumeTest();
+    logs.forEach(l => {
+      const ts = l.timestamp ? new Date(l.timestamp).getTime() : 0;
+      if (ts > 0) {
+        const diff = now - ts;
+        const bucketIdx = Math.floor(diff / bucketDurationMs);
+        if (bucketIdx >= 0 && bucketIdx < 10) {
+          buckets[9 - bucketIdx]++;
         }
-      } catch (e) {
-        this.showToast('Network error during mock dispatch: ' + e.message, 'error');
-        this.stopMockVolumeTest();
       }
-    };
+    });
 
-    runBatch();
+    const maxCount = Math.max(1, ...buckets);
+    chart.innerHTML = buckets.map((cnt, i) => {
+      const minsAgo = (9 - i) * 10;
+      const pct = Math.max(12, Math.round((cnt / maxCount) * 95));
+      const isPeak = cnt === maxCount && cnt > 0;
+      const title = minsAgo === 0 ? ('Current: ' + cnt + ' calls') : (minsAgo + ' min ago: ' + cnt + ' calls');
+      return '<div class="sc-bar ' + (isPeak ? 'highlight' : '') + '" style="height:' + pct + '%;" title="' + title + '"></div>';
+    }).join('');
   }
 
-  stopMockVolumeTest() {
-    this.isMockTestRunning = false;
-    if (this.mockTestTimeout) clearTimeout(this.mockTestTimeout);
-    const btn = document.getElementById('btnRunMockVolumeTest');
-    const btnStop = document.getElementById('btnStopMockVolumeTest');
-    if (btn) btn.style.display = 'inline-block';
-    if (btnStop) btnStop.style.display = 'none';
-    const titleEl = document.getElementById('mockTestHeaderTitle');
-    if (titleEl) titleEl.innerHTML = '⏹ Mock Test Stopped';
-  }
-
-  finishMockTestUI(data, totalTarget, elapsedSec, ansCount, busyCount) {
-    this.stopMockVolumeTest();
-    this.showToast(`1,000 CPM Mock Test Completed! Dispatched ${totalTarget} mock calls.`, 'success');
-    const titleEl = document.getElementById('mockTestHeaderTitle');
-    if (titleEl) titleEl.innerHTML = `✔ Mock Volume Test Completed Successfully (${totalTarget} Calls in ${elapsedSec ? elapsedSec.toFixed(1) : ''}s)`;
-    const barEl = document.getElementById('mockTestProgressBar');
-    if (barEl) barEl.style.width = '100%';
-    const countEl = document.getElementById('mockTestCount');
-    if (countEl) countEl.textContent = `${totalTarget} / ${totalTarget} (100%)`;
-  }
-
-  getTodayLeads() {
+    getTodayLeads() {
     const today = this.serverToday || new Date().toISOString().split('T')[0];
     return this.leads.filter(l => l.is_today || l.effective_date === today || (!l.effective_date && !l.is_past));
   }
@@ -2641,7 +3167,7 @@ class SkyKinDialerApp {
     }
 
     if (this.activeAudioTitle) {
-      this.activeAudioTitle.textContent = this.campaign.ivr_audio_name || 'Human Welcome Recording (WAV)';
+      this.activeAudioTitle.textContent = this.campaign.ivr_audio_name || (this.audioRecordings?.[0]?.name) || 'Active IVR Audio';
     }
 
     if (this.audioPlayerElement && this.campaign.ivr_audio_file) {
@@ -2752,10 +3278,10 @@ class SkyKinDialerApp {
 
         const acct = l.account_number ? `<span style="font-family:monospace;background:#f1f5f9;padding:2px 7px;border-radius:4px;font-size:11.5px;color:#0f5132;font-weight:600;">${this.escapeHtml(l.account_number)}</span>` : '<span style="color:#94a3b8;">-</span>';
         const debtAmt = parseFloat(l.debt_amount || 0);
-        const curr = l.currency || 'ETB';
+        const curr = l.currency || this.settings?.currency || 'USD';
         const debtFormatted = debtAmt > 0
           ? `<span style="font-weight:700;color:#15803d;font-size:12.5px;">${curr} ${debtAmt.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`
-          : `<span style="color:#64748b;font-size:12px;">0.00 ETB</span>`;
+          : `<span style="color:#64748b;font-size:12px;">-</span>`;
 
         const campDisplay = l.campaign_name || this.campaign?.name || 'Campaign';
         const campBadge = `<span class="sc-badge running" style="font-size:11px;font-weight:700;padding:2px 8px;white-space:nowrap;" title="Campaign: ${this.escapeHtml(campDisplay)}">${this.escapeHtml(campDisplay)}</span>`;
@@ -3133,161 +3659,513 @@ class SkyKinDialerApp {
     }
   }
 
+  getLocalDateString(d = new Date()) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  setUnansDatePreset(preset, triggerRender = true) {
+    this.unansDatePreset = preset;
+    const now = new Date();
+    const todayStr = this.getLocalDateString(now);
+
+    const pillIds = ['datePillToday', 'datePillYesterday', 'datePill7Days', 'datePill30Days', 'datePillCustom'];
+    pillIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('active');
+    });
+
+    if (preset === 'today') {
+      this.unansDateFrom = todayStr;
+      this.unansDateTo = todayStr;
+      document.getElementById('datePillToday')?.classList.add('active');
+    } else if (preset === 'yesterday') {
+      const y = new Date();
+      y.setDate(y.getDate() - 1);
+      const yStr = this.getLocalDateString(y);
+      this.unansDateFrom = yStr;
+      this.unansDateTo = yStr;
+      document.getElementById('datePillYesterday')?.classList.add('active');
+    } else if (preset === '7days') {
+      const d7 = new Date();
+      d7.setDate(d7.getDate() - 7);
+      this.unansDateFrom = this.getLocalDateString(d7);
+      this.unansDateTo = todayStr;
+      document.getElementById('datePill7Days')?.classList.add('active');
+    } else if (preset === '30days') {
+      const d30 = new Date();
+      d30.setDate(d30.getDate() - 30);
+      this.unansDateFrom = this.getLocalDateString(d30);
+      this.unansDateTo = todayStr;
+      document.getElementById('datePill30Days')?.classList.add('active');
+    } else if (preset === 'custom') {
+      document.getElementById('datePillCustom')?.classList.add('active');
+    }
+
+    const fromInp = document.getElementById('unansDateFrom');
+    const toInp = document.getElementById('unansDateTo');
+    if (fromInp) fromInp.value = this.unansDateFrom;
+    if (toInp) toInp.value = this.unansDateTo;
+
+    this.unansCurrentPage = 1;
+    if (triggerRender) {
+      this.renderUnansweredTable();
+    }
+  }
+
+  onUnansDateInputChange() {
+    this.unansDatePreset = 'custom';
+    const pillIds = ['datePillToday', 'datePillYesterday', 'datePill7Days', 'datePill30Days'];
+    pillIds.forEach(id => document.getElementById(id)?.classList.remove('active'));
+    document.getElementById('datePillCustom')?.classList.add('active');
+
+    this.unansDateFrom = document.getElementById('unansDateFrom')?.value || '';
+    this.unansDateTo = document.getElementById('unansDateTo')?.value || '';
+    this.unansCurrentPage = 1;
+    this.renderUnansweredTable();
+  }
+
+  onUnansFilterChange() {
+    this.unansCurrentPage = 1;
+    this.renderUnansweredTable();
+  }
+
+  filterByResultCard(resultType) {
+    const statusSelect = document.getElementById('callbackStatusFilter');
+    if (statusSelect) {
+      statusSelect.value = resultType;
+    }
+    this.updateActiveResultCard(resultType);
+    this.unansCurrentPage = 1;
+    this.renderUnansweredTable();
+  }
+
+  updateActiveResultCard(activeType) {
+    const cards = [
+      { id: 'unansCardAll', type: '' },
+      { id: 'unansCardNoAnswer', type: 'no_answer' },
+      { id: 'unansCardBusy', type: 'busy' },
+      { id: 'unansCardFailed', type: 'failed' }
+    ];
+    cards.forEach(c => {
+      const el = document.getElementById(c.id);
+      if (el) {
+        if (c.type === activeType) {
+          el.classList.add('active');
+        } else {
+          el.classList.remove('active');
+        }
+      }
+    });
+  }
+
+  clearUnansFilters() {
+    this.setUnansDatePreset('today', false);
+    const searchInp = document.getElementById('callbackSearchInput');
+    const statusSelect = document.getElementById('callbackStatusFilter');
+    const campSelect = document.getElementById('callbackCampaignFilter');
+    const schedSelect = document.getElementById('callbackScheduleFilter');
+    if (searchInp) searchInp.value = '';
+    if (statusSelect) statusSelect.value = '';
+    if (campSelect) campSelect.value = '';
+    if (schedSelect) schedSelect.value = '';
+    this.updateActiveResultCard('');
+    this.unansCurrentPage = 1;
+    this.renderUnansweredTable();
+  }
+
+  toggleSelectAllUnanswered(checked) {
+    const checkboxes = document.querySelectorAll('#unansweredTableBody .unans-row-checkbox');
+    checkboxes.forEach(cb => {
+      cb.checked = checked;
+      const id = Number(cb.value);
+      if (checked) {
+        this.selectedUnansweredIds.add(id);
+      } else {
+        this.selectedUnansweredIds.delete(id);
+      }
+    });
+    this.updateBatchSelectionBar();
+  }
+
+  onUnansweredRowCheck(checkbox, id) {
+    const numId = Number(id);
+    if (checkbox.checked) {
+      this.selectedUnansweredIds.add(numId);
+    } else {
+      this.selectedUnansweredIds.delete(numId);
+    }
+    this.updateBatchSelectionBar();
+  }
+
+  clearUnansweredSelection() {
+    this.selectedUnansweredIds.clear();
+    const selectAll = document.getElementById('unansSelectAllCheck');
+    if (selectAll) selectAll.checked = false;
+    const checkboxes = document.querySelectorAll('#unansweredTableBody .unans-row-checkbox');
+    checkboxes.forEach(cb => { cb.checked = false; });
+    this.updateBatchSelectionBar();
+  }
+
+  updateBatchSelectionBar() {
+    const count = this.selectedUnansweredIds.size;
+    const countEl = document.getElementById('unansBatchSelectedCount');
+    if (countEl) {
+      countEl.textContent = `${count} selected`;
+    }
+    const selectAll = document.getElementById('unansSelectAllCheck');
+    const checkboxes = document.querySelectorAll('#unansweredTableBody .unans-row-checkbox');
+    if (selectAll && checkboxes.length > 0) {
+      const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+      selectAll.checked = allChecked;
+    }
+  }
+
+  async requeueSelectedUnanswered() {
+    if (!this.selectedUnansweredIds || this.selectedUnansweredIds.size === 0) {
+      this.showToast('Please select at least one contact to re-queue.', 'info');
+      return;
+    }
+    const leadIds = Array.from(this.selectedUnansweredIds);
+    const targetCampaignId = this.activeCampaignId || this.campaign?.id || 1;
+    const formData = new FormData();
+    formData.append('campaign_id', targetCampaignId);
+    formData.append('lead_ids', leadIds.join(','));
+
+    try {
+      const res = await fetch('api.php?action=requeue_unanswered', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data && data.success) {
+        this.selectedUnansweredIds.clear();
+        this.showToast(data.message || `Re-queued ${leadIds.length} contact(s)!`, 'success');
+        await this.loadCampaignData();
+        await this.loadCallbacksList();
+      } else {
+        this.showToast(data.error || 'Failed to re-queue selected contacts', 'error');
+      }
+    } catch (e) {
+      this.showToast('Network error re-queuing contacts', 'error');
+    }
+  }
+
+  rescheduleSelectedUnanswered() {
+    if (!this.selectedUnansweredIds || this.selectedUnansweredIds.size === 0) {
+      this.showToast('Please select at least one contact to reschedule.', 'info');
+      return;
+    }
+    const leadIds = Array.from(this.selectedUnansweredIds);
+    if (leadIds.length === 1) {
+      this.openRedialModal(leadIds[0]);
+    } else {
+      this.openBulkSmartRescheduleModal();
+    }
+  }
+
+  onUnansRowsPerPageChange(val) {
+    this.unansRowsPerPage = parseInt(val, 10) || 25;
+    this.unansCurrentPage = 1;
+    this.renderUnansweredTable();
+  }
+
+  prevUnansPage() {
+    if (this.unansCurrentPage > 1) {
+      this.unansCurrentPage--;
+      this.renderUnansweredTable();
+    }
+  }
+
+  nextUnansPage() {
+    this.unansCurrentPage++;
+    this.renderUnansweredTable();
+  }
+
+  formatHumanDateTime(raw) {
+    if (!raw || raw === '-') return '-';
+    const str = String(raw).trim();
+    if (str.startsWith('Today') || str.startsWith('Yesterday')) {
+      return str.replace(/,\s*0(\d:)/, ', $1');
+    }
+    const iso = str.replace(/(\+\d{2})$/, '$1:00').replace(' ', 'T');
+    let d = new Date(iso);
+    if (isNaN(d.getTime())) {
+      d = new Date(str.split('.')[0].replace(' ', 'T'));
+    }
+    if (isNaN(d.getTime())) return str;
+    const now = new Date();
+    const today = this.getLocalDateString(now);
+    const dYmd = this.getLocalDateString(d);
+    const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (dYmd === today) return `Today, ${timeStr}`;
+    const yest = new Date();
+    yest.setDate(yest.getDate() - 1);
+    if (dYmd === this.getLocalDateString(yest)) return `Yesterday, ${timeStr}`;
+    return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${timeStr}`;
+  }
+
+  getLeadEffectiveYmd(lead) {
+    if (!lead) return '';
+    const raw = lead.last_attempt_at || lead.scheduled_time || lead.created_at || '';
+    if (raw) {
+      const m = String(raw).match(/(\d{4}-\d{2}-\d{2})/);
+      if (m) return m[1];
+    }
+    const ct = lead.call_time || '';
+    if (ct.includes('Today')) {
+      return this.getLocalDateString(new Date());
+    }
+    if (ct.includes('Yesterday')) {
+      const y = new Date();
+      y.setDate(y.getDate() - 1);
+      return this.getLocalDateString(y);
+    }
+    const m2 = String(ct).match(/(\d{4}-\d{2}-\d{2})/);
+    if (m2) return m2[1];
+    return '';
+  }
+
   renderUnansweredTable() {
     const tbody = document.getElementById('unansweredTableBody');
     const badge = document.getElementById('badgeUnansweredCount');
+    const missedBadge = document.getElementById('unansTabCountBadge');
+    const cbsBadge = document.getElementById('callbacksTabCountBadge');
 
     const cbs = this.callbacksList || [];
     const missed = (this.leads || []).filter(l => ['no_answer', 'busy', 'failed'].includes(l.status));
     const totalCount = cbs.length + missed.length;
-    if (badge) badge.textContent = totalCount;
+    if (badge) {
+      badge.textContent = totalCount;
+      badge.style.display = totalCount > 0 ? 'inline-block' : 'none';
+    }
+    if (missedBadge) missedBadge.textContent = missed.length;
+    if (cbsBadge) cbsBadge.textContent = cbs.length;
+
+    // Metric counts
+    const countNoAnswer = missed.filter(l => l.status === 'no_answer').length;
+    const countBusy = missed.filter(l => l.status === 'busy').length;
+    const countFailed = missed.filter(l => l.status === 'failed').length;
+    const elAll = document.getElementById('unansMetricAll');
+    const elNoAnswer = document.getElementById('unansMetricNoAnswer');
+    const elBusy = document.getElementById('unansMetricBusy');
+    const elFailed = document.getElementById('unansMetricFailed');
+    if (elAll) elAll.textContent = missed.length;
+    if (elNoAnswer) elNoAnswer.textContent = countNoAnswer;
+    if (elBusy) elBusy.textContent = countBusy;
+    if (elFailed) elFailed.textContent = countFailed;
+
+    // Populate Campaign Filter dropdown if not populated
+    const campSelect = document.getElementById('callbackCampaignFilter');
+    if (campSelect && campSelect.options.length <= 1) {
+      const campaigns = this.allCampaigns || this.selectedCampaigns || [];
+      if (campaigns.length > 0) {
+        campaigns.forEach(c => {
+          const opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.name;
+          campSelect.appendChild(opt);
+        });
+      }
+    }
+
+    // Ensure Date inputs initialized
+    if (!this.unansDateFrom && !this.unansDateTo) {
+      this.setUnansDatePreset('today', false);
+    }
 
     if (!tbody) return;
 
+    const isCallbacks = (this.unansweredSubTab === 'callbacks');
     const searchVal = document.getElementById('callbackSearchInput')?.value.toLowerCase().trim() || '';
     const statusVal = document.getElementById('callbackStatusFilter')?.value.toLowerCase().trim() || '';
-    const dateVal = document.getElementById('callbackDateFilter')?.value.toLowerCase().trim() || '';
+    const campVal = document.getElementById('callbackCampaignFilter')?.value || '';
+    const schedVal = document.getElementById('callbackScheduleFilter')?.value || '';
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    // Synchronize active card outline with statusVal
+    this.updateActiveResultCard(statusVal);
 
-    // 1. Filter callbacks
-    const filteredCbs = cbs.filter(cb => {
+    let itemsToFilter = isCallbacks ? cbs : missed;
+
+    const filtered = itemsToFilter.filter(item => {
+      // 1. Search filter
       if (searchVal) {
-        const matchesName = cb.customer_name && cb.customer_name.toLowerCase().includes(searchVal);
-        const matchesPhone = cb.phone_number && cb.phone_number.includes(searchVal);
-        const matchesNotes = cb.notes && cb.notes.toLowerCase().includes(searchVal);
-        const matchesAgent = cb.assigned_agent && String(cb.assigned_agent).toLowerCase().includes(searchVal);
-        if (!matchesName && !matchesPhone && !matchesNotes && !matchesAgent) return false;
+        const name = (item.customer_name || item.lead_name || '').toLowerCase();
+        const phone = (item.phone_number || '').toLowerCase();
+        const camp = (item.campaign_name || '').toLowerCase();
+        const notes = (item.notes || '').toLowerCase();
+        const reason = (item.error_message || '').toLowerCase();
+        if (!name.includes(searchVal) && !phone.includes(searchVal) && !camp.includes(searchVal) && !notes.includes(searchVal) && !reason.includes(searchVal)) {
+          return false;
+        }
       }
 
+      // 2. Call result filter
       if (statusVal) {
-        if (statusVal === 'scheduled' && cb.status === 'completed') return false;
-        if (statusVal === 'completed' && cb.status !== 'completed') return false;
-        if (['no_answer', 'busy', 'failed'].includes(statusVal)) return false;
+        if (!isCallbacks) {
+          if (item.status !== statusVal) return false;
+        } else {
+          if (statusVal === 'completed' && item.status !== 'completed') return false;
+          if (statusVal === 'pending' && item.status === 'completed') return false;
+        }
       }
 
-      if (dateVal && cb.scheduled_time) {
-        const schedTime = cb.scheduled_time.replace(' ', 'T');
-        const schedDate = schedTime.split('T')[0];
-        const schedTs = new Date(schedTime).getTime();
-        const now = Date.now();
-        if (dateVal === 'today' && schedDate !== todayStr) return false;
-        if (dateVal === 'past_due' && (isNaN(schedTs) || schedTs >= now)) return false;
-        if (dateVal === 'upcoming' && (isNaN(schedTs) || schedTs < now)) return false;
+      // 3. Campaign filter
+      if (campVal) {
+        const itemCampId = item.campaign_id;
+        if (itemCampId && String(itemCampId) !== String(campVal)) return false;
+      }
+
+      // 4. Schedule filter
+      if (schedVal) {
+        const sched = this.getLeadScheduleInfo ? this.getLeadScheduleInfo(item) : { type: 'today' };
+        if (schedVal === 'today' && sched.type !== 'today') return false;
+        if (schedVal === 'past_due' && sched.type !== 'past_due') return false;
+        if (schedVal === 'upcoming' && sched.type !== 'upcoming') return false;
+      }
+
+      // 5. Date filter
+      const itemYmd = this.getLeadEffectiveYmd(item);
+      if (itemYmd) {
+        if (this.unansDateFrom && itemYmd < this.unansDateFrom) return false;
+        if (this.unansDateTo && itemYmd > this.unansDateTo) return false;
       }
 
       return true;
     });
 
-    // 2. Filter missed leads
-    const filteredMissed = missed.filter(l => {
-      if (searchVal) {
-        const matchesName = l.customer_name && l.customer_name.toLowerCase().includes(searchVal);
-        const matchesPhone = l.phone_number && l.phone_number.includes(searchVal);
-        const matchesReason = (l.error_message || '').toLowerCase().includes(searchVal);
-        if (!matchesName && !matchesPhone && !matchesReason) return false;
-      }
-
-      if (statusVal) {
-        if (statusVal === 'scheduled' || statusVal === 'completed') return false;
-        if (statusVal === 'no_answer' && l.status !== 'no_answer') return false;
-        if (statusVal === 'busy' && l.status !== 'busy') return false;
-        if (statusVal === 'failed' && l.status !== 'failed') return false;
-      }
-
-      if (dateVal) {
-        const sched = this.getLeadScheduleInfo(l);
-        if (dateVal === 'today' && sched.type !== 'today') return false;
-        if (dateVal === 'past_due' && sched.type !== 'past_due') return false;
-        if (dateVal === 'upcoming' && sched.type !== 'upcoming') return false;
-        if (dateVal === 'immediate' && sched.type !== 'immediate') return false;
-      }
-
-      return true;
-    });
-
-    const displayedCount = filteredCbs.length + filteredMissed.length;
+    // Subtitle update
     const subTitle = document.getElementById('callbacksSubtitle');
     if (subTitle) {
-      if (displayedCount !== totalCount) {
-        subTitle.textContent = `Showing ${displayedCount} of ${totalCount} customers requiring follow-up callbacks or redials.`;
-      } else {
-        subTitle.textContent = `Customers requiring follow-up callbacks or redials.`;
-      }
+      subTitle.textContent = isCallbacks
+        ? `Showing ${filtered.length} of ${cbs.length} scheduled follow-up callbacks requested by contacts.`
+        : `Calls that were not answered, were busy, or failed, and follow-up calls requested by contacts.`;
     }
 
-    tbody.innerHTML = '';
+    // Pagination calculations
+    const total = filtered.length;
+    const rowsPerPage = this.unansRowsPerPage || 25;
+    const totalPages = Math.max(1, Math.ceil(total / rowsPerPage));
+    if (this.unansCurrentPage > totalPages) this.unansCurrentPage = totalPages;
+    if (this.unansCurrentPage < 1) this.unansCurrentPage = 1;
 
-    if (displayedCount === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:24px;">No callbacks or missed leads match your search/filters.</td></tr>`;
+    const startIndex = (this.unansCurrentPage - 1) * rowsPerPage;
+    const endIndex = Math.min(startIndex + rowsPerPage, total);
+    const pageItems = filtered.slice(startIndex, endIndex);
+
+    // Showing text
+    const showingText = document.getElementById('unansPaginationShowingText');
+    if (showingText) {
+      const fromNum = total === 0 ? 0 : startIndex + 1;
+      const label = isCallbacks ? 'scheduled callbacks' : 'unanswered calls';
+      showingText.textContent = `Showing ${fromNum} to ${endIndex} of ${total} ${label}`;
+    }
+
+    // Prev / Next button states
+    const btnPrev = document.getElementById('unansBtnPrevPage');
+    const btnNext = document.getElementById('unansBtnNextPage');
+    if (btnPrev) btnPrev.disabled = (this.unansCurrentPage <= 1);
+    if (btnNext) btnNext.disabled = (this.unansCurrentPage >= totalPages || total === 0);
+
+    // Render Table Body
+    tbody.innerHTML = '';
+    if (pageItems.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#94a3b8;padding:36px 16px;">No contacts match your filters in this view.</td></tr>`;
+      this.updateBatchSelectionBar();
       return;
     }
 
-    let rowIdx = 1;
+    const defaultCampName = this.campaign?.name || 'Default';
 
-    // 1. Render Scheduled Callbacks from PostgreSQL
-    filteredCbs.forEach(cb => {
-      const isCompleted = cb.status === 'completed';
-      const sched = cb.scheduled_time ? cb.scheduled_time.replace('T', ' ').substring(0, 16) : 'Scheduled';
+    pageItems.forEach(item => {
+      const isChecked = this.selectedUnansweredIds.has(Number(item.id));
       const tr = document.createElement('tr');
-      tr.style.background = isCompleted ? '#ffffff' : '#f0fdf4';
+      if (isChecked) tr.style.background = '#f0fdf4';
+
+      const custName = item.customer_name || item.lead_name || 'Customer';
+      const phone = item.phone_number || '';
+      const campName = item.campaign_name || defaultCampName;
+      const attempts = item.attempts || item.attempt_count || 1;
+      const lastAttempt = this.formatHumanDateTime(item.last_attempt_at || item.created_at);
+      const scheduledCall = this.formatHumanDateTime(item.call_time || item.scheduled_time);
+
+      // Result Badge
+      let badgeHtml = '';
+      if (!isCallbacks) {
+        if (item.status === 'no_answer') {
+          badgeHtml = `
+            <div class="unans-result-badge unans-badge-no-answer">
+              <span class="unans-badge-title">No answer</span>
+              <span class="unans-badge-sub">Timeout</span>
+            </div>
+          `;
+        } else if (item.status === 'busy') {
+          badgeHtml = `
+            <div class="unans-result-badge unans-badge-busy">
+              <span class="unans-badge-title">Busy</span>
+              <span class="unans-badge-sub">Busy line</span>
+            </div>
+          `;
+        } else {
+          badgeHtml = `
+            <div class="unans-result-badge unans-badge-failed">
+              <span class="unans-badge-title">Failed</span>
+              <span class="unans-badge-sub">${this.escapeHtml(item.error_message || 'Call failed')}</span>
+            </div>
+          `;
+        }
+      } else {
+        const isDone = item.status === 'completed';
+        badgeHtml = `
+          <div class="unans-result-badge ${isDone ? 'unans-badge-completed' : 'unans-badge-callback'}">
+            <span class="unans-badge-title">${isDone ? 'Completed' : 'Callback'}</span>
+            <span class="unans-badge-sub">${this.escapeHtml(item.notes || (isDone ? 'Finished' : 'Pending'))}</span>
+          </div>
+        `;
+      }
+
+      // Actions
+      let actionsHtml = '';
+      if (!isCallbacks) {
+        actionsHtml = `
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:4px;">
+            <button type="button" class="unans-row-btn" onclick="app.clickToDial('${this.escapeHtml(phone)}', '${this.escapeHtml(custName)}')">Call now</button>
+            <button type="button" class="unans-row-btn" onclick="app.requeueSingleLead(${item.id})">Re-queue</button>
+            <button type="button" class="unans-row-btn" onclick="app.openRedialModal(${item.id})">Reschedule</button>
+          </div>
+        `;
+      } else {
+        const isDone = item.status === 'completed';
+        actionsHtml = `
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:4px;">
+            <button type="button" class="unans-row-btn" onclick="app.clickToDial('${this.escapeHtml(phone)}', '${this.escapeHtml(custName)}')">Call now</button>
+            <button type="button" class="unans-row-btn" onclick="app.completeCallback(${item.id})">${isDone ? 'Completed' : 'Done'}</button>
+            <button type="button" class="unans-row-btn" onclick="app.openRescheduleModal(${item.id}, '${this.escapeHtml(custName)}', '${this.escapeHtml(phone)}', '${item.scheduled_time || ''}')">Reschedule</button>
+          </div>
+        `;
+      }
+
       tr.innerHTML = `
-        <td>${rowIdx++}</td>
-        <td><strong>${this.escapeHtml(cb.customer_name || 'Customer')}</strong></td>
+        <td style="width:36px;text-align:center;">
+          <input type="checkbox" class="unans-row-checkbox" value="${item.id}" ${isChecked ? 'checked' : ''} onchange="app.onUnansweredRowCheck(this, ${item.id})">
+        </td>
+        <td><strong style="color:#0f172a;">${this.escapeHtml(custName)}</strong></td>
         <td>
-          <a href="javascript:void(0)" onclick="app.clickToDial('${this.escapeHtml(cb.phone_number)}', '${this.escapeHtml(cb.customer_name)}')" style="color:#00A651;font-weight:700;text-decoration:none;">
-            ${this.escapeHtml(cb.phone_number)}
+          <a href="javascript:void(0)" onclick="app.clickToDial('${this.escapeHtml(phone)}', '${this.escapeHtml(custName)}')" style="color:#00A651;font-weight:700;text-decoration:none;">
+            ${this.escapeHtml(phone)}
           </a>
         </td>
-        <td>
-          <span class="sc-badge ${isCompleted ? 'done' : 'running'}" style="font-size:11px;">
-            ${isCompleted ? 'Completed' : 'Scheduled Callback'}
-          </span>
-          <small style="color:#475569;margin-left:6px;">${this.escapeHtml(cb.notes || '')}</small>
-        </td>
-        <td><span style="font-size:11.5px;color:#0369a1;font-weight:700;">${this.escapeHtml(sched)}</span></td>
-        <td style="font-size:11.5px;color:#64748b;">Assigned: Agent ${this.escapeHtml(cb.assigned_agent || '101')}</td>
-        <td style="white-space:nowrap;">
-          <button class="btn btn-primary btn-sm" onclick="app.clickToDial('${this.escapeHtml(cb.phone_number)}', '${this.escapeHtml(cb.customer_name)}')" title="Instant Call">
-            Dial
-          </button>
-          ${!isCompleted ? `
-            <button class="btn btn-success btn-sm" onclick="app.completeCallback(${cb.id})" style="margin-left:4px;" title="Mark Completed">✓</button>
-            <button class="btn btn-secondary btn-sm" onclick="app.openRescheduleModal(${cb.id}, '${this.escapeHtml(cb.customer_name)}', '${this.escapeHtml(cb.phone_number)}', '${cb.scheduled_time || ''}')" style="margin-left:4px;" title="Reschedule Callback">Reschedule</button>
-          ` : `
-            <button class="btn btn-secondary btn-sm" onclick="app.openRescheduleModal(${cb.id}, '${this.escapeHtml(cb.customer_name)}', '${this.escapeHtml(cb.phone_number)}', '${cb.scheduled_time || ''}')" style="margin-left:4px;" title="Reschedule Callback">Reschedule</button>
-          `}
-        </td>
+        <td style="color:#334155;">${this.escapeHtml(campName)}</td>
+        <td>${badgeHtml}</td>
+        <td style="color:#334155;font-weight:600;">${attempts}</td>
+        <td style="color:#334155;white-space:nowrap;">${lastAttempt}</td>
+        <td style="color:#334155;white-space:nowrap;">${scheduledCall}</td>
+        <td style="text-align:right;white-space:nowrap;">${actionsHtml}</td>
       `;
+
       tbody.appendChild(tr);
     });
 
-    // 2. Render Unanswered / Busy Leads
-    filteredMissed.forEach(l => {
-      const tr = document.createElement('tr');
-      const stBadge = this.getStatusBadge(l.status);
-      const lastAttempt = l.last_attempt_at || '-';
-      const reason = l.error_message || (l.status === 'no_answer' ? 'No Answer / Timeout' : (l.status === 'busy' ? 'Busy Line' : 'Call Failed'));
-
-      tr.innerHTML = `
-        <td>${rowIdx++}</td>
-        <td><strong>${this.escapeHtml(l.customer_name || 'Customer')}</strong></td>
-        <td>
-          <a href="javascript:void(0)" onclick="app.clickToDial('${this.escapeHtml(l.phone_number)}', '${this.escapeHtml(l.customer_name)}')" style="color:#00A651;font-weight:700;text-decoration:none;">
-            ${this.escapeHtml(l.phone_number)}
-          </a>
-        </td>
-        <td>${stBadge} <small style="color:#64748b;margin-left:4px;">(${this.escapeHtml(reason)})</small></td>
-        <td><span style="font-size:11.5px;color:#0369a1;">${this.escapeHtml(l.call_time || '-')}</span></td>
-        <td style="font-size:11.5px;color:#64748b;">${this.escapeHtml(lastAttempt)}</td>
-        <td style="white-space:nowrap;">
-          <button class="btn btn-primary btn-sm" onclick="app.clickToDial('${this.escapeHtml(l.phone_number)}', '${this.escapeHtml(l.customer_name)}')" title="Dial Customer">Dial</button>
-          <button class="btn btn-secondary btn-sm" onclick="app.requeueSingleLead(${l.id})" style="margin-left:4px;" title="Move back to Calling Queue">Re-queue</button>
-          <button class="btn btn-secondary btn-sm" onclick="app.openRedialModal(${l.id})" style="margin-left:4px;" title="Schedule Redial">Reschedule</button>
-        </td>
-      `;
-      tbody.appendChild(tr);
-    });
+    this.updateBatchSelectionBar();
   }
 
   async completeCallback(callbackId) {
@@ -3606,24 +4484,31 @@ class SkyKinDialerApp {
   }
 
   getStatusBadge(st, lead = null) {
+    let baseBadge = '';
     if (st === 'pending' && lead && this.isLeadPastDue(lead)) {
-      return '<span style="background:#fff7ed;color:#c2410c;padding:3px 9px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fed7aa;box-shadow:0 1px 2px rgba(194,65,12,0.08);" title="Scheduled call time has passed"><span style="width:6px;height:6px;border-radius:50%;background:#f97316;display:inline-block;"></span>Past Due</span>';
+      baseBadge = '<span style="background:#fff7ed;color:#c2410c;padding:3px 9px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fed7aa;box-shadow:0 1px 2px rgba(194,65,12,0.08);" title="Scheduled call time has passed"><span style="width:6px;height:6px;border-radius:50%;background:#f97316;display:inline-block;"></span>Past Due</span>';
+    } else if (st === 'pending') {
+      baseBadge = '<span style="background:#f1f5f9;color:#475569;padding:3px 9px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #cbd5e1;"><span style="width:6px;height:6px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>Pending</span>';
+    } else {
+      const map = {
+        'pending': '<span style="background:#f1f5f9;color:#475569;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #e2e8f0;"><span style="width:6px;height:6px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>Pending</span>',
+        'calling': '<span style="background:#fef3c7;color:#b45309;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fde68a;box-shadow:0 0 8px rgba(245,158,11,0.25);"><span style="width:7px;height:7px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>Calling...</span>',
+        'answered': '<span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bbf7d0;"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block;"></span>Answered</span>',
+        'ivr_playing': '<span style="background:#dbeafe;color:#1d4ed8;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bfdbfe;"><span style="width:6px;height:6px;border-radius:50%;background:#3b82f6;display:inline-block;"></span>IVR Playing</span>',
+        'ivr_completed': '<span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bbf7d0;"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block;"></span>Completed</span>',
+        'completed': '<span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bbf7d0;"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block;"></span>Completed</span>',
+        'busy': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>Busy</span>',
+        'no_answer': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>No Answer</span>',
+        'failed': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>Failed</span>'
+      };
+      baseBadge = map[st] || `<span style="background:#f1f5f9;color:#475569;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;">${st}</span>`;
     }
-    if (st === 'pending') {
-      return '<span style="background:#f1f5f9;color:#475569;padding:3px 9px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #cbd5e1;"><span style="width:6px;height:6px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>Pending</span>';
+
+    if (lead && lead.dtmf_response) {
+      const outcomeTxt = lead.error_message ? ` ${this.escapeHtml(lead.error_message)}` : '';
+      baseBadge += `<div style="margin-top:4px;display:inline-flex;align-items:center;gap:4px;background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;padding:2px 7px;border-radius:12px;font-size:11px;font-weight:700;" title="Customer Keypad Response"><span style="background:#0284c7;color:#fff;border-radius:3px;padding:0 4px;font-size:10px;font-weight:800;">Key ${this.escapeHtml(lead.dtmf_response)}</span><span>${outcomeTxt}</span></div>`;
     }
-    const map = {
-      'pending': '<span style="background:#f1f5f9;color:#475569;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #e2e8f0;"><span style="width:6px;height:6px;border-radius:50%;background:#94a3b8;display:inline-block;"></span>Pending</span>',
-      'calling': '<span style="background:#fef3c7;color:#b45309;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fde68a;box-shadow:0 0 8px rgba(245,158,11,0.25);"><span style="width:7px;height:7px;border-radius:50%;background:#f59e0b;display:inline-block;"></span>Calling...</span>',
-      'answered': '<span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bbf7d0;"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block;"></span>Answered</span>',
-      'ivr_playing': '<span style="background:#dbeafe;color:#1d4ed8;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bfdbfe;"><span style="width:6px;height:6px;border-radius:50%;background:#3b82f6;display:inline-block;"></span>IVR Playing</span>',
-      'ivr_completed': '<span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bbf7d0;"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block;"></span>Completed</span>',
-      'completed': '<span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bbf7d0;"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block;"></span>Completed</span>',
-      'busy': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>Busy</span>',
-      'no_answer': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>No Answer</span>',
-      'failed': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>Failed</span>'
-    };
-    return map[st] || `<span style="background:#f1f5f9;color:#475569;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;">${st}</span>`;
+    return baseBadge;
   }
 
   populateAudioDropdown() {
@@ -3651,32 +4536,24 @@ class SkyKinDialerApp {
     tbody.innerHTML = '';
 
     if (!this.audioRecordings || this.audioRecordings.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:20px;">No audio recordings found. Click "Upload New Audio" to add one.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:20px;">No audio recordings uploaded yet. Click "Upload New Audio" to add one.</td></tr>`;
       return;
     }
 
-    this.audioRecordings.forEach((a, idx) => {
+    this.audioRecordings.forEach((a) => {
       const isActive = this.campaign && (this.campaign.ivr_audio_name === a.name || this.campaign.ivr_audio_file === a.filepath);
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td>${idx + 1}</td>
-        <td><strong style="color:#00A651;">${this.escapeHtml(a.name)}</strong></td>
+        <td><strong style="color:#00A651;">${this.escapeHtml(a.name)}</strong> ${isActive ? '<span class="sc-badge done" style="font-size:10px;padding:1px 6px;">Active</span>' : ''}</td>
         <td style="font-size:12px;color:#64748b;font-family:monospace;">${this.escapeHtml(a.filename || a.filepath)}</td>
         <td>
-          ${isActive 
-            ? '<span class="status-badge answered" style="font-weight:700;">Active IVR</span>' 
-            : '<span class="status-badge pending">Inactive</span>'}
+          <button type="button" class="btn btn-secondary btn-sm" onclick="app.previewAudioItem('${this.escapeHtml(a.filepath || '')}')">Play</button>
         </td>
-        <td>
-          <button class="btn btn-secondary btn-sm" onclick="app.previewAudioItem('${this.escapeHtml(a.filepath || '')}')" title="Play Preview">Play</button>
-        </td>
-        <td>
+        <td style="text-align:right;white-space:nowrap;">
           ${isActive 
-            ? '<button class="btn btn-sm btn-success" disabled>Active</button>'
-            : `<button class="btn btn-sm btn-primary" onclick="app.selectAudioRecording(${a.id})">Use for Calls</button>`}
-          ${a.id > 1 
-            ? `<button class="btn btn-sm btn-secondary" onclick="app.deleteAudioRecording(${a.id})" style="color:#ef4444;margin-left:4px;" title="Delete Recording">Delete</button>`
-            : ''}
+            ? '<button type="button" class="btn btn-sm btn-success" disabled>Active</button>' 
+            : `<button type="button" class="btn btn-sm btn-primary" onclick="app.selectAudioRecording(${a.id})">Use for Calls</button>`}
+          <button type="button" class="btn btn-sm btn-danger" onclick="app.deleteAudioRecording(${a.id})" style="margin-left:4px;">Delete</button>
         </td>
       `;
       tbody.appendChild(tr);
@@ -4326,7 +5203,7 @@ class SkyKinDialerApp {
 
   async dialCustomerLead(lead, lineNum = 1, pacingDelay = 2) {
     const channelId = `ch_l${lineNum}_${lead.id}_${Date.now()}`;
-    const audioSrc = lead.ivr_audio_file || this.campaign?.ivr_audio_file || 'assets/audio/welcome_human_voice.wav';
+    const audioSrc = lead.ivr_audio_file || this.campaign?.ivr_audio_file || (this.audioRecordings?.[0]?.filepath) || '';
     const dom = localStorage.getItem('sip_domain') || this.sipDomain || 'client1.skykin.local';
 
     const lineObj = lineNum === 2 ? this.line2 : this.line1;
@@ -4348,7 +5225,7 @@ class SkyKinDialerApp {
     this.renderLeadsTables();
 
     let isFinished = false;
-    const finishCall = async (finalStatus, durationSec, errorMsg = '') => {
+    const finishCall = async (finalStatus, durationSec, errorMsg = '', dtmfPressed = '') => {
       if (isFinished) return;
       isFinished = true;
 
@@ -4358,10 +5235,11 @@ class SkyKinDialerApp {
       lead.status = finalStatus;
       lead.duration_sec = durationSec;
       if (errorMsg) lead.error_message = errorMsg;
+      if (dtmfPressed) lead.dtmf_response = dtmfPressed;
       this.renderActiveChannels();
       this.renderLeadsTables();
 
-      await this.updateLeadStatusBackend(lead.id, finalStatus, durationSec, errorMsg);
+      await this.updateLeadStatusBackend(lead.id, finalStatus, durationSec, errorMsg, dtmfPressed || lead.dtmf_response || '');
       await this.loadCampaignData();
 
       // Proceed to the next customer in the queue for this line
@@ -4390,7 +5268,7 @@ class SkyKinDialerApp {
       channelData.cancelRinging = () => {
         if (ringingTimeout) clearTimeout(ringingTimeout);
       };
-      channelData.finishCall = (st, dur, err) => finishCall(st, dur, err);
+      channelData.finishCall = (st, dur, err, dtmf) => finishCall(st, dur, err, dtmf);
 
       ringingTimeout = setTimeout(async () => {
         if (isFinished || !this.isRunning) return;
@@ -4400,7 +5278,7 @@ class SkyKinDialerApp {
         this.renderActiveChannels();
         this.renderLeadsTables();
         await this.updateLeadStatusBackend(lead.id, 'answered', 1);
-        this.showToast(`Line ${lineNum}: Connected to ${lead.customer_name || 'Customer'} (${lead.phone_number}) [IVR Broadcast]`, 'success');
+        this.showToast(`Line ${lineNum}: Connected to ${lead.customer_name || 'Customer'} (${lead.phone_number})`, 'success');
 
         channelData.timerInterval = setInterval(() => {
           callSec++;
@@ -4409,29 +5287,7 @@ class SkyKinDialerApp {
           this.renderActiveChannels();
         }, 1000);
 
-        try {
-          broadcastAudio = new Audio(audioSrc);
-          channelData.audioPlayer = broadcastAudio;
-          broadcastAudio.play().catch(e => {
-            console.warn('Broadcast audio note:', e);
-          });
-
-          broadcastAudio.onended = () => {
-            setTimeout(() => {
-              finishCall('completed', callSec || 1);
-            }, 600);
-          };
-
-          broadcastAudio.onerror = () => {
-            setTimeout(() => {
-              finishCall('completed', Math.max(5, callSec));
-            }, 8000);
-          };
-        } catch (e) {
-          setTimeout(() => {
-            finishCall('completed', Math.max(5, callSec));
-          }, 8000);
-        }
+        await this.startIvrSessionForChannel(channelData, null, lineNum, audioSrc, finishCall);
       }, 2500);
 
       return;
@@ -4450,7 +5306,7 @@ class SkyKinDialerApp {
         lead.status = 'answered';
         this.renderActiveChannels();
         this.renderLeadsTables();
-        this.updateLeadStatusBackend(lead.id, 'answered', 1);
+        await this.updateLeadStatusBackend(lead.id, 'answered', 1);
 
         channelData.timerInterval = setInterval(() => {
           callSec++;
@@ -4459,13 +5315,7 @@ class SkyKinDialerApp {
           this.renderActiveChannels();
         }, 1000);
 
-        // Stream IVR audio directly into customer's phone call
-        await this.playIvrAudioIntoPeerConnection(audioSrc, pc, () => {
-          setTimeout(() => {
-            this.sipHangup(lineNum);
-            finishCall('completed', callSec || 1);
-          }, 500);
-        }, lineNum);
+        await this.startIvrSessionForChannel(channelData, pc, lineNum, audioSrc, finishCall);
       },
       onTerminated: () => {
         finishCall(callSec > 0 ? 'completed' : 'no_answer', callSec);
@@ -4498,12 +5348,59 @@ class SkyKinDialerApp {
         const durStr = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
         const campDisplay = ch.lead.campaign_name || this.campaign?.name || 'Outbound';
         const audioNameDisplay = ch.lead.ivr_audio_name || this.campaign?.ivr_audio_name || 'Human Greeting';
+        const isAnswered = (ch.status === 'answered');
+        const isInteractive = (ch.ivrMode === 'interactive');
+
+        let modeBadge = 'Dialing...';
+        if (isAnswered) {
+          modeBadge = isInteractive ? 'Interactive IVR Menu' : 'Announcement IVR';
+        }
+
+        let interactiveHtml = '';
+        if (isAnswered && isInteractive) {
+          if (ch.dtmfPressed) {
+            interactiveHtml = `
+              <div style="font-size:11.5px;color:#0369a1;background:#e0f2fe;border:1px solid #bae6fd;padding:6px 10px;border-radius:6px;font-weight:700;margin-top:6px;">
+                Key [${ch.dtmfPressed}] Pressed: ${this.escapeHtml(ch.dtmfOutcome || '')}
+                ${ch.ivrState === 'playing_response_audio' ? '<br><span style="font-size:10.5px;color:#0284c7;font-weight:600;">🔊 Playing Key Response Audio...</span>' : ''}
+              </div>
+            `;
+          } else {
+            const stepLabel = ch.ivrState === 'playing_greeting'
+              ? '🔊 Step 1: Playing Greeting Audio'
+              : (ch.ivrState === 'playing_menu'
+                  ? '📢 Step 2: Playing Menu Instructions (Press 1 or 2)'
+                  : '⏳ Step 3: Awaiting Customer Keypad (1 or 2)');
+            const keysObj = ch.ivrConfig?.keys || {};
+            const keyList = Object.values(keysObj);
+            interactiveHtml = `
+              <div style="font-size:11px;color:#334155;background:#f8fafc;padding:6px 8px;border-radius:6px;border:1px solid #e2e8f0;margin-top:6px;">
+                <div style="font-weight:700;margin-bottom:4px;color:#0369a1;font-size:11px;">${stepLabel}</div>
+                <div style="font-weight:600;margin-bottom:4px;color:#64748b;font-size:10.5px;">Keypad Options (Caller phone or click to simulate):</div>
+                <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                  ${keyList.map(k => `
+                    <button type="button" class="btn btn-xs btn-outline-success" onclick="app.handleIvrDtmfInput(${ch.lineNum}, '${k.key}')" style="font-size:11px;font-weight:700;padding:2px 8px;background:#fff;border-color:#86efac;color:#166534;" title="${this.escapeHtml(k.outcome || k.action)}">
+                      [${k.key}] ${this.escapeHtml(k.outcome || k.action)}
+                    </button>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+          }
+        } else if (isAnswered && !isInteractive) {
+          interactiveHtml = `
+            <div style="font-size:11px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;padding:4px 8px;border-radius:4px;margin-top:6px;">
+              📢 Play &amp; Hang Up Mode: Call will auto-disconnect upon completion.
+            </div>
+          `;
+        }
+
         const card = document.createElement('div');
-        card.className = `channel-card ${ch.status === 'answered' ? 'connected' : 'ringing'}`;
+        card.className = `channel-card ${isAnswered ? 'connected' : 'ringing'}`;
         card.innerHTML = `
           <div class="ch-header">
-            <span class="ch-badge ${ch.status === 'answered' ? 'active' : 'dialing'}">
-              Line ${ch.lineNum} (Ext ${ch.lineExt}) &bull; ${ch.status === 'answered' ? 'IVR Playing: ' + this.escapeHtml(campDisplay) : 'Dialing...'}
+            <span class="ch-badge ${isAnswered ? 'active' : 'dialing'}">
+              Line ${ch.lineNum} (Ext ${ch.lineExt}) &bull; ${modeBadge}
             </span>
             <span style="font-family:monospace;font-weight:700;color:#0c3629;">${durStr}</span>
           </div>
@@ -4514,9 +5411,10 @@ class SkyKinDialerApp {
             ${this.escapeHtml(ch.lead.phone_number)} &bull; <span style="color:#00A651;font-weight:700;">${this.escapeHtml(campDisplay)}</span>
           </div>
           <div style="font-size:11px;color:#0c3629;background:#eaf8f0;border:1px solid #bce8ce;padding:4px 8px;border-radius:4px;display:flex;justify-content:space-between;align-items:center;">
-            <span>${this.escapeHtml(audioNameDisplay)}</span>
+            <span>${this.escapeHtml(ch.currentAudioName || audioNameDisplay)}</span>
             <button class="btn btn-secondary btn-sm" onclick="app.sipHangup(${ch.lineNum})" style="padding:1px 6px;font-size:10px;height:auto;line-height:1.2;">End Call</button>
           </div>
+          ${interactiveHtml}
         `;
         this.channelsContainer.appendChild(card);
       });
@@ -4577,7 +5475,7 @@ class SkyKinDialerApp {
           </div>
           <div style="font-size:14px;color:#1e293b;font-weight:600;margin-bottom:4px;">
             ${this.escapeHtml(next.customer_name || 'Customer')}
-            <span style="color:#64748b;font-weight:400;"> &mdash; </span>
+            <span style="color:#64748b;font-weight:400;"> &middot; </span>
             <a href="javascript:void(0)" onclick="app.clickToDial('${this.escapeHtml(next.phone_number)}')" style="color:#00A651;font-weight:700;text-decoration:none;">${this.escapeHtml(next.phone_number)}</a>
           </div>
           <div style="font-size:12.5px;color:#166534;margin-bottom:8px;">
@@ -4617,7 +5515,7 @@ class SkyKinDialerApp {
         </div>
         <div style="font-size:14px;color:#1e293b;font-weight:600;margin-bottom:3px;">
           ${this.escapeHtml(next.customer_name || 'Customer')}
-          <span style="color:#64748b;font-weight:400;"> &mdash; </span>
+          <span style="color:#64748b;font-weight:400;"> &middot; </span>
           ${this.escapeHtml(next.phone_number)}
         </div>
         <div style="font-size:12px;color:#475569;margin-bottom:8px;">
@@ -4637,13 +5535,15 @@ class SkyKinDialerApp {
     }
   }
 
-  async updateLeadStatusBackend(leadId, status, duration) {
+  async updateLeadStatusBackend(leadId, status, duration, errorMsg = '', dtmf = '') {
     try {
       const formData = new FormData();
       formData.append('lead_id', leadId);
       formData.append('status', status);
       formData.append('duration_sec', duration);
-      formData.append('audio_played', this.campaign?.ivr_audio_name || 'Human Welcome Audio');
+      formData.append('audio_played', this.campaign?.ivr_audio_name || (this.audioRecordings?.[0]?.name) || 'IVR Audio');
+      if (errorMsg) formData.append('error_message', errorMsg);
+      if (dtmf) formData.append('dtmf_response', dtmf);
 
       await fetch('api.php?action=update_lead_status', { method: 'POST', body: formData });
     } catch (e) {
@@ -5165,13 +6065,26 @@ class SkyKinDialerApp {
   }
 
   /* ─────────────────────────────────────────────────────────
-     Manual Outbound Calling with Dialpad
+     Direct Outbound Call Trigger
      ───────────────────────────────────────────────────────── */
-  clickToDial(number, name) {
-    openPhonePopup();
-    const dialInput = document.getElementById('dialInput');
-    if (dialInput) dialInput.value = number;
-    this.startManualCall(number, name);
+  clickToDial(number, name = 'Customer') {
+    if (!number) return;
+    const matchingLead = (this.leads || []).find(l => l.phone_number === number || window.skykinNormalizeEtDial(l.phone_number) === window.skykinNormalizeEtDial(number));
+    if (matchingLead) {
+      this.activeLead = matchingLead;
+      this.renderAgentScreen();
+    } else {
+      this.activeLead = {
+        id: 'direct_' + Date.now(),
+        customer_name: name || 'Customer',
+        phone_number: number,
+        account_number: 'DIRECT',
+        status: 'calling',
+        call_time: 'Immediate'
+      };
+      this.renderAgentScreen();
+    }
+    this.originateAgentDirectCall(this.activeLead);
   }
 
   startManualCall(rawNumber, name = 'Customer') {
@@ -5257,34 +6170,20 @@ class SkyKinDialerApp {
   }
 
   /* ─────────────────────────────────────────────────────────
-     Ethiopian Phone Number Validator & Pre-Call Verification
+     Phone Number Validator & Pre-Call Verification
      ───────────────────────────────────────────────────────── */
   verifyNumber(raw) {
     const s = String(raw || '').trim();
     if (!s) return { valid: false, formatted: '', operator: 'Unknown', reason: 'Empty number' };
     const digits = s.replace(/\D/g, '');
-    let norm = digits;
-    if (norm.startsWith('00251') && norm.length >= 12) norm = norm.slice(5);
-    else if (norm.startsWith('251') && norm.length >= 12) norm = norm.slice(3);
-    else if (norm.startsWith('0') && norm.length === 10) norm = norm.slice(1);
-
-    if (norm.length === 9) {
-      if (norm.startsWith('9')) {
-        return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Ethio Telecom', type: 'Mobile' };
-      }
-      if (norm.startsWith('7')) {
-        return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Safaricom', type: 'Mobile' };
-      }
-      if (norm.startsWith('11') || norm.startsWith('1')) {
-        return { valid: true, formatted: '+251' + norm, national: '0' + norm, operator: 'Ethio Telecom', type: 'Fixed Line' };
-      }
-      return { valid: false, formatted: s, operator: 'Invalid Prefix', reason: `Unknown prefix 0${norm.slice(0, 2)}` };
-    }
-
     if (s.startsWith('+') && digits.length >= 7 && digits.length <= 15) {
-      return { valid: true, formatted: '+' + digits, national: '+' + digits, operator: 'International', type: 'International' };
+      return { valid: true, formatted: '+' + digits, national: '+' + digits, operator: 'E.164', type: 'Mobile' };
     }
-
+    if (digits.length >= 7 && digits.length <= 15) {
+      const cc = (this.settings?.default_country_code || '+251').replace(/\D/g, '');
+      const formatted = s.startsWith('0') ? ('+' + cc + digits.slice(1)) : ('+' + cc + digits);
+      return { valid: true, formatted: formatted, national: digits, operator: 'Standard', type: 'Mobile' };
+    }
     return { valid: false, formatted: s, operator: 'Invalid Length', reason: `Invalid digits length (${digits.length})` };
   }
 
@@ -5307,7 +6206,13 @@ class SkyKinDialerApp {
       if (elValid) elValid.textContent = validCount;
 
       const elBreakdown = document.getElementById('verifyOperatorBreakdown');
-      if (elBreakdown) elBreakdown.textContent = `Ethio: ${data.ethio_telecom || 0} | Safari: ${data.safaricom || 0}`;
+      if (elBreakdown) {
+        if (data.type_breakdown) {
+          elBreakdown.textContent = `Mobile: ${data.type_breakdown.mobile || 0} | Landline: ${data.type_breakdown.landline || 0} | Int'l: ${data.type_breakdown.international || 0}`;
+        } else {
+          elBreakdown.textContent = `Verified: ${validCount}`;
+        }
+      }
 
       const elDup = document.getElementById('verifyDuplicateCount') || document.getElementById('verifyDuplicatesCount');
       if (elDup) elDup.textContent = dupCount;
@@ -5486,6 +6391,1279 @@ class SkyKinDialerApp {
       this.showToast('Error re-queueing lead', 'error');
     }
   }
+
+  /* ─────────────────────────────────────────────────────────
+     Send Test Call Modal & API Handler
+     ───────────────────────────────────────────────────────── */
+  openSendTestCallModal(prefillNumber = '', prefillName = '') {
+    const sel = document.getElementById('testCallCampaignSelect');
+    if (sel) {
+      sel.innerHTML = '<option value="">Default Audio Prompt</option>' + (this.allCampaigns || []).map(c => `<option value="${c.id}">${this.escapeHtml(c.name)}</option>`).join('');
+    }
+    const inp = document.getElementById('testCallPhone');
+    if (inp) inp.value = prefillNumber || '';
+    this.openModal('modalSendTestCall');
+  }
+
+  async handleSendTestCallSubmit(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    const phone = document.getElementById('testCallPhone')?.value?.trim();
+    const campId = document.getElementById('testCallCampaignSelect')?.value || '';
+    if (!phone) {
+      this.showToast('Please enter a destination phone number', 'warning');
+      return;
+    }
+    const btn = document.getElementById('btnSubmitTestCall');
+    if (btn) { btn.disabled = true; btn.textContent = 'Initiating call...'; }
+    try {
+      const formData = new FormData();
+      formData.append('phone_number', phone);
+      if (campId) formData.append('campaign_id', campId);
+      const res = await fetch('api.php?action=send_test_call', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast(data.message || 'Test call initiated successfully!', 'success');
+        this.closeModal('modalSendTestCall');
+      } else {
+        this.showToast(data?.error || 'Failed to initiate test call', 'error');
+      }
+    } catch (err) {
+      this.showToast('Network error placing test call', 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Place Test Call'; }
+    }
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     Settings & Business Configuration Handlers
+     ───────────────────────────────────────────────────────── */
+  async loadSettingsAndData() {
+    try {
+      // 1. Business & Dialing Configuration
+      const resSet = await fetch('api.php?action=get_settings');
+      const dataSet = await resSet.json();
+      if (dataSet && dataSet.success && dataSet.settings) {
+        this.settings = dataSet.settings;
+        const s = dataSet.settings;
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
+        setVal('settingCompanyName', s.company_name);
+        setVal('settingTimezone', s.timezone);
+        setVal('settingCurrency', s.currency);
+        setVal('settingCountryCode', s.default_country_code);
+        setVal('settingAvailableLines', s.available_lines);
+        setVal('settingWindowStart', s.default_window_start);
+        setVal('settingWindowEnd', s.default_window_end);
+        setVal('settingMaxRetries', s.max_retries);
+        setVal('settingRetryDelay', s.retry_delay_min);
+      }
+
+      // 2. Caller IDs
+      const resCid = await fetch('api.php?action=get_caller_ids');
+      const dataCid = await resCid.json();
+      this.renderCallerIdsTable(dataCid?.caller_ids || []);
+
+      // 3. Configurable Languages
+      const resLang = await fetch('api.php?action=get_languages');
+      const dataLang = await resLang.json();
+      this.renderLanguagesTable(dataLang?.languages || []);
+
+      // 4. Audio recordings library
+      await this.loadAudioRecordings();
+      this.renderAudioListTable();
+    } catch (err) {
+      console.warn('loadSettingsAndData error:', err);
+    }
+  }
+
+  async handleSaveSettingsSubmit(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    const getVal = id => document.getElementById(id)?.value?.trim() || '';
+    const formData = new FormData();
+    formData.append('company_name', getVal('settingCompanyName'));
+    formData.append('timezone', getVal('settingTimezone'));
+    formData.append('currency', getVal('settingCurrency'));
+    formData.append('default_country_code', getVal('settingCountryCode'));
+    formData.append('available_lines', getVal('settingAvailableLines'));
+    formData.append('default_window_start', getVal('settingWindowStart'));
+    formData.append('default_window_end', getVal('settingWindowEnd'));
+    formData.append('max_retries', getVal('settingMaxRetries'));
+    formData.append('retry_delay_min', getVal('settingRetryDelay'));
+
+    try {
+      const res = await fetch('api.php?action=save_settings', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast('Business and dialing settings saved!', 'success');
+        this.settings = data.settings || this.settings;
+        if (data.metrics) this.updateTelephonyKpiCards(data.metrics);
+      } else {
+        this.showToast(data?.error || 'Failed to save settings', 'error');
+      }
+    } catch (err) {
+      this.showToast('Network error saving settings', 'error');
+    }
+  }
+
+  renderCallerIdsTable(callerIds) {
+    const tbody = document.getElementById('callerIdsTableBody');
+    if (!tbody) return;
+    if (!callerIds || callerIds.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:14px;color:#94a3b8;">No caller IDs added yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = callerIds.map(c => `
+      <tr>
+        <td style="font-weight:600;color:#0f172a;">${this.escapeHtml(c.name)} ${c.is_default ? '<span class="sc-badge done" style="font-size:10px;padding:1px 6px;">Default</span>' : ''}</td>
+        <td style="font-family:monospace;color:#1e293b;">${this.escapeHtml(c.phone_number)}</td>
+        <td style="text-align:right;">
+          <button type="button" class="btn btn-sm btn-danger" style="padding:2px 8px;font-size:11px;" onclick="app.handleDeleteCallerId(${c.id})">Delete</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  async handleAddCallerIdSubmit(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    const name = document.getElementById('newCallerIdName')?.value?.trim();
+    const number = document.getElementById('newCallerIdNumber')?.value?.trim();
+    if (!name || !number) {
+      this.showToast('Please enter both label and phone number', 'warning');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('name', name);
+    formData.append('phone_number', number);
+    try {
+      const res = await fetch('api.php?action=save_caller_id', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast(`Caller ID "${name}" added!`, 'success');
+        const elN = document.getElementById('newCallerIdName');
+        const elNum = document.getElementById('newCallerIdNumber');
+        if (elN) elN.value = '';
+        if (elNum) elNum.value = '';
+        const cidRes = await fetch('api.php?action=get_caller_ids');
+        const cidData = await cidRes.json();
+        this.renderCallerIdsTable(cidData?.caller_ids || []);
+      } else {
+        this.showToast(data?.error || 'Failed to add caller ID', 'error');
+      }
+    } catch (err) {
+      this.showToast('Network error adding caller ID', 'error');
+    }
+  }
+
+  async handleDeleteCallerId(id) {
+    if (!confirm('Are you sure you want to delete this Caller ID?')) return;
+    const formData = new FormData();
+    formData.append('id', id);
+    try {
+      const res = await fetch('api.php?action=delete_caller_id', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast('Caller ID deleted', 'success');
+        const cidRes = await fetch('api.php?action=get_caller_ids');
+        const cidData = await cidRes.json();
+        this.renderCallerIdsTable(cidData?.caller_ids || []);
+      } else {
+        this.showToast(data?.error || 'Failed to delete caller ID', 'error');
+      }
+    } catch (err) {
+      this.showToast('Network error deleting caller ID', 'error');
+    }
+  }
+
+  renderLanguagesTable(languages) {
+    const tbody = document.getElementById('languagesTableBody');
+    if (!tbody) return;
+    if (!languages || languages.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;padding:14px;color:#94a3b8;">No languages configured yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = languages.map(l => `
+      <tr>
+        <td style="font-family:monospace;font-weight:700;color:#0f5132;">${this.escapeHtml(l.code)}</td>
+        <td style="color:#0f172a;font-weight:600;">${this.escapeHtml(l.name)} ${l.is_default ? '<span class="sc-badge done" style="font-size:10px;padding:1px 6px;">Default</span>' : ''}</td>
+        <td style="text-align:right;">
+          <button type="button" class="btn btn-sm btn-danger" style="padding:2px 8px;font-size:11px;" onclick="app.handleDeleteLanguage(${l.id})">Delete</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  async handleAddLanguageSubmit(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    const code = document.getElementById('newLanguageCode')?.value?.trim();
+    const name = document.getElementById('newLanguageName')?.value?.trim();
+    if (!code || !name) {
+      this.showToast('Please enter both code and language name', 'warning');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('code', code);
+    formData.append('name', name);
+    try {
+      const res = await fetch('api.php?action=save_language', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast(`Language "${name}" added!`, 'success');
+        const elC = document.getElementById('newLanguageCode');
+        const elN = document.getElementById('newLanguageName');
+        if (elC) elC.value = '';
+        if (elN) elN.value = '';
+        const langRes = await fetch('api.php?action=get_languages');
+        const langData = await langRes.json();
+        this.renderLanguagesTable(langData?.languages || []);
+      } else {
+        this.showToast(data?.error || 'Failed to add language', 'error');
+      }
+    } catch (err) {
+      this.showToast('Network error adding language', 'error');
+    }
+  }
+
+  async handleDeleteLanguage(id) {
+    if (!confirm('Are you sure you want to delete this language?')) return;
+    const formData = new FormData();
+    formData.append('id', id);
+    try {
+      const res = await fetch('api.php?action=delete_language', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast('Language deleted', 'success');
+        const langRes = await fetch('api.php?action=get_languages');
+        const langData = await langRes.json();
+        this.renderLanguagesTable(langData?.languages || []);
+      } else {
+        this.showToast(data?.error || 'Failed to delete language', 'error');
+      }
+    } catch (err) {
+      this.showToast('Network error deleting language', 'error');
+    }
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     Designer Personalization Chips & Live Preview (Section 5)
+     ───────────────────────────────────────────────────────── */
+  insertVariableToScript(varName) {
+    const txt = document.getElementById('campaignMessageText');
+    if (!txt) return;
+    const start = txt.selectionStart !== undefined ? txt.selectionStart : txt.value.length;
+    const end = txt.selectionEnd !== undefined ? txt.selectionEnd : txt.value.length;
+    const val = txt.value;
+    txt.value = val.substring(0, start) + varName + val.substring(end);
+    txt.selectionStart = txt.selectionEnd = start + varName.length;
+    txt.focus();
+    this.updateDesignerPreview();
+  }
+
+  updateDesignerPreview() {
+    const txt = document.getElementById('campaignMessageText');
+    const previewBox = document.getElementById('designerPreviewScriptBox');
+    const durationEl = document.getElementById('designerPreviewDuration');
+    const labelEl = document.getElementById('previewSampleContactLabel');
+    const warnEl = document.getElementById('designerVariableWarning');
+
+    const rawText = txt ? txt.value.trim() : '';
+    const sample = (this.leads && this.leads.length > 0) ? this.leads[0] : null;
+
+    if (labelEl) {
+      labelEl.textContent = 'Sample contact';
+    }
+
+    const isPersonalize = document.getElementById('chkPersonalize')?.checked ?? true;
+    let rendered = rawText || 'Your script will appear here, filled in with sample contact fields.';
+
+    if (rawText && isPersonalize) {
+      const contactName = sample?.customer_name || 'Alex Morgan';
+      const contactPhone = sample?.phone_number || '+15551234567';
+      const contactAcct = sample?.account_number || 'ACC-98214';
+      const contactDebt = (sample?.debt_amount !== undefined && sample?.debt_amount !== null)
+        ? (typeof sample.debt_amount === 'number' ? `${sample.debt_amount.toFixed(2)}` : String(sample.debt_amount))
+        : '$120.00';
+
+      rendered = rendered.replace(/\{customer_name\}|\{name\}/gi, `<strong>${contactName}</strong>`);
+      rendered = rendered.replace(/\{phone_number\}|\{phone\}/gi, `<strong>${contactPhone}</strong>`);
+      rendered = rendered.replace(/\{account_number\}|\{account\}|\{order_number\}/gi, `<strong>${contactAcct}</strong>`);
+      rendered = rendered.replace(/\{debt_amount\}|\{amount\}|\{balance\}/gi, `<strong>${contactDebt}</strong>`);
+    }
+
+    if (previewBox) {
+      previewBox.innerHTML = rendered.replace(/\n/g, '<br>');
+    }
+
+    if (warnEl) {
+      const matchedVars = rawText.match(/\{([a-zA-Z0-9_]+)\}/g) || [];
+      const knownVars = ['{customer_name}', '{name}', '{phone_number}', '{phone}', '{account_number}', '{account}', '{order_number}', '{debt_amount}', '{amount}', '{balance}'];
+      const unknownVars = matchedVars.filter(v => !knownVars.includes(v.toLowerCase()));
+      if (unknownVars.length > 0) {
+        warnEl.style.display = 'block';
+        warnEl.textContent = `Warning: ${unknownVars.join(', ')} is not in standard contact columns.`;
+      } else {
+        warnEl.style.display = 'none';
+      }
+    }
+
+    const wordCount = rawText ? rawText.trim().split(/\s+/).length : 0;
+    const estSec = wordCount > 0 ? Math.max(5, Math.round(wordCount / 2.5)) : 0;
+    if (durationEl) {
+      durationEl.textContent = estSec > 0 ? `Estimated length: ${estSec} s (${wordCount} words)` : 'Estimated length: 0 s (0 words)';
+    }
+
+    this.updateDesignerChecklist();
+  }
+
+  updateDesignerChecklist() {
+    const btnLaunch = document.getElementById('btnLaunchDesignerCampaign');
+    if (btnLaunch && this.campaign?.status !== 'running') {
+      btnLaunch.disabled = false;
+      btnLaunch.title = 'Click to start outbound dialing';
+      btnLaunch.style.opacity = '1';
+      btnLaunch.style.cursor = 'pointer';
+    }
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     Smart Scheduling Proposal & Acceptance (Section 4)
+     ───────────────────────────────────────────────────────── */
+  async openSmartScheduleModal(campId = null) {
+    const id = campId || this.activeCampaignId || this.campaign?.id || 1;
+    try {
+      const res = await fetch(`api.php?action=get_smart_schedule_plan&campaign_id=${id}`);
+      const data = await res.json();
+      if (data.success && data.plan) {
+        this.activeSmartPlan = data.plan;
+        this.renderSmartScheduleProposal(data.plan);
+        this.openModal('modalSmartScheduleProposal');
+      } else {
+        this.showToast(data.error || 'Failed to generate schedule proposal', 'error');
+      }
+    } catch (e) {
+      this.showToast('Network error loading schedule proposal', 'error');
+    }
+  }
+
+  renderSmartScheduleProposal(plan) {
+    if (!plan) return;
+    const elTot = document.getElementById('smartPropTotalContacts');
+    const elLines = document.getElementById('smartPropLines');
+    const elAns = document.getElementById('smartPropAnswerRate');
+    const elSaved = document.getElementById('smartPropTimeSaved');
+    const elComp = document.getElementById('smartPropCompletionText');
+    const rulesList = document.getElementById('smartPropRulesList');
+    const batchTbody = document.getElementById('smartPropBatchesTableBody');
+    const batchCountLabel = document.getElementById('smartPropBatchCountLabel');
+
+    if (elTot) elTot.textContent = plan.total_contacts || 0;
+    if (elLines) elLines.textContent = plan.available_lines || 2;
+    if (elAns) elAns.textContent = plan.estimated_answered_rate || '68%';
+    if (elSaved) elSaved.textContent = plan.estimated_time_saved || '1.5h saved';
+    if (elComp) elComp.textContent = plan.expected_completion || 'Immediate';
+    if (batchCountLabel) batchCountLabel.textContent = `${plan.total_batches || 0} Batches`;
+
+    if (rulesList && plan.rules_used) {
+      rulesList.innerHTML = plan.rules_used.map(r => `<li>${this.escapeHtml(r)}</li>`).join('');
+    }
+
+    if (batchTbody && plan.batches) {
+      batchTbody.innerHTML = plan.batches.map(b => `
+        <tr>
+          <td><strong style="color:#00A651;">#${b.batch_number}</strong></td>
+          <td>${b.date} (${b.day_name})</td>
+          <td><strong>${b.hour_slot}</strong></td>
+          <td>${b.contacts_count} calls</td>
+          <td>${b.active_lines} lines</td>
+          <td><span style="color:#15803d;font-weight:700;">${b.estimated_answered} (${b.answer_probability})</span></td>
+          <td><span style="font-size:11px;color:#64748b;">${b.explanation}</span></td>
+        </tr>
+      `).join('');
+    }
+  }
+
+  toggleSmartPlanEditDrawer() {
+    const dr = document.getElementById('smartPropEditDrawer');
+    if (!dr) return;
+    dr.style.display = (dr.style.display === 'none') ? 'block' : 'none';
+  }
+
+  async recalculateSmartPlanProposal() {
+    const id = this.activeCampaignId || this.campaign?.id || 1;
+    const wStart = document.getElementById('smartEditWindowStart')?.value || '09:00';
+    const wEnd = document.getElementById('smartEditWindowEnd')?.value || '17:00';
+    const lines = parseInt(document.getElementById('smartEditLines')?.value || '2', 10);
+
+    try {
+      const res = await fetch(`api.php?action=get_smart_schedule_plan&campaign_id=${id}&calling_hours_start=${encodeURIComponent(wStart)}&calling_hours_end=${encodeURIComponent(wEnd)}&available_lines=${lines}`);
+      const data = await res.json();
+      if (data.success && data.plan) {
+        this.activeSmartPlan = data.plan;
+        this.renderSmartScheduleProposal(data.plan);
+        this.showToast('Schedule proposal recalculated with your updated parameters!', 'info');
+      }
+    } catch (e) {
+      this.showToast('Failed to recalculate plan', 'error');
+    }
+  }
+
+  async acceptSmartSchedulePlan() {
+    if (!this.activeSmartPlan) return;
+    const id = this.activeCampaignId || this.campaign?.id || 1;
+    const formData = new FormData();
+    formData.append('campaign_id', id);
+    formData.append('plan_json', JSON.stringify(this.activeSmartPlan));
+
+    try {
+      const res = await fetch('api.php?action=accept_smart_schedule_plan', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast('Smart schedule plan accepted and applied to contacts!', 'success');
+        this.closeModal('modalSmartScheduleProposal');
+        if (this.campaign) {
+          this.campaign.smart_schedule_plan = JSON.stringify(this.activeSmartPlan);
+        }
+        const bannerText = document.getElementById('designerSmartPlanText');
+        if (bannerText) {
+          bannerText.innerHTML = '✔ Smart schedule plan active &middot; Next batch ready';
+        }
+        await this.loadCampaignData();
+        this.updateDesignerChecklist();
+      } else {
+        this.showToast(data.error || 'Failed to accept schedule plan', 'error');
+      }
+    } catch (e) {
+      this.showToast('Network error saving schedule plan', 'error');
+    }
+  }
+
+  useManualScheduleFromModal() {
+    this.closeModal('modalSmartScheduleProposal');
+    const sel = document.getElementById('designerCallingMethodSelect');
+    if (sel) {
+      sel.value = 'manual';
+      this.handleDesignerCallingMethodChange('manual');
+    }
+    this.showToast('Switched to manual scheduling mode.', 'info');
+  }
+
+  openBulkSmartRescheduleModal() {
+    this.openSmartScheduleModal(this.activeCampaignId || this.campaign?.id || 1);
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     IVR & Call Flow Configuration (FusionPBX Style)
+     ───────────────────────────────────────────────────────── */
+  async setIvrMode(mode) {
+    if (!this.ivrResponses) {
+      this.ivrResponses = {
+        mode: mode,
+        broadcast_outcome: 'Announcement Listened',
+        timeout_sec: 10,
+        timeout_action: 'no_response_hangup',
+        keys: {
+          '1': { key: '1', outcome: 'Confirmed', action: 'log_outcome', audio_file: '', audio_name: '' },
+          '2': { key: '2', outcome: 'Callback requested', action: 'callback_requested', audio_file: '', audio_name: '' },
+          '3': { key: '3', outcome: 'Opted out', action: 'opt_out', audio_file: '', audio_name: '' }
+        }
+      };
+    }
+    this.ivrResponses.mode = mode;
+
+    const lblB = document.getElementById('lblIvrModeBroadcast');
+    const lblI = document.getElementById('lblIvrModeInteractive');
+    const radB = document.getElementById('radioIvrBroadcast');
+    const radI = document.getElementById('radioIvrInteractive');
+    const panelB = document.getElementById('designerIvrBroadcastPanel');
+    const panelI = document.getElementById('designerIvrInteractivePanel');
+
+    if (mode === 'broadcast') {
+      if (radB) radB.checked = true;
+      if (lblB) { lblB.style.borderColor = '#00A651'; lblB.style.background = '#f0fdf4'; }
+      if (lblI) { lblI.style.borderColor = '#cbd5e1'; lblI.style.background = '#fff'; }
+      if (panelB) panelB.style.display = 'block';
+      if (panelI) panelI.style.display = 'none';
+    } else {
+      if (radI) radI.checked = true;
+      if (lblI) { lblI.style.borderColor = '#00A651'; lblI.style.background = '#f0fdf4'; }
+      if (lblB) { lblB.style.borderColor = '#cbd5e1'; lblB.style.background = '#fff'; }
+      if (panelB) panelB.style.display = 'none';
+      if (panelI) panelI.style.display = 'block';
+    }
+
+    const id = this.activeCampaignId || this.campaign?.id || 1;
+    const formData = new FormData();
+    formData.append('campaign_id', id);
+    formData.append('responses_json', JSON.stringify(this.ivrResponses));
+    try {
+      await fetch('api.php?action=save_ivr_responses', { method: 'POST', body: formData });
+      this.showToast(mode === 'broadcast' ? 'IVR mode set to Play & Hang Up' : 'IVR mode set to Interactive Menu', 'info');
+    } catch(e) {}
+  }
+
+  setModalIvrMode(mode) {
+    const lblB = document.getElementById('modalLblModeBroadcast');
+    const lblI = document.getElementById('modalLblModeInteractive');
+    const radB = document.getElementById('modalRadioBroadcast');
+    const radI = document.getElementById('modalRadioInteractive');
+    const secB = document.getElementById('modalBroadcastOptionsSection');
+    const secI = document.getElementById('modalInteractiveOptionsSection');
+
+    if (mode === 'broadcast') {
+      if (radB) radB.checked = true;
+      if (lblB) { lblB.style.borderColor = '#00A651'; lblB.style.background = '#f0fdf4'; }
+      if (lblI) { lblI.style.borderColor = '#cbd5e1'; lblI.style.background = '#fff'; }
+      if (secB) secB.style.display = 'block';
+      if (secI) secI.style.display = 'none';
+    } else {
+      if (radI) radI.checked = true;
+      if (lblI) { lblI.style.borderColor = '#00A651'; lblI.style.background = '#f0fdf4'; }
+      if (lblB) { lblB.style.borderColor = '#cbd5e1'; lblB.style.background = '#fff'; }
+      if (secB) secB.style.display = 'none';
+      if (secI) secI.style.display = 'block';
+    }
+  }
+
+  async openIvrResponsesModal() {
+    const id = this.activeCampaignId || this.campaign?.id || 1;
+    try {
+      if (!this.audioRecordings || this.audioRecordings.length === 0) {
+        try {
+          const aRes = await fetch('api.php?action=get_audio_recordings');
+          const aData = await aRes.json();
+          if (aData.success && aData.recordings) {
+            this.audioRecordings = aData.recordings;
+          }
+        } catch (ae) {}
+      }
+
+      const res = await fetch(`api.php?action=get_ivr_responses&campaign_id=${id}`);
+      const data = await res.json();
+      if (data.success && data.responses) {
+        this.ivrResponses = data.responses;
+      }
+    } catch (e) {
+      console.warn('Error loading IVR responses for modal:', e);
+    }
+
+    const resp = this.ivrResponses || {};
+    const mode = resp.mode || 'interactive';
+    this.setModalIvrMode(mode);
+
+    const bOutcome = document.getElementById('modalBroadcastOutcomeLabel');
+    if (bOutcome) bOutcome.value = resp.broadcast_outcome || 'Announcement Listened';
+
+    const modalMenuSel = document.getElementById('modalIvrMenuAudioSelect');
+    if (modalMenuSel && this.audioRecordings) {
+      const curMenuVal = resp.menu_audio_file || '';
+      modalMenuSel.innerHTML = this.audioRecordings.map(a => {
+        const isSel = (curMenuVal === a.filepath || resp.menu_audio_name === a.name);
+        return `<option value="${this.escapeHtml(a.filepath)}" data-audio-name="${this.escapeHtml(a.name)}" ${isSel ? 'selected' : ''}>${this.escapeHtml(a.name)}</option>`;
+      }).join('');
+      if (curMenuVal) modalMenuSel.value = curMenuVal;
+      else if (this.audioRecordings.length > 1) modalMenuSel.selectedIndex = 1;
+    }
+
+    this.renderIvrModalKeys();
+
+    const tSec = document.getElementById('ivrModalTimeoutSec');
+    const tAct = document.getElementById('ivrModalTimeoutAction');
+    if (tSec) tSec.value = resp.timeout_sec || 15;
+    if (tAct) tAct.value = resp.timeout_action || 'no_response_hangup';
+
+    this.openModal('modalIvrResponses');
+  }
+
+  renderIvrModalKeys() {
+    const container = document.getElementById('ivrModalKeyRowsContainer');
+    if (!container) return;
+
+    const resp = this.ivrResponses || {};
+    const keys = resp.keys || {
+      '1': { key: '1', action: 'play_audio_hangup', outcome: 'Confirmed', audio_file: '', audio_name: '' },
+      '2': { key: '2', action: 'callback_requested', outcome: 'Callback requested', audio_file: '', audio_name: '' },
+      '3': { key: '3', action: 'opt_out', outcome: 'Opted out', audio_file: '', audio_name: '' }
+    };
+
+    const keyList = Object.values(keys);
+    container.innerHTML = '';
+    keyList.forEach(k => this.addIvrKeyRow(k));
+  }
+
+  addIvrKeyRow(keyData = null) {
+    const container = document.getElementById('ivrModalKeyRowsContainer');
+    if (!container) return;
+
+    const k = keyData || {
+      key: String(container.children.length + 1),
+      action: 'log_outcome',
+      outcome: 'Custom outcome',
+      audio_file: '',
+      audio_name: '',
+      description: ''
+    };
+
+    const audioOptions = (this.audioRecordings || []).map(a => {
+      const isSel = (k.audio_file === a.filepath || k.audio_name === a.name);
+      return `<option value="${this.escapeHtml(a.filepath)}" data-audio-name="${this.escapeHtml(a.name)}" ${isSel ? 'selected' : ''}>${this.escapeHtml(a.name)}</option>`;
+    }).join('');
+
+    const row = document.createElement('div');
+    row.className = 'ivr-key-row';
+    row.style.cssText = 'display:grid;grid-template-columns:52px 1.4fr 1.6fr 1.2fr 28px;gap:8px;align-items:center;background:#fff;padding:8px 10px;border-radius:6px;border:1px solid #cbd5e1;';
+    row.innerHTML = `
+      <div>
+        <input type="text" class="form-control ivr-key-input" value="${this.escapeHtml(k.key || '')}" maxlength="2" style="font-weight:700;text-align:center;font-size:13px;padding:5px 6px;" placeholder="1" required>
+      </div>
+      <div>
+        <select class="form-control ivr-action-select" style="font-size:12px;padding:5px 6px;">
+          <option value="play_audio_hangup" ${k.action === 'play_audio_hangup' ? 'selected' : ''}>Play audio &amp; Hang up</option>
+          <option value="log_outcome" ${k.action === 'log_outcome' ? 'selected' : ''}>Log outcome</option>
+          <option value="callback_requested" ${k.action === 'callback_requested' ? 'selected' : ''}>Schedule callback</option>
+          <option value="opt_out" ${k.action === 'opt_out' ? 'selected' : ''}>Opt out / DNC</option>
+          <option value="transfer_call" ${k.action === 'transfer_call' ? 'selected' : ''}>Transfer call</option>
+          <option value="repeat_menu" ${k.action === 'repeat_menu' ? 'selected' : ''}>Repeat menu</option>
+        </select>
+      </div>
+      <div>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <select class="form-control ivr-audio-select" style="font-size:12px;padding:5px 6px;flex:1;">
+            <option value="" data-audio-name="">(None - direct)</option>
+            ${audioOptions}
+          </select>
+          <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.triggerKeyAudioUpload(this)" title="Upload audio for this key" style="font-size:10.5px;padding:4px 7px;font-weight:700;white-space:nowrap;display:flex;align-items:center;gap:3px;border-color:#cbd5e1;background:#f8fafc;cursor:pointer;">
+            <span>⬆</span><span>Upload</span>
+          </button>
+        </div>
+      </div>
+      <div>
+        <input type="text" class="form-control ivr-outcome-input" value="${this.escapeHtml(k.outcome || '')}" placeholder="Outcome label" style="font-size:12px;padding:5px 6px;">
+      </div>
+      <div style="text-align:center;">
+        <button type="button" class="btn btn-xs btn-outline-danger" onclick="this.closest('.ivr-key-row').remove()" style="padding:2px 6px;color:#dc2626;border:none;background:none;font-weight:800;font-size:15px;cursor:pointer;" title="Delete key">&times;</button>
+      </div>
+    `;
+    container.appendChild(row);
+  }
+
+  triggerKeyAudioUpload(btn) {
+    const row = btn.closest('.ivr-key-row');
+    const sel = row ? row.querySelector('.ivr-audio-select') : null;
+    this._currentKeyAudioSelect = sel;
+    const fileInput = document.getElementById('ivrKeyAudioFileInput');
+    if (fileInput) {
+      fileInput.value = '';
+      fileInput.click();
+    }
+  }
+
+  async handleIvrKeyAudioFileChosen(input) {
+    if (!input || !input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    const formData = new FormData();
+    formData.append('audio_file', file);
+    formData.append('audio_name', file.name.replace(/\.[^/.]+$/, ''));
+    formData.append('skip_campaign_update', '1');
+    formData.append('campaign_id', this.activeCampaignId || this.campaign?.id || 1);
+
+    try {
+      this.showToast('Uploading key response audio...', 'info');
+      const res = await fetch('api.php?action=upload_audio', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success && data.audio) {
+        this.showToast(`Audio "${data.audio.name}" uploaded successfully!`, 'success');
+        if (!this.audioRecordings.some(a => a.filepath === data.audio.filepath)) {
+          this.audioRecordings.push(data.audio);
+        }
+        if (this._currentKeyAudioSelect) {
+          let opt = document.createElement('option');
+          opt.value = data.audio.filepath;
+          opt.textContent = `${data.audio.name} (uploaded)`;
+          opt.dataset.audioName = data.audio.name;
+          opt.selected = true;
+          this._currentKeyAudioSelect.appendChild(opt);
+          this._currentKeyAudioSelect.value = data.audio.filepath;
+        }
+        this.refreshAllIvrAudioSelects();
+      } else {
+        this.showToast(data.error || 'Failed to upload audio', 'error');
+      }
+    } catch (err) {
+      this.showToast('Network error uploading audio', 'error');
+    }
+  }
+
+  refreshAllIvrAudioSelects() {
+    document.querySelectorAll('.ivr-key-row .ivr-audio-select').forEach(sel => {
+      const curVal = sel.value;
+      const opts = ['<option value="" data-audio-name="">(None - direct)</option>'];
+      (this.audioRecordings || []).forEach(a => {
+        const isSel = (curVal === a.filepath);
+        opts.push(`<option value="${this.escapeHtml(a.filepath)}" data-audio-name="${this.escapeHtml(a.name)}" ${isSel ? 'selected' : ''}>${this.escapeHtml(a.name)}</option>`);
+      });
+      sel.innerHTML = opts.join('');
+      if (curVal) sel.value = curVal;
+    });
+  }
+
+  async handleSaveIvrResponsesSubmit(e) {
+    e.preventDefault();
+    const id = this.activeCampaignId || this.campaign?.id || 1;
+    const isBroadcast = document.getElementById('modalRadioBroadcast')?.checked;
+    const mode = isBroadcast ? 'broadcast' : 'interactive';
+    const broadcastOutcome = document.getElementById('modalBroadcastOutcomeLabel')?.value.trim() || 'Announcement Listened';
+
+    const modalMenuSel = document.getElementById('modalIvrMenuAudioSelect');
+    const menuAudioFile = modalMenuSel ? modalMenuSel.value : '';
+    const menuAudioName = modalMenuSel && modalMenuSel.selectedOptions[0] ? (modalMenuSel.selectedOptions[0].dataset.audioName || modalMenuSel.selectedOptions[0].textContent) : '';
+
+    const keysObj = {};
+    document.querySelectorAll('.ivr-key-row').forEach(row => {
+      const keyVal = row.querySelector('.ivr-key-input')?.value.trim();
+      const actionVal = row.querySelector('.ivr-action-select')?.value || 'log_outcome';
+      const selAudio = row.querySelector('.ivr-audio-select');
+      const audioFile = selAudio ? selAudio.value : '';
+      const audioName = selAudio && selAudio.selectedOptions[0] ? (selAudio.selectedOptions[0].dataset.audioName || selAudio.selectedOptions[0].textContent) : '';
+      const outcomeVal = row.querySelector('.ivr-outcome-input')?.value.trim();
+      if (keyVal) {
+        keysObj[keyVal] = {
+          key: keyVal,
+          action: actionVal,
+          audio_file: audioFile,
+          audio_name: audioName,
+          outcome: outcomeVal || (actionVal === 'play_audio_hangup' ? 'Played Audio' : actionVal.replace(/_/g, ' ')),
+          description: ''
+        };
+      }
+    });
+
+    const timeoutSec = parseInt(document.getElementById('ivrModalTimeoutSec')?.value || '15', 10);
+    const timeoutAction = document.getElementById('ivrModalTimeoutAction')?.value || 'no_response_hangup';
+
+    const fullResponses = {
+      mode: mode,
+      broadcast_outcome: broadcastOutcome,
+      menu_audio_name: menuAudioName,
+      menu_audio_file: menuAudioFile,
+      timeout_sec: timeoutSec,
+      timeout_action: timeoutAction,
+      keys: keysObj
+    };
+
+    const formData = new FormData();
+    formData.append('campaign_id', id);
+    formData.append('responses_json', JSON.stringify(fullResponses));
+
+    try {
+      const res = await fetch('api.php?action=save_ivr_responses', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success) {
+        this.ivrResponses = fullResponses;
+        this.showToast('IVR setup saved successfully!', 'success');
+        this.closeModal('modalIvrResponses');
+        this.renderIvrResponsesSummary();
+        this.updateDesignerChecklist();
+      } else {
+        this.showToast(data.error || 'Failed to save responses', 'error');
+      }
+    } catch (e) {
+      this.showToast('Network error saving responses', 'error');
+    }
+  }
+
+  async renderIvrResponsesSummary() {
+    const listEl = document.getElementById('designerIvrResponsesSummaryList');
+    const noticeEl = document.getElementById('designerIvrTimeoutNotice');
+    const broadcastPanel = document.getElementById('designerIvrBroadcastPanel');
+    const interactivePanel = document.getElementById('designerIvrInteractivePanel');
+    const lblB = document.getElementById('lblIvrModeBroadcast');
+    const lblI = document.getElementById('lblIvrModeInteractive');
+    const radB = document.getElementById('radioIvrBroadcast');
+    const radI = document.getElementById('radioIvrInteractive');
+
+    if (!this.ivrResponses) {
+      try {
+        const res = await fetch(`api.php?action=get_ivr_responses&campaign_id=${this.campaign?.id || 0}`);
+        const data = await res.json();
+        if (data.success && data.responses) {
+          this.ivrResponses = data.responses;
+        }
+      } catch (e) {}
+    }
+
+    const resp = this.ivrResponses || {
+      mode: 'interactive',
+      broadcast_outcome: 'Announcement Listened',
+      timeout_sec: 10,
+      timeout_action: 'no_response_hangup',
+      keys: {
+        '1': { key: '1', outcome: 'Confirmed', action: 'log_outcome' },
+        '2': { key: '2', outcome: 'Callback requested', action: 'callback_requested' },
+        '3': { key: '3', outcome: 'Opted out', action: 'opt_out' }
+      }
+    };
+
+    const mode = resp.mode || 'interactive';
+
+    if (mode === 'broadcast') {
+      if (radB) radB.checked = true;
+      if (lblB) { lblB.style.borderColor = '#00A651'; lblB.style.background = '#f0fdf4'; }
+      if (lblI) { lblI.style.borderColor = '#cbd5e1'; lblI.style.background = '#fff'; }
+      if (broadcastPanel) broadcastPanel.style.display = 'block';
+      if (interactivePanel) interactivePanel.style.display = 'none';
+
+      const bOutcomeEl = document.getElementById('designerBroadcastOutcomeLabel');
+      if (bOutcomeEl) bOutcomeEl.textContent = resp.broadcast_outcome || 'Announcement Listened';
+    } else {
+      if (radI) radI.checked = true;
+      if (lblI) { lblI.style.borderColor = '#00A651'; lblI.style.background = '#f0fdf4'; }
+      if (lblB) { lblB.style.borderColor = '#cbd5e1'; lblB.style.background = '#fff'; }
+      if (broadcastPanel) broadcastPanel.style.display = 'none';
+      if (interactivePanel) interactivePanel.style.display = 'block';
+
+      const designerMenuSel = document.getElementById('designerIvrMenuAudioSelect');
+      if (designerMenuSel && this.audioRecordings && this.audioRecordings.length > 0) {
+        const curMenuVal = resp.menu_audio_file || '';
+        const optionsHtml = this.audioRecordings.map(a => {
+          const isSel = (curMenuVal === a.filepath || resp.menu_audio_name === a.name);
+          return `<option value="${this.escapeHtml(a.filepath)}" data-audio-name="${this.escapeHtml(a.name)}" ${isSel ? 'selected' : ''}>${this.escapeHtml(a.name)}</option>`;
+        }).join('');
+        designerMenuSel.innerHTML = optionsHtml;
+        if (curMenuVal) {
+          designerMenuSel.value = curMenuVal;
+        } else if (this.audioRecordings.length > 1) {
+          designerMenuSel.selectedIndex = 1;
+        }
+      }
+
+      const keys = resp.keys || {};
+      const keyEntries = Object.values(keys);
+
+      if (listEl) {
+        if (keyEntries.length === 0) {
+          listEl.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:8px;background:#f8fafc;border-radius:6px;text-align:center;">No keypad response keys configured yet. Click "Add key option" above.</div>';
+        } else {
+          listEl.innerHTML = keyEntries.map(k => {
+            let actionClean = 'Play audio, then hang up';
+            if (k.action === 'callback_requested') actionClean = 'Add to callback list';
+            else if (k.action === 'opt_out') actionClean = 'Opt out / Do not call';
+            else if (k.action === 'transfer_call') actionClean = 'Transfer call';
+            else if (k.action === 'log_outcome') actionClean = 'Log outcome';
+            else if (k.action === 'play_audio_hangup') actionClean = 'Play audio, then hang up';
+            else if (k.action) actionClean = k.action.replace(/_/g, ' ');
+
+            const audioName = k.audio_name || (k.audio_file ? k.audio_file.split('/').pop().split('\\').pop() : '');
+
+            return `
+              <div style="display:grid;grid-template-columns:150px 1fr auto;align-items:center;background:#fff;padding:10px 14px;border-radius:6px;border:1px solid #e2e8f0;font-size:12px;gap:12px;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:4px;background:#00A651;color:#fff;font-weight:800;font-size:11.5px;flex-shrink:0;">${k.key}</span>
+                  <span style="font-weight:700;color:#0f172a;">${this.escapeHtml(k.outcome || 'Confirmed')}</span>
+                </div>
+                <div style="color:#64748b;font-size:12px;">${actionClean}</div>
+                <div style="color:#64748b;font-size:12px;font-weight:500;text-align:right;">${this.escapeHtml(audioName)}</div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      if (noticeEl) {
+        const timeoutSec = resp.timeout_sec || 15;
+        noticeEl.innerHTML = `
+          <span>No key pressed after ${timeoutSec} seconds: mark no response and hang up.</span>
+          <a href="javascript:void(0)" onclick="app.openIvrResponsesModal()" style="color:#00A651;font-weight:700;text-decoration:none;font-size:12px;">Edit</a>
+        `;
+      }
+    }
+  }
+
+  playAudioPreview(audioUrl) {
+    if (!audioUrl) return;
+    if (this._previewAudio) {
+      try { this._previewAudio.pause(); } catch(e){}
+      this._previewAudio = null;
+    }
+    const a = new Audio(audioUrl);
+    this._previewAudio = a;
+    a.play().then(() => {
+      this.showToast('Playing audio preview...', 'info');
+    }).catch(e => {
+      console.warn('Audio preview note:', e);
+    });
+  }
+
+  async handleDesignerIvrMenuAudioChange(audioPath) {
+    if (!this.ivrResponses) this.ivrResponses = { mode: 'interactive', keys: {} };
+    const sel = document.getElementById('designerIvrMenuAudioSelect');
+    const opt = sel?.selectedOptions?.[0];
+    const audioName = opt?.dataset?.audioName || opt?.textContent || 'ivr2';
+    this.ivrResponses.menu_audio_file = audioPath;
+    this.ivrResponses.menu_audio_name = audioName;
+
+    const id = this.activeCampaignId || this.campaign?.id || 1;
+    const formData = new FormData();
+    formData.append('campaign_id', id);
+    formData.append('responses_json', JSON.stringify(this.ivrResponses));
+    try {
+      await fetch('api.php?action=save_ivr_responses', { method: 'POST', body: formData });
+      this.showToast(`Menu instructions audio set to "${audioName}"`, 'success');
+    } catch(e) {
+      console.warn('Auto-save menu audio error:', e);
+    }
+  }
+
+  previewSelectedMenuAudio() {
+    const sel = document.getElementById('designerIvrMenuAudioSelect');
+    if (sel && sel.value) {
+      this.playAudioPreview(sel.value);
+    } else {
+      this.showToast('No menu audio selected to preview', 'warning');
+    }
+  }
+
+  previewModalMenuAudio() {
+    const sel = document.getElementById('modalIvrMenuAudioSelect');
+    if (sel && sel.value) {
+      this.playAudioPreview(sel.value);
+    } else {
+      this.showToast('No menu audio selected to preview', 'warning');
+    }
+  }
+
+  async startIvrSessionForChannel(ch, pc, lineNum, audioSrc, finishCall) {
+    if (!this.ivrResponses) {
+      try {
+        const campId = ch.lead?.campaign_id || this.campaign?.id || 0;
+        const res = await fetch(`api.php?action=get_ivr_responses&campaign_id=${campId}`);
+        const data = await res.json();
+        if (data.success && data.responses) {
+          this.ivrResponses = data.responses;
+        }
+      } catch (e) {}
+    }
+
+    const ivrCfg = this.ivrResponses || {
+      mode: 'interactive',
+      broadcast_outcome: 'Announcement Listened',
+      menu_audio_name: 'ivr2',
+      menu_audio_file: 'assets/audio/1793961705_ahununu_waiting.wav',
+      timeout_sec: 15,
+      timeout_action: 'no_response_hangup',
+      keys: {
+        '1': { key: '1', action: 'play_audio_hangup', outcome: 'Confirmed', audio_name: 'ivr2', audio_file: 'assets/audio/1793961705_ahununu_waiting.wav' },
+        '2': { key: '2', action: 'callback_requested', outcome: 'Callback requested', audio_name: 'ivr', audio_file: 'assets/audio/1793961665_agent_buzy.wav' }
+      }
+    };
+
+    const mode = (ivrCfg.mode || this.campaign?.ivr_mode || 'interactive');
+    ch.ivrMode = mode;
+    ch.ivrConfig = ivrCfg;
+    ch.dtmfHandled = false;
+    ch.dtmfPressed = null;
+    ch.pc = pc;
+    ch.lineNum = lineNum;
+    ch.finishCall = finishCall;
+
+    const greetingAudio = audioSrc || ch.lead?.ivr_audio_file || this.campaign?.ivr_audio_file || (this.audioRecordings?.[0]?.filepath) || '';
+    const greetingName = ch.lead?.ivr_audio_name || this.campaign?.ivr_audio_name || (this.audioRecordings?.[0]?.name) || 'IVR Greeting';
+
+    if (mode === 'broadcast') {
+      ch.ivrState = 'playing_broadcast';
+      ch.currentAudioName = greetingName;
+      this.renderActiveChannels();
+
+      const onBroadcastEnded = () => {
+        setTimeout(() => {
+          this.sipHangup(lineNum, false);
+          const outcome = ivrCfg.broadcast_outcome || 'Announcement Listened';
+          if (finishCall) finishCall('completed', ch.duration || 1, outcome);
+        }, 600);
+      };
+
+      if (pc) {
+        await this.playIvrAudioIntoPeerConnection(greetingAudio, pc, onBroadcastEnded, lineNum);
+      } else {
+        try {
+          const a = new Audio(greetingAudio);
+          ch.audioPlayer = a;
+          a.play().catch(e => console.warn('Broadcast audio note:', e));
+          a.onended = onBroadcastEnded;
+          a.onerror = () => onBroadcastEnded();
+        } catch (e) {
+          setTimeout(onBroadcastEnded, 5000);
+        }
+      }
+    } else {
+      // Interactive IVR Mode: Step 1 (Greeting) -> Step 2 (Menu Prompt) -> Step 3 (Keypad Wait)
+      ch.ivrState = 'playing_greeting';
+      ch.currentAudioName = greetingName;
+      ch.menuPlayCount = 1;
+      this.renderActiveChannels();
+
+      // Immediately arm remote DTMF detector on WebRTC audio track from customer phone
+      if (pc) {
+        this.setupRemoteDtmfDetector(pc, lineNum);
+      }
+
+      // Identify menu instructions prompt audio (e.g. ivr2)
+      let menuAudio = ivrCfg.menu_audio_file || '';
+      let menuAudioName = ivrCfg.menu_audio_name || '';
+      if (!menuAudio && this.audioRecordings && this.audioRecordings.length > 0) {
+        const found = this.audioRecordings.find(a => a.name === 'ivr2') || (this.audioRecordings.length > 1 ? this.audioRecordings[1] : this.audioRecordings[0]);
+        if (found) {
+          menuAudio = found.filepath;
+          menuAudioName = found.name;
+        }
+      }
+
+      const startTimeout = () => {
+        if (ch.dtmfHandled) return;
+        ch.ivrState = 'awaiting_keypad';
+        ch.currentAudioName = 'Awaiting keypad input (1 or 2)';
+        this.renderActiveChannels();
+
+        if (ch.ivrTimeoutTimer) clearTimeout(ch.ivrTimeoutTimer);
+        const tSec = Math.max(3, ivrCfg.timeout_sec || 15);
+        ch.ivrTimeoutTimer = setTimeout(async () => {
+          if (ch.dtmfHandled || !this.activeChannels.has(ch.channelId || ch.id)) return;
+          console.log(`[Line ${lineNum}] IVR keypad timeout (${tSec}s) reached.`);
+
+          if (ivrCfg.timeout_action === 'repeat_menu' && ch.menuPlayCount < 2) {
+            ch.menuPlayCount++;
+            this.showToast(`[Line ${lineNum}] Repeating menu prompt...`, 'info');
+            playMenuPrompt();
+          } else if (ivrCfg.timeout_action === 'schedule_callback') {
+            try {
+              const cbData = new FormData();
+              cbData.append('lead_id', ch.lead.id);
+              cbData.append('campaign_id', ch.lead.campaign_id || this.campaign?.id || 1);
+              cbData.append('notes', 'No keypad response: Follow-up callback auto-scheduled');
+              await fetch('api.php?action=schedule_callback', { method: 'POST', body: cbData });
+            } catch(e) {}
+            this.sipHangup(lineNum, false);
+            if (finishCall) finishCall('callback', ch.duration || 1, 'No response (Follow-up scheduled)');
+          } else {
+            this.sipHangup(lineNum, false);
+            if (finishCall) finishCall('no_answer', ch.duration || 1, 'No response / Timeout');
+          }
+        }, tSec * 1000);
+      };
+
+      const playMenuPrompt = async () => {
+        if (ch.dtmfHandled) return;
+        if (!menuAudio) {
+          startTimeout();
+          return;
+        }
+        ch.ivrState = 'playing_menu';
+        ch.currentAudioName = menuAudioName || 'Menu Instructions';
+        this.renderActiveChannels();
+        console.log(`[Line ${lineNum}] Step 2: Playing Menu Instructions prompt: ${menuAudio}`);
+
+        if (pc) {
+          await this.playIvrAudioIntoPeerConnection(menuAudio, pc, () => {
+            if (!ch.dtmfHandled) startTimeout();
+          }, lineNum);
+        } else {
+          try {
+            const a = new Audio(menuAudio);
+            ch.audioPlayer = a;
+            a.play().catch(e => console.warn('Menu prompt audio note:', e));
+            a.onended = () => { if (!ch.dtmfHandled) startTimeout(); };
+            a.onerror = () => { if (!ch.dtmfHandled) startTimeout(); };
+          } catch(e) {
+            startTimeout();
+          }
+        }
+      };
+
+      const playGreeting = async () => {
+        if (ch.dtmfHandled) return;
+        ch.ivrState = 'playing_greeting';
+        ch.currentAudioName = greetingName || 'IVR Greeting';
+        this.renderActiveChannels();
+        console.log(`[Line ${lineNum}] Step 1: Playing initial greeting IVR: ${greetingAudio}`);
+
+        if (pc) {
+          await this.playIvrAudioIntoPeerConnection(greetingAudio, pc, () => {
+            if (!ch.dtmfHandled) {
+              setTimeout(() => {
+                playMenuPrompt();
+              }, 400);
+            }
+          }, lineNum);
+        } else {
+          try {
+            const a = new Audio(greetingAudio);
+            ch.audioPlayer = a;
+            a.play().catch(e => console.warn('Interactive greeting audio note:', e));
+            a.onended = () => {
+              if (!ch.dtmfHandled) {
+                setTimeout(() => {
+                  playMenuPrompt();
+                }, 400);
+              }
+            };
+            a.onerror = () => {
+              if (!ch.dtmfHandled) playMenuPrompt();
+            };
+          } catch(e) {
+            playMenuPrompt();
+          }
+        }
+      };
+
+      playGreeting();
+    }
+  }
+
+  async handleIvrDtmfInput(lineNum, tone) {
+    const ch = [...this.activeChannels.values()].find(c => String(c.lineNum) === String(lineNum)) || [...this.activeChannels.values()][0];
+    if (!ch) {
+      console.warn(`[handleIvrDtmfInput] No active channel found for lineNum=${lineNum}`);
+      return;
+    }
+    if (ch.dtmfHandled) return;
+
+    const keyStr = String(tone).trim();
+    const keyConfig = ch.ivrConfig?.keys?.[keyStr] || this.ivrResponses?.keys?.[keyStr] || (
+      keyStr === '1' ? { key: '1', action: 'play_audio_hangup', outcome: 'Confirmed' } :
+      keyStr === '2' ? { key: '2', action: 'callback_requested', outcome: 'Callback requested' } :
+      null
+    );
+    if (!keyConfig) {
+      console.log(`[Line ${lineNum}] Key pressed [${keyStr}] has no configured action.`);
+      return;
+    }
+
+    ch.ivrMode = 'interactive';
+    ch.dtmfHandled = true;
+    if (ch.ivrTimeoutTimer) {
+      clearTimeout(ch.ivrTimeoutTimer);
+      ch.ivrTimeoutTimer = null;
+    }
+
+    this.stopCurrentIvrAudio(lineNum);
+    if (ch.audioPlayer) {
+      try { ch.audioPlayer.pause(); } catch(e){}
+      ch.audioPlayer = null;
+    }
+
+    ch.dtmfPressed = keyStr;
+    ch.dtmfOutcome = keyConfig.outcome || keyConfig.action;
+    ch.ivrState = 'executing_action';
+    this.renderActiveChannels();
+
+    const finishWithAction = async () => {
+      const act = keyConfig.action || 'log_outcome';
+      const outcomeLabel = keyConfig.outcome || act.replace(/_/g, ' ');
+
+      if (act === 'repeat_menu') {
+        ch.dtmfHandled = false;
+        ch.dtmfPressed = null;
+        ch.ivrState = 'awaiting_keypad';
+        this.renderActiveChannels();
+        const replayAudio = ch.lead?.ivr_audio_file || this.campaign?.ivr_audio_file || (this.audioRecordings?.[0]?.filepath) || '';
+        this.startIvrSessionForChannel(ch, ch.pc, lineNum, replayAudio, ch.finishCall);
+        return;
+      }
+
+      if (act === 'callback_requested') {
+        try {
+          const cbData = new FormData();
+          cbData.append('lead_id', ch.lead.id);
+          cbData.append('campaign_id', ch.lead.campaign_id || this.campaign?.id || 1);
+          cbData.append('notes', `Customer pressed key [${keyStr}]: ${outcomeLabel}`);
+          await fetch('api.php?action=schedule_callback', { method: 'POST', body: cbData });
+        } catch(e) {}
+        setTimeout(() => {
+          this.sipHangup(lineNum, false);
+          if (ch.finishCall) ch.finishCall('callback', ch.duration || 1, outcomeLabel, keyStr);
+        }, 700);
+        return;
+      }
+
+      if (act === 'opt_out') {
+        setTimeout(() => {
+          this.sipHangup(lineNum, false);
+          if (ch.finishCall) ch.finishCall('opt_out', ch.duration || 1, 'Opted out', keyStr);
+        }, 700);
+        return;
+      }
+
+      if (act === 'transfer_call') {
+        setTimeout(() => {
+          this.sipHangup(lineNum, false);
+          if (ch.finishCall) ch.finishCall('completed', ch.duration || 1, `Transferred: ${outcomeLabel}`, keyStr);
+        }, 700);
+        return;
+      }
+
+      setTimeout(() => {
+        this.sipHangup(lineNum, false);
+        if (ch.finishCall) ch.finishCall('completed', ch.duration || 1, outcomeLabel, keyStr);
+      }, 700);
+    };
+
+    const respAudio = keyConfig.audio_file;
+    if (respAudio) {
+      ch.ivrState = 'playing_response_audio';
+      ch.responseAudioName = keyConfig.audio_name || 'Response Audio';
+      this.renderActiveChannels();
+      console.log(`[Line ${lineNum}] Playing response audio for key [${keyStr}]: ${respAudio}`);
+
+      if (ch.pc) {
+        await this.playIvrAudioIntoPeerConnection(respAudio, ch.pc, () => finishWithAction(), lineNum);
+      } else {
+        try {
+          const a = new Audio(respAudio);
+          ch.audioPlayer = a;
+          a.play().catch(e => {
+            console.warn('Key response audio play error:', e);
+            finishWithAction();
+          });
+          a.onended = () => finishWithAction();
+          a.onerror = () => finishWithAction();
+        } catch(e) {
+          finishWithAction();
+        }
+      }
+    } else {
+      await finishWithAction();
+    }
+  }
+
+  /* =========================================================
+     Unanswered and Callbacks Sub-Tabs
+     ========================================================= */
+  switchUnansweredSubTab(sub) {
+    this.unansweredSubTab = sub;
+    const btnMissed = document.getElementById('unansTabBtnMissed');
+    const btnCbs = document.getElementById('unansTabBtnCallbacks');
+
+    if (btnMissed) {
+      btnMissed.className = (sub === 'unanswered') ? 'unans-subtab-btn active' : 'unans-subtab-btn';
+    }
+    if (btnCbs) {
+      btnCbs.className = (sub === 'callbacks') ? 'unans-subtab-btn active' : 'unans-subtab-btn';
+    }
+
+    this.selectedUnansweredIds.clear();
+    this.unansCurrentPage = 1;
+    this.renderUnansweredTable();
+  }
+
 }
 
 // Global Softphone Handlers
@@ -5513,7 +7691,10 @@ function openPhonePopup() {
 function dpKey(digit) {
   const dial = document.getElementById('dialInput');
   if (dial) dial.value += digit;
-  if (window.app) window.app.sipSendDtmf(digit);
+  if (window.app) {
+    window.app.sipSendDtmf(digit);
+    window.app.handleIvrDtmfInput(1, digit);
+  }
 }
 
 function dpDelete() {
@@ -5646,4 +7827,28 @@ window.selectCampaignForDesigner = function(id) {
   }
 };
 
+window.openSendTestCallModal = function(num, name) {
+  if (window.app && window.app.openSendTestCallModal) {
+    window.app.openSendTestCallModal(num, name);
+  } else {
+    document.getElementById('modalSendTestCall')?.classList.add('open');
+  }
+};
 
+// Keyboard listener for DTMF keypad testing (1-9, 0, *, #) during active calls
+window.addEventListener('keydown', function(e) {
+  if (['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '#'].includes(e.key)) {
+    const activeEl = document.activeElement;
+    const tag = activeEl ? activeEl.tagName.toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || activeEl?.isContentEditable) {
+      return;
+    }
+    if (window.app && window.app.activeChannels && window.app.activeChannels.size > 0) {
+      const activeCh = [...window.app.activeChannels.values()][0];
+      if (activeCh && activeCh.status === 'answered' && !activeCh.dtmfHandled) {
+        console.log(`[Keyboard DTMF] Triggering key [${e.key}] for Line ${activeCh.lineNum}`);
+        window.app.handleIvrDtmfInput(activeCh.lineNum, e.key);
+      }
+    }
+  }
+});
