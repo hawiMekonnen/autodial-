@@ -121,19 +121,6 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
       </button>
 
       <button class="sc-nav-item" id="sbIvrResponses" onclick="switchNav('tabIvrResponses', 'ivr-responses')">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
-          <circle cx="8" cy="6" r="1"></circle>
-          <circle cx="12" cy="6" r="1"></circle>
-          <circle cx="16" cy="6" r="1"></circle>
-          <circle cx="8" cy="10" r="1"></circle>
-          <circle cx="12" cy="10" r="1"></circle>
-          <circle cx="16" cy="10" r="1"></circle>
-          <circle cx="8" cy="14" r="1"></circle>
-          <circle cx="12" cy="14" r="1"></circle>
-          <circle cx="16" cy="14" r="1"></circle>
-          <circle cx="12" cy="18" r="1"></circle>
-        </svg>
         <span>Interactive IVR</span>
       </button>
 
@@ -793,12 +780,12 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
           
           <!-- COL 1: Customer Information Card -->
           <div class="dial-col-card">
-            <div class="dial-cust-name" id="agentScreenCustName">Helen Tesfaye</div>
-            <div class="dial-cust-phone" id="agentScreenPhoneText">+251911456789</div>
+            <div class="dial-cust-name" id="agentScreenCustName">-</div>
+            <div class="dial-cust-phone" id="agentScreenPhoneText">-</div>
 
             <!-- Clean Status & Priority Badges -->
             <div style="display:flex;align-items:center;gap:8px;margin:12px 0 16px 0;">
-              <span id="agentScreenStatusBadge" class="dial-badge-mint">Pending Call</span>
+              <span id="agentScreenStatusBadge" class="dial-badge-gray">Idle</span>
               <span id="agentScreenTierTag" class="dial-badge-gray">Standard</span>
             </div>
 
@@ -807,13 +794,13 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <div style="display:none;" id="agentScreenDebtDue"></div>
 
             <div class="dial-info-lbl">Contact Reference</div>
-            <div class="dial-info-val" id="agentScreenAccountText">REF-98231</div>
+            <div class="dial-info-val" id="agentScreenAccountText">-</div>
 
             <div class="dial-info-lbl">Scheduled call time</div>
-            <div class="dial-info-val" id="agentScreenCallTimeText">Immediate</div>
+            <div class="dial-info-val" id="agentScreenCallTimeText">-</div>
 
             <div class="dial-info-lbl">Campaign</div>
-            <div class="dial-info-val" id="agentScreenCampaignText">Campaign</div>
+            <div class="dial-info-val" id="agentScreenCampaignText">-</div>
 
             <div style="display:flex;gap:8px;margin-top:auto;padding-top:12px;">
               <span id="agentScreenLangTag" class="dial-badge-mint">English</span>
@@ -829,7 +816,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
             <!-- Dynamic script speech bubble -->
             <div id="agentDynamicScriptBox" class="dial-script-bubble">
-              &ldquo;Hello Helen Tesfaye: I am calling regarding your recent inquiry and service update. Do you have a moment to speak?&rdquo;
+              Select a lead or start the campaign to load the agent script.
             </div>
 
             <!-- Checklist items -->
@@ -1057,9 +1044,9 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             </div>
           </div>
 
-          <!-- Right: Live pacing (sample) -->
+          <!-- Right: Live pacing -->
           <div class="sc-panel" style="padding:22px 24px;">
-            <div style="font-size:16px;font-weight:700;color:#143522;margin-bottom:18px;">Live pacing (sample)</div>
+            <div style="font-size:16px;font-weight:700;color:#143522;margin-bottom:18px;">Live pacing</div>
 
             <!-- 4 Metrics Cards -->
             <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:24px;">
@@ -1419,146 +1406,138 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
          VIEW: INTERACTIVE IVR RESPONSES & ANALYTICS
          ======================================================== -->
     <div class="tab-panel" id="tabIvrResponses">
-      <!-- Page Top Header -->
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
-        <div>
-          <h2 style="font-size:22px;font-weight:700;color:#0f172a;margin:0 0 4px 0;">Interactive IVR Responses</h2>
-          <p style="font-size:13px;color:#64748b;margin:0;">
-            Track caller keypad responses, menu choices, and automated outcomes across campaigns.
-          </p>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px;">
-          <button type="button" class="btn btn-outline-secondary" onclick="app.loadIvrResponsesReport()" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;padding:8px 14px;border-radius:6px;background:#fff;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <polyline points="1 20 1 14 7 14"></polyline>
-              <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path>
-            </svg>
-            Refresh
-          </button>
-          <button type="button" class="btn btn-success" onclick="app.exportIvrResponsesCsv()" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;padding:8px 16px;border-radius:6px;background:#00A651;border:none;color:#fff;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-              <polyline points="7 10 12 15 17 10"></polyline>
-              <line x1="12" y1="15" x2="12" y2="3"></line>
-            </svg>
-            Export CSV
-          </button>
-        </div>
-      </div>
-
-      <!-- KPI Summary Cards -->
-      <div class="unans-cards-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom:14px;">
-        <div class="unans-stat-card active" id="ivrCardTotal" onclick="app.filterIvrByCard('all')" style="cursor:pointer;">
-          <div class="unans-stat-label">Total IVR Calls</div>
-          <div class="unans-stat-val" id="ivrKpiTotalCalls">0</div>
-          <div class="unans-stat-sub" style="font-size:11.5px;color:#64748b;margin-top:4px;">All interactive calls</div>
-        </div>
-
-        <div class="unans-stat-card" id="ivrCardKey1" onclick="app.filterIvrByCard('1')" style="cursor:pointer;">
-          <div class="unans-stat-label" style="display:flex;align-items:center;gap:6px;">
-            <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;background:#00A651;color:#fff;font-size:10px;font-weight:800;">1</span>
-            <span>Option 1 (Confirmed)</span>
+      <div class="unans-panel-card">
+        <!-- Page Top Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+          <div>
+            <h2 class="unans-title" style="font-size:22px;font-weight:700;color:#0f172a;margin:0 0 4px 0;">Interactive IVR Responses</h2>
+            <p class="unans-subtitle" style="font-size:13px;color:#64748b;margin:0;">
+              Track caller keypad responses, menu choices, and automated outcomes for interactive campaigns.
+            </p>
           </div>
-          <div class="unans-stat-val" style="color:#007A3D;" id="ivrKpiKey1Calls">0</div>
-          <div class="unans-stat-sub" style="font-size:11.5px;color:#007A3D;margin-top:4px;"><span id="ivrKpiKey1Pct">0%</span> of callers</div>
-        </div>
-
-        <div class="unans-stat-card" id="ivrCardKey2" onclick="app.filterIvrByCard('2')" style="cursor:pointer;">
-          <div class="unans-stat-label" style="display:flex;align-items:center;gap:6px;">
-            <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;background:#2563eb;color:#fff;font-size:10px;font-weight:800;">2</span>
-            <span>Option 2 (Callback)</span>
-          </div>
-          <div class="unans-stat-val" style="color:#1d4ed8;" id="ivrKpiKey2Calls">0</div>
-          <div class="unans-stat-sub" style="font-size:11.5px;color:#1d4ed8;margin-top:4px;"><span id="ivrKpiKey2Pct">0%</span> of callers</div>
-        </div>
-
-        <div class="unans-stat-card" id="ivrCardKeyNone" onclick="app.filterIvrByCard('none')" style="cursor:pointer;">
-          <div class="unans-stat-label">No Key / Timeout</div>
-          <div class="unans-stat-val" style="color:#64748b;" id="ivrKpiNoneCalls">0</div>
-          <div class="unans-stat-sub" style="font-size:11.5px;color:#64748b;margin-top:4px;"><span id="ivrKpiNonePct">0%</span> of callers</div>
-        </div>
-      </div>
-
-      <!-- Keypad Choice Distribution Visual Bar -->
-      <div class="sc-panel" style="padding:14px 20px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;margin-bottom:18px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:#334155;">
-          <span>Caller Key Distribution</span>
-          <div style="display:flex;align-items:center;gap:16px;font-size:11.5px;font-weight:600;">
-            <span style="display:inline-flex;align-items:center;gap:6px;">
-              <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#00A651;"></span>
-              Key 1 Confirmed (<span id="ivrDistKey1Text">0%</span>)
-            </span>
-            <span style="display:inline-flex;align-items:center;gap:6px;">
-              <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#3b82f6;"></span>
-              Key 2 Callback (<span id="ivrDistKey2Text">0%</span>)
-            </span>
-            <span style="display:inline-flex;align-items:center;gap:6px;">
-              <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#94a3b8;"></span>
-              No Key (<span id="ivrDistNoneText">0%</span>)
-            </span>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button type="button" class="unans-btn-export" onclick="app.loadIvrResponsesReport()">Refresh</button>
+            <button type="button" class="unans-btn-bulk-smart" onclick="app.exportIvrResponsesCsv()">Export CSV</button>
           </div>
         </div>
-        <div class="ivr-dist-bar-wrapper">
-          <div class="ivr-dist-bar-seg key-1" id="ivrDistBarKey1" style="width:0%;"></div>
-          <div class="ivr-dist-bar-seg key-2" id="ivrDistBarKey2" style="width:0%;"></div>
-          <div class="ivr-dist-bar-seg none" id="ivrDistBarNone" style="width:100%;"></div>
-        </div>
-      </div>
 
-      <!-- Filters Panel -->
-      <div class="unans-filter-panel" style="margin-bottom:18px;">
-        <div class="unans-filter-row">
-          <!-- Date Range Pills -->
-          <div class="unans-segmented-pills">
-            <button type="button" class="unans-seg-pill active" id="ivrRespDatePresetToday" onclick="app.setIvrRespDatePreset('today')">Today</button>
-            <button type="button" class="unans-seg-pill" id="ivrRespDatePresetYesterday" onclick="app.setIvrRespDatePreset('yesterday')">Yesterday</button>
-            <button type="button" class="unans-seg-pill" id="ivrRespDatePreset7d" onclick="app.setIvrRespDatePreset('7d')">Last 7 days</button>
-            <button type="button" class="unans-seg-pill" id="ivrRespDatePreset30d" onclick="app.setIvrRespDatePreset('30d')">Last 30 days</button>
-            <button type="button" class="unans-seg-pill" id="ivrRespDatePresetCustom" onclick="app.setIvrRespDatePreset('custom')">Custom</button>
-          </div>
-
-          <!-- Date Inputs -->
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-size:12px;color:#64748b;font-weight:600;">From</span>
-            <input type="date" id="ivrRespDateFrom" class="unans-field" onchange="app.onIvrRespDateInputChange()">
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-size:12px;color:#64748b;font-weight:600;">To</span>
-            <input type="date" id="ivrRespDateTo" class="unans-field" onchange="app.onIvrRespDateInputChange()">
-          </div>
-
-          <!-- Campaign Select -->
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-size:12px;color:#64748b;font-weight:600;">Campaign</span>
-            <select id="ivrRespCampaignSelect" class="unans-field" onchange="app.onIvrRespFilterChange()">
-              <option value="all">All campaigns</option>
+        <!-- Interactive Campaign Selector Bar -->
+        <div style="background:#f8fafc;border:1.5px solid #bbf7d0;border-radius:10px;padding:14px 18px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <div style="font-size:13px;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px;">
+              <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#00A651;"></span>
+              <span>Interactive Campaign:</span>
+            </div>
+            <select id="ivrRespCampaignSelect" class="unans-select-input" style="min-width:260px;font-weight:600;font-size:13px;padding:8px 12px;border:1.5px solid #00A651;color:#0f172a;" onchange="app.onIvrRespCampaignChange(this.value)">
+              <option value="">Loading interactive campaigns...</option>
             </select>
           </div>
-
-          <!-- Key Pressed Select -->
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span style="font-size:12px;color:#64748b;font-weight:600;">Key pressed</span>
-            <select id="ivrRespKeySelect" class="unans-field" onchange="app.onIvrRespFilterChange()">
-              <option value="">All responses</option>
-              <option value="1">Key 1 (Confirmed)</option>
-              <option value="2">Key 2 (Callback Requested)</option>
-              <option value="none">No Key Pressed / Timeout</option>
-            </select>
+          <div style="font-size:12px;color:#64748b;">
+            Only showing campaigns configured with <strong style="color:#007A3D;">Interactive IVR</strong>.
           </div>
         </div>
 
-        <!-- Row 2: Search & Clear -->
-        <div class="unans-search-row">
-          <input type="text" id="ivrRespSearchInput" class="unans-field" placeholder="Search contact name or phone number..." oninput="app.onIvrRespFilterChange()">
-          <button type="button" class="unans-btn-clear" onclick="app.clearIvrRespFilters()">Clear filters</button>
+        <!-- KPI Metric Cards Grid -->
+        <div class="unans-metrics-grid" style="margin-bottom:18px;">
+          <div class="unans-metric-card active" id="ivrCardTotal" onclick="app.filterIvrByCard('all')">
+            <div class="unans-metric-label">Total IVR Calls</div>
+            <div class="unans-metric-value" id="ivrKpiTotalCalls">0</div>
+          </div>
+          <div class="unans-metric-card" id="ivrCardKey1" onclick="app.filterIvrByCard('1')">
+            <div class="unans-metric-label" style="display:flex;align-items:center;gap:6px;">
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;background:#00A651;color:#fff;font-size:10px;font-weight:800;">1</span>
+              <span>Option 1 (Confirmed)</span>
+            </div>
+            <div class="unans-metric-value" style="color:#007A3D;" id="ivrKpiKey1Calls">0</div>
+          </div>
+          <div class="unans-metric-card" id="ivrCardKey2" onclick="app.filterIvrByCard('2')">
+            <div class="unans-metric-label" style="display:flex;align-items:center;gap:6px;">
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:4px;background:#2563eb;color:#fff;font-size:10px;font-weight:800;">2</span>
+              <span>Option 2 (Callback)</span>
+            </div>
+            <div class="unans-metric-value" style="color:#1d4ed8;" id="ivrKpiKey2Calls">0</div>
+          </div>
+          <div class="unans-metric-card" id="ivrCardKeyNone" onclick="app.filterIvrByCard('none')">
+            <div class="unans-metric-label">No Key / Timeout</div>
+            <div class="unans-metric-value" style="color:#64748b;" id="ivrKpiNoneCalls">0</div>
+          </div>
         </div>
-      </div>
 
-      <!-- Responses Table Container -->
-      <div class="sc-panel" style="padding:0;border:1px solid #e2e8f0;border-radius:10px;background:#fff;overflow:hidden;">
-        <div style="overflow-x:auto;">
-          <table class="des-contact-table" style="width:100%;">
+        <!-- Keypad Choice Distribution Visual Bar -->
+        <div style="padding:14px 18px;border:1px solid #e2e8f0;border-radius:10px;background:#ffffff;margin-bottom:18px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:#334155;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+            <span>Caller Key Distribution</span>
+            <div style="display:flex;align-items:center;gap:16px;font-size:11.5px;font-weight:600;flex-wrap:wrap;">
+              <span style="display:inline-flex;align-items:center;gap:6px;">
+                <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#00A651;"></span>
+                Key 1 Confirmed (<span id="ivrDistKey1Text">0%</span>)
+              </span>
+              <span style="display:inline-flex;align-items:center;gap:6px;">
+                <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#3b82f6;"></span>
+                Key 2 Callback (<span id="ivrDistKey2Text">0%</span>)
+              </span>
+              <span style="display:inline-flex;align-items:center;gap:6px;">
+                <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#94a3b8;"></span>
+                No Key (<span id="ivrDistNoneText">0%</span>)
+              </span>
+            </div>
+          </div>
+          <div class="ivr-dist-bar-wrapper">
+            <div class="ivr-dist-bar-seg key-1" id="ivrDistBarKey1" style="width:0%;"></div>
+            <div class="ivr-dist-bar-seg key-2" id="ivrDistBarKey2" style="width:0%;"></div>
+            <div class="ivr-dist-bar-seg none" id="ivrDistBarNone" style="width:100%;"></div>
+          </div>
+        </div>
+
+        <!-- Filter Panel -->
+        <div class="unans-filter-panel" style="margin-bottom:18px;">
+          <div class="unans-filter-row-top">
+            <div class="unans-filter-group">
+              <label class="unans-filter-lbl">Date</label>
+              <div class="unans-date-pills">
+                <button type="button" class="unans-date-pill active" id="ivrRespDatePresetToday" onclick="app.setIvrRespDatePreset('today')">Today</button>
+                <button type="button" class="unans-date-pill" id="ivrRespDatePresetYesterday" onclick="app.setIvrRespDatePreset('yesterday')">Yesterday</button>
+                <button type="button" class="unans-date-pill" id="ivrRespDatePreset7d" onclick="app.setIvrRespDatePreset('7d')">Last 7 days</button>
+                <button type="button" class="unans-date-pill" id="ivrRespDatePreset30d" onclick="app.setIvrRespDatePreset('30d')">Last 30 days</button>
+                <button type="button" class="unans-date-pill" id="ivrRespDatePresetCustom" onclick="app.setIvrRespDatePreset('custom')">Custom</button>
+              </div>
+            </div>
+
+            <div class="unans-filter-group" style="width:130px;">
+              <label class="unans-filter-lbl">From</label>
+              <input type="date" id="ivrRespDateFrom" class="unans-date-input" onchange="app.onIvrRespDateInputChange()">
+            </div>
+
+            <div class="unans-filter-group" style="width:130px;">
+              <label class="unans-filter-lbl">To</label>
+              <input type="date" id="ivrRespDateTo" class="unans-date-input" onchange="app.onIvrRespDateInputChange()">
+            </div>
+
+            <div class="unans-filter-group" style="min-width:180px;">
+              <label class="unans-filter-lbl">Key pressed</label>
+              <select id="ivrRespKeySelect" class="unans-select-input" onchange="app.onIvrRespFilterChange()">
+                <option value="">All responses</option>
+                <option value="1">Key 1 (Confirmed)</option>
+                <option value="2">Key 2 (Callback Requested)</option>
+                <option value="none">No Key Pressed / Timeout</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-top:14px;">
+            <label class="unans-filter-lbl">Search</label>
+            <div style="display:flex;align-items:center;gap:16px;">
+              <div style="flex:1;">
+                <input type="text" id="ivrRespSearchInput" placeholder="Search contact name or phone number..." class="unans-search-input" oninput="app.onIvrRespFilterChange()">
+              </div>
+              <button type="button" class="unans-clear-filters-btn" onclick="app.clearIvrRespFilters()">Clear filters</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="unans-table-wrapper">
+          <table class="unans-table">
             <thead>
               <tr>
                 <th style="width:40px;">#</th>

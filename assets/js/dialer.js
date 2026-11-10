@@ -2521,7 +2521,7 @@ class SkyKinDialerApp {
       dialBtn.classList.remove('in-call');
     }
 
-    const refNum = lead.account_number || `REF-${lead.id}98231`.slice(0, 9);
+    const refNum = lead.account_number || (lead.id ? `REF-${lead.id}` : '-');
     if (acctEl) acctEl.textContent = refNum;
     const dueTimeStr = lead.call_time || 'Immediate';
     if (timeEl) timeEl.textContent = dueTimeStr;
@@ -2596,7 +2596,7 @@ class SkyKinDialerApp {
       const rowBg = isSelected ? '#f0fdf4' : (idx % 2 === 0 ? '#ffffff' : '#f8fafc');
       const rowBorder = isSelected ? 'border-left: 3px solid #00A651;' : '';
 
-      const refStr = l.account_number || `REF-${l.id}98231`.slice(0, 9);
+      const refStr = l.account_number || (l.id ? `REF-${l.id}` : '-');
       const timeStr = l.call_time || 'Immediate';
 
       return `
@@ -6770,12 +6770,12 @@ class SkyKinDialerApp {
     let rendered = rawText || 'Your script will appear here, filled in with sample contact fields.';
 
     if (rawText && isPersonalize) {
-      const contactName = sample?.customer_name || 'Alex Morgan';
-      const contactPhone = sample?.phone_number || '+15551234567';
-      const contactAcct = sample?.account_number || 'ACC-98214';
+      const contactName = sample?.customer_name || 'Contact';
+      const contactPhone = sample?.phone_number || '';
+      const contactAcct = sample?.account_number || '';
       const contactDebt = (sample?.debt_amount !== undefined && sample?.debt_amount !== null)
         ? (typeof sample.debt_amount === 'number' ? `${sample.debt_amount.toFixed(2)}` : String(sample.debt_amount))
-        : '$120.00';
+        : '';
 
       rendered = rendered.replace(/\{customer_name\}|\{name\}/gi, `<strong>${contactName}</strong>`);
       rendered = rendered.replace(/\{phone_number\}|\{phone\}/gi, `<strong>${contactPhone}</strong>`);
@@ -7734,15 +7734,23 @@ class SkyKinDialerApp {
      Interactive IVR Responses and Analytics Page
      ========================================================= */
   async loadIvrResponsesReport() {
-    this.populateIvrCampaignDropdown();
-
     const campSelect = document.getElementById('ivrRespCampaignSelect');
+    if (!this._ivrCampaignsPopulated || !campSelect || campSelect.options.length <= 1) {
+      await this.populateIvrCampaignDropdown();
+    }
+
+    const campId = campSelect?.value;
+    if (!campId) {
+      this.ivrReportRows = [];
+      this.renderIvrResponsesTable();
+      return;
+    }
+
     const keySelect = document.getElementById('ivrRespKeySelect');
     const fromInput = document.getElementById('ivrRespDateFrom');
     const toInput = document.getElementById('ivrRespDateTo');
     const searchInput = document.getElementById('ivrRespSearchInput');
 
-    const campId = campSelect?.value || 'all';
     const keyVal = keySelect?.value || '';
     const dateFrom = fromInput?.value || '';
     const dateTo = toInput?.value || '';
@@ -7806,18 +7814,46 @@ class SkyKinDialerApp {
     }
   }
 
-  populateIvrCampaignDropdown() {
+  async populateIvrCampaignDropdown() {
     const sel = document.getElementById('ivrRespCampaignSelect');
-    if (!sel || (this._ivrCampaignsPopulated && sel.options.length > 1)) return;
-    const curVal = sel.value;
-    const camps = this.campaignsList || [];
-    let html = '<option value="all">All campaigns</option>';
-    camps.forEach(c => {
-      html += `<option value="${c.id}">${this.escapeHtml(c.name)}</option>`;
-    });
-    sel.innerHTML = html;
-    if (curVal) sel.value = curVal;
-    this._ivrCampaignsPopulated = true;
+    if (!sel) return;
+    try {
+      const res = await fetch('api.php?action=get_interactive_campaigns');
+      const data = await res.json();
+      const camps = (data && data.success && Array.isArray(data.campaigns)) ? data.campaigns : [];
+      this._interactiveCampaignsList = camps;
+
+      if (camps.length === 0) {
+        sel.innerHTML = '<option value="">No interactive IVR campaigns found</option>';
+        sel.disabled = true;
+        this._ivrCampaignsPopulated = true;
+        return;
+      }
+
+      sel.disabled = false;
+      const curVal = sel.value;
+      let html = '';
+      camps.forEach(c => {
+        html += `<option value="${c.id}">${this.escapeHtml(c.name)} (ID: ${c.id})</option>`;
+      });
+      sel.innerHTML = html;
+
+      // Select previously chosen, active, or first available interactive campaign
+      if (curVal && camps.some(c => String(c.id) === String(curVal))) {
+        sel.value = curVal;
+      } else if (this.activeCampaignId && camps.some(c => String(c.id) === String(this.activeCampaignId))) {
+        sel.value = String(this.activeCampaignId);
+      } else {
+        sel.value = String(camps[0].id);
+      }
+      this._ivrCampaignsPopulated = true;
+    } catch(err) {
+      console.error('Error populating interactive IVR campaigns:', err);
+    }
+  }
+
+  onIvrRespCampaignChange(campaignId) {
+    this.loadIvrResponsesReport();
   }
 
   renderIvrResponsesTable() {
@@ -7877,20 +7913,20 @@ class SkyKinDialerApp {
       const durM = Math.floor((r.duration_sec || 0) / 60);
       const durS = (r.duration_sec || 0) % 60;
       const durStr = `${durM}:${String(durS).padStart(2, '0')}`;
-      const timeClean = r.call_time ? r.call_time.split('.')[0] : '-';
+      const timeClean = r.call_time ? r.call_time.replace(/\.\d+/, '').replace(/\+.*$/, '').replace('T', ' ') : '-';
 
       return `
         <tr>
           <td style="color:#94a3b8;font-size:12px;font-weight:600;">${idx}</td>
           <td style="font-weight:700;color:#0f172a;">${this.escapeHtml(r.customer_name || 'Contact')}</td>
           <td style="font-family:monospace;font-size:12.5px;color:#007A3D;font-weight:600;">${this.escapeHtml(r.phone_number || '')}</td>
-          <td><span class="sc-badge-clean mint">${this.escapeHtml(r.campaign_name || 'Default')}</span></td>
+          <td><span class="sc-badge-clean mint">${this.escapeHtml(r.campaign_name || 'Campaign')}</span></td>
           <td>${badgeHtml}</td>
           <td style="font-size:12px;color:#334155;font-weight:600;">${this.escapeHtml(r.action_label || '-')}</td>
           <td style="font-family:monospace;font-size:12px;color:#64748b;">${durStr}</td>
           <td style="font-size:12px;color:#64748b;">${this.escapeHtml(timeClean)}</td>
           <td style="text-align:right;">
-            <button type="button" class="btn btn-xs btn-outline-success" onclick="app.dialLeadDirectly(${r.lead_id}, '${this.escapeHtml(r.phone_number)}')" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;">
+            <button type="button" class="unans-row-btn" onclick="app.dialLeadDirectly(${r.lead_id}, '${this.escapeHtml(r.phone_number)}')">
               Dial
             </button>
           </td>
@@ -7976,13 +8012,11 @@ class SkyKinDialerApp {
   }
 
   clearIvrRespFilters() {
-    const campSelect = document.getElementById('ivrRespCampaignSelect');
     const keySelect = document.getElementById('ivrRespKeySelect');
     const fromInput = document.getElementById('ivrRespDateFrom');
     const toInput = document.getElementById('ivrRespDateTo');
     const searchInput = document.getElementById('ivrRespSearchInput');
 
-    if (campSelect) campSelect.value = 'all';
     if (keySelect) keySelect.value = '';
     if (fromInput) fromInput.value = '';
     if (toInput) toInput.value = '';
@@ -8005,7 +8039,12 @@ class SkyKinDialerApp {
     const toInput = document.getElementById('ivrRespDateTo');
     const searchInput = document.getElementById('ivrRespSearchInput');
 
-    const campId = campSelect?.value || 'all';
+    const campId = campSelect?.value;
+    if (!campId) {
+      this.showToast('Please select an interactive campaign first', 'warning');
+      return;
+    }
+
     const keyVal = keySelect?.value || '';
     const dateFrom = fromInput?.value || '';
     const dateTo = toInput?.value || '';

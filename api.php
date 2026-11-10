@@ -825,24 +825,60 @@ if ($action === 'save_ivr_responses') {
     jsonOut(['success' => true, 'message' => 'IVR responses saved successfully']);
 }
 
+// Phase 5: Get Interactive IVR Campaigns List
+if ($action === 'get_interactive_campaigns') {
+    $stmt = $db->query("
+        SELECT id, name, status, ivr_responses, created_at 
+        FROM campaigns 
+        WHERE (ivr_responses LIKE '%\"mode\":\"interactive\"%' OR ivr_responses LIKE '%\"mode\": \"interactive\"%')
+        ORDER BY id DESC
+    ");
+    $campaigns = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    jsonOut(['success' => true, 'campaigns' => $campaigns]);
+}
+
 // Phase 5: Get Interactive IVR Responses Report & Analytics
 if ($action === 'get_ivr_responses_report') {
-    $campaignId = trim($_GET['campaign_id'] ?? 'all');
+    $campaignId = (int)($_GET['campaign_id'] ?? 0);
+    if ($campaignId <= 0) {
+        $stmtFirst = $db->query("
+            SELECT id FROM campaigns 
+            WHERE (ivr_responses LIKE '%\"mode\":\"interactive\"%' OR ivr_responses LIKE '%\"mode\": \"interactive\"%')
+            ORDER BY id DESC LIMIT 1
+        ");
+        $campaignId = (int)$stmtFirst->fetchColumn();
+    }
+
+    if ($campaignId <= 0) {
+        jsonOut([
+            'success' => true,
+            'campaign_id' => 0,
+            'campaign_name' => '',
+            'summary' => [
+                'total' => 0,
+                'key_1_count' => 0,
+                'key_1_pct' => 0,
+                'key_2_count' => 0,
+                'key_2_pct' => 0,
+                'other_count' => 0,
+                'other_pct' => 0,
+                'none_count' => 0,
+                'none_pct' => 0,
+            ],
+            'rows' => []
+        ]);
+    }
+
     $keyFilter = trim($_GET['key'] ?? '');
     $dateFrom = trim($_GET['date_from'] ?? '');
     $dateTo = trim($_GET['date_to'] ?? '');
     $search = trim($_GET['search'] ?? '');
 
     $where = [
-        "(l.status != 'pending' OR cl.id IS NOT NULL OR l.dtmf_response != '' OR cl.dtmf_pressed != '')",
-        "(l.dtmf_response != '' OR cl.dtmf_pressed != '' OR c.ivr_responses LIKE '%interactive%')"
+        "l.campaign_id = ?",
+        "(l.status != 'pending' OR cl.id IS NOT NULL OR l.dtmf_response != '' OR cl.dtmf_pressed != '')"
     ];
-    $params = [];
-
-    if ($campaignId !== 'all' && !empty($campaignId)) {
-        $where[] = "l.campaign_id = ?";
-        $params[] = (int)$campaignId;
-    }
+    $params = [$campaignId];
 
     if ($keyFilter === 'none') {
         $where[] = "(COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = 'none')";
@@ -878,7 +914,7 @@ if ($action === 'get_ivr_responses_report') {
             COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') as dtmf_key,
             l.last_attempt_at,
             l.created_at,
-            cl.timestamp as call_time_raw,
+            COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) as call_time,
             c.id as campaign_id,
             c.name as campaign_name,
             c.ivr_responses
@@ -904,8 +940,12 @@ if ($action === 'get_ivr_responses_report') {
     $countKey2 = 0;
     $countOther = 0;
     $countNone = 0;
+    $campaignName = '';
 
     foreach ($rows as &$r) {
+        if (empty($campaignName) && !empty($r['campaign_name'])) {
+            $campaignName = $r['campaign_name'];
+        }
         $k = trim((string)$r['dtmf_key']);
         if ($k === '1') $countKey1++;
         elseif ($k === '2') $countKey2++;
@@ -926,8 +966,16 @@ if ($action === 'get_ivr_responses_report') {
         }
     }
 
+    if (empty($campaignName) && $campaignId > 0) {
+        $cStmt = $db->prepare("SELECT name FROM campaigns WHERE id = ?");
+        $cStmt->execute([$campaignId]);
+        $campaignName = (string)$cStmt->fetchColumn();
+    }
+
     jsonOut([
         'success' => true,
+        'campaign_id' => $campaignId,
+        'campaign_name' => $campaignName,
         'summary' => [
             'total' => $total,
             'key_1_count' => $countKey1,
@@ -945,22 +993,27 @@ if ($action === 'get_ivr_responses_report') {
 
 // Phase 5: Export Interactive IVR Responses CSV
 if ($action === 'export_ivr_responses_csv') {
-    $campaignId = trim($_GET['campaign_id'] ?? 'all');
+    $campaignId = (int)($_GET['campaign_id'] ?? 0);
+    if ($campaignId <= 0) {
+        $stmtFirst = $db->query("
+            SELECT id FROM campaigns 
+            WHERE (ivr_responses LIKE '%\"mode\":\"interactive\"%' OR ivr_responses LIKE '%\"mode\": \"interactive\"%')
+            ORDER BY id DESC LIMIT 1
+        ");
+        $campaignId = (int)$stmtFirst->fetchColumn();
+    }
+
     $keyFilter = trim($_GET['key'] ?? '');
     $dateFrom = trim($_GET['date_from'] ?? '');
     $dateTo = trim($_GET['date_to'] ?? '');
     $search = trim($_GET['search'] ?? '');
 
     $where = [
-        "(l.status != 'pending' OR cl.id IS NOT NULL OR l.dtmf_response != '' OR cl.dtmf_pressed != '')",
-        "(l.dtmf_response != '' OR cl.dtmf_pressed != '' OR c.ivr_responses LIKE '%interactive%')"
+        "l.campaign_id = ?",
+        "(l.status != 'pending' OR cl.id IS NOT NULL OR l.dtmf_response != '' OR cl.dtmf_pressed != '')"
     ];
-    $params = [];
+    $params = [$campaignId];
 
-    if ($campaignId !== 'all' && !empty($campaignId)) {
-        $where[] = "l.campaign_id = ?";
-        $params[] = (int)$campaignId;
-    }
     if ($keyFilter === 'none') {
         $where[] = "(COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = 'none')";
     } elseif (!empty($keyFilter)) {
@@ -1024,7 +1077,7 @@ if ($action === 'export_ivr_responses_csv') {
             $r['lead_id'],
             $r['customer_name'],
             $r['phone_number'],
-            $r['campaign_name'] ?: 'Default',
+            $r['campaign_name'] ?: 'Interactive Campaign',
             $k === 'none' ? 'None (Timeout)' : $k,
             $outcome,
             $r['duration_sec'],
