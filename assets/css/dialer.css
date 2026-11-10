@@ -3011,5 +3011,105 @@ body.phone-open .main { margin-right: 296px; transition: margin-right 0.3s ease;
   vertical-align: middle;
 }
 
+/* =========================================================
+   Interactive IVR Responses and Analytics View
+   ========================================================= */
+.ivr-key-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.ivr-key-badge.key-1 {
+  background: #e8f8ee;
+  color: #007A3D;
+  border: 1px solid #bbf7d0;
+}
+.ivr-key-badge.key-2 {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.ivr-key-badge.key-none {
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+.ivr-key-badge.key-other {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+.ivr-key-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #ffffff;
+}
+.ivr-key-badge.key-1 .ivr-key-num {
+  background: #007A3D;
+}
+.ivr-key-badge.key-2 .ivr-key-num {
+  background: #2563eb;
+}
+.ivr-key-badge.key-other .ivr-key-num {
+  background: #ea580c;
+}
+
+.ivr-dist-bar-wrapper {
+  display: flex;
+  height: 10px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #e2e8f0;
+  margin: 12px 0 16px 0;
+}
+.ivr-dist-bar-seg {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+.ivr-dist-bar-seg.key-1 {
+  background: #00A651;
+}
+.ivr-dist-bar-seg.key-2 {
+  background: #3b82f6;
+}
+.ivr-dist-bar-seg.other {
+  background: #f97316;
+}
+.ivr-dist-bar-seg.none {
+  background: #94a3b8;
+}
+
+.ivr-live-keypad-btn {
+  background: #ffffff;
+  border: 1.5px solid #86efac;
+  color: #166534;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ivr-live-keypad-btn:hover {
+  background: #e8f8ee;
+  border-color: #00A651;
+  transform: translateY(-1px);
+}
+
+
 
 

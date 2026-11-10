@@ -592,6 +592,7 @@ class SkyKinDialerApp {
       lineObj.audioCtx = null;
     }
 
+    let currentToken = null;
     try {
       const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
       const audioCtx = new AudioCtxClass();
@@ -647,7 +648,7 @@ class SkyKinDialerApp {
       }
 
       lineObj.ivrSource = source;
-      const currentToken = {};
+      currentToken = {};
       lineObj.currentPlaybackToken = currentToken;
 
       let finished = false;
@@ -659,7 +660,7 @@ class SkyKinDialerApp {
           if (lineObj.currentPlaybackToken === currentToken && onEnded) {
             onEnded();
           }
-        }, 500);
+        }, 200);
       };
 
       source.onended = finishPlayback;
@@ -676,8 +677,8 @@ class SkyKinDialerApp {
     } catch (err) {
       console.error(`[Line ${lineNum}] Error in playIvrAudioIntoPeerConnection:`, err);
       setTimeout(() => {
-        if (lineObj.currentPlaybackToken === currentToken && onEnded) onEnded();
-      }, 5000);
+        if (onEnded) onEnded();
+      }, 500);
       return null;
     }
   }
@@ -887,7 +888,7 @@ class SkyKinDialerApp {
             for (let i = 0; i < inputData.length; i++) {
               totalEnergy += inputData[i] * inputData[i];
             }
-            if (totalEnergy < 0.02) {
+            if (totalEnergy < 0.001) {
               detectCount = 0;
               lastDetected = null;
               return;
@@ -5229,17 +5230,25 @@ class SkyKinDialerApp {
       if (isFinished) return;
       isFinished = true;
 
+      if (channelData.ivrTimeoutTimer) {
+        clearTimeout(channelData.ivrTimeoutTimer);
+        channelData.ivrTimeoutTimer = null;
+      }
       if (channelData.timerInterval) clearInterval(channelData.timerInterval);
       this.activeChannels.delete(channelId);
       lineObj.activeChannelId = null;
+
+      const finalDtmf = dtmfPressed || channelData.dtmfPressed || lead.dtmf_response || '';
+      const finalOutcome = errorMsg || channelData.dtmfOutcome || lead.error_message || '';
+
       lead.status = finalStatus;
       lead.duration_sec = durationSec;
-      if (errorMsg) lead.error_message = errorMsg;
-      if (dtmfPressed) lead.dtmf_response = dtmfPressed;
+      if (finalOutcome) lead.error_message = finalOutcome;
+      if (finalDtmf) lead.dtmf_response = finalDtmf;
       this.renderActiveChannels();
       this.renderLeadsTables();
 
-      await this.updateLeadStatusBackend(lead.id, finalStatus, durationSec, errorMsg, dtmfPressed || lead.dtmf_response || '');
+      await this.updateLeadStatusBackend(lead.id, finalStatus, durationSec, finalOutcome, finalDtmf);
       await this.loadCampaignData();
 
       // Proceed to the next customer in the queue for this line
@@ -5329,9 +5338,92 @@ class SkyKinDialerApp {
     }, lineNum);
   }
 
+  renderAgentScreenIvrLive() {
+    const box = document.getElementById('agentInteractiveIvrBox');
+    if (!box) return;
+
+    const ch = [...this.activeChannels.values()].find(c => c.ivrMode === 'interactive' || c.status === 'answered') || [...this.activeChannels.values()][0];
+
+    if (!ch || ch.ivrMode !== 'interactive' || (ch.status !== 'answered' && ch.status !== 'connected')) {
+      box.style.display = 'none';
+      return;
+    }
+
+    box.style.display = 'block';
+
+    const stepBadge = document.getElementById('agentIvrStepBadge');
+    const descEl = document.getElementById('agentIvrStatusDesc');
+    const keyAlert = document.getElementById('agentIvrKeyDetectedAlert');
+    const keyNumEl = document.getElementById('agentIvrDetectedKeyNum');
+    const keyLabelEl = document.getElementById('agentIvrDetectedKeyLabel');
+    const keypadBtnsContainer = document.getElementById('agentIvrLiveKeypadButtons');
+
+    if (ch.dtmfPressed) {
+      if (stepBadge) {
+        stepBadge.textContent = `Key [${ch.dtmfPressed}] Detected`;
+        stepBadge.style.background = '#e0f2fe';
+        stepBadge.style.color = '#0369a1';
+        stepBadge.style.borderColor = '#bae6fd';
+      }
+      if (descEl) {
+        descEl.textContent = ch.ivrState === 'playing_response_audio'
+          ? `Playing response audio for Option ${ch.dtmfPressed}...`
+          : `Caller selected Option ${ch.dtmfPressed}: ${ch.dtmfOutcome || 'Confirmed'}. Finalizing call.`;
+      }
+      if (keyAlert) {
+        keyAlert.style.display = 'inline-flex';
+        if (keyNumEl) keyNumEl.textContent = ch.dtmfPressed;
+        if (keyLabelEl) keyLabelEl.textContent = ch.dtmfOutcome || 'Selected';
+      }
+    } else {
+      if (keyAlert) keyAlert.style.display = 'none';
+
+      if (ch.ivrState === 'playing_greeting') {
+        if (stepBadge) {
+          stepBadge.textContent = 'Step 1: Playing Greeting';
+          stepBadge.style.background = '#e8f8ee';
+          stepBadge.style.color = '#007A3D';
+          stepBadge.style.borderColor = '#bbf7d0';
+        }
+        if (descEl) descEl.textContent = 'Caller is listening to opening announcement. Keypad is active for input.';
+      } else if (ch.ivrState === 'playing_menu') {
+        if (stepBadge) {
+          stepBadge.textContent = 'Step 2: Playing Menu';
+          stepBadge.style.background = '#fef3c7';
+          stepBadge.style.color = '#b45309';
+          stepBadge.style.borderColor = '#fde68a';
+        }
+        if (descEl) descEl.textContent = 'Playing menu instructions. Awaiting key press (1 or 2)...';
+      } else {
+        if (stepBadge) {
+          stepBadge.textContent = 'Awaiting Caller Keypad (1 or 2)';
+          stepBadge.style.background = '#eff6ff';
+          stepBadge.style.color = '#1d4ed8';
+          stepBadge.style.borderColor = '#bfdbfe';
+        }
+        if (descEl) descEl.textContent = 'Waiting for caller to press a number key on their phone keypad...';
+      }
+    }
+
+    if (keypadBtnsContainer) {
+      const keysObj = ch.ivrConfig?.keys || this.ivrResponses?.keys || {
+        '1': { key: '1', outcome: 'Confirmed' },
+        '2': { key: '2', outcome: 'Callback requested' }
+      };
+      const keyList = Object.values(keysObj);
+      keypadBtnsContainer.innerHTML = keyList.map(k => `
+        <button type="button" class="ivr-live-keypad-btn" onclick="app.handleIvrDtmfInput(${ch.lineNum || 1}, '${k.key}')" title="Click to simulate or register key ${k.key}">
+          <span class="ivr-key-num" style="background:#00A651;width:18px;height:18px;font-size:11px;">${k.key}</span>
+          <span>${this.escapeHtml(k.outcome || ('Option ' + k.key))}</span>
+        </button>
+      `).join('');
+    }
+  }
+
   renderActiveChannels() {
     if (!this.channelsContainer) return;
     this.updateTelephonyKpiCards();
+    this.renderAgentScreenIvrLive();
 
     if (this._displayCountdownTimer) {
       clearInterval(this._displayCountdownTimer);
@@ -7232,18 +7324,17 @@ class SkyKinDialerApp {
       if (interactivePanel) interactivePanel.style.display = 'block';
 
       const designerMenuSel = document.getElementById('designerIvrMenuAudioSelect');
-      if (designerMenuSel && this.audioRecordings && this.audioRecordings.length > 0) {
+      if (designerMenuSel) {
         const curMenuVal = resp.menu_audio_file || '';
-        const optionsHtml = this.audioRecordings.map(a => {
-          const isSel = (curMenuVal === a.filepath || resp.menu_audio_name === a.name);
-          return `<option value="${this.escapeHtml(a.filepath)}" data-audio-name="${this.escapeHtml(a.name)}" ${isSel ? 'selected' : ''}>${this.escapeHtml(a.name)}</option>`;
-        }).join('');
-        designerMenuSel.innerHTML = optionsHtml;
-        if (curMenuVal) {
-          designerMenuSel.value = curMenuVal;
-        } else if (this.audioRecordings.length > 1) {
-          designerMenuSel.selectedIndex = 1;
+        let optionsHtml = '<option value="">None (Instructions included in greeting)</option>';
+        if (this.audioRecordings && this.audioRecordings.length > 0) {
+          optionsHtml += this.audioRecordings.map(a => {
+            const isSel = (curMenuVal === a.filepath || resp.menu_audio_name === a.name);
+            return `<option value="${this.escapeHtml(a.filepath)}" data-audio-name="${this.escapeHtml(a.name)}" ${isSel ? 'selected' : ''}>${this.escapeHtml(a.name)}</option>`;
+          }).join('');
         }
+        designerMenuSel.innerHTML = optionsHtml;
+        designerMenuSel.value = curMenuVal || '';
       }
 
       const keys = resp.keys || {};
@@ -7307,8 +7398,8 @@ class SkyKinDialerApp {
     if (!this.ivrResponses) this.ivrResponses = { mode: 'interactive', keys: {} };
     const sel = document.getElementById('designerIvrMenuAudioSelect');
     const opt = sel?.selectedOptions?.[0];
-    const audioName = opt?.dataset?.audioName || opt?.textContent || 'ivr2';
-    this.ivrResponses.menu_audio_file = audioPath;
+    const audioName = audioPath ? (opt?.dataset?.audioName || opt?.textContent || '') : '';
+    this.ivrResponses.menu_audio_file = audioPath || '';
     this.ivrResponses.menu_audio_name = audioName;
 
     const id = this.activeCampaignId || this.campaign?.id || 1;
@@ -7317,7 +7408,7 @@ class SkyKinDialerApp {
     formData.append('responses_json', JSON.stringify(this.ivrResponses));
     try {
       await fetch('api.php?action=save_ivr_responses', { method: 'POST', body: formData });
-      this.showToast(`Menu instructions audio set to "${audioName}"`, 'success');
+      this.showToast(audioPath ? `Menu instructions audio set to "${audioName}"` : 'Menu instructions set to None', 'success');
     } catch(e) {
       console.warn('Auto-save menu audio error:', e);
     }
@@ -7356,8 +7447,8 @@ class SkyKinDialerApp {
     const ivrCfg = this.ivrResponses || {
       mode: 'interactive',
       broadcast_outcome: 'Announcement Listened',
-      menu_audio_name: 'ivr2',
-      menu_audio_file: 'assets/audio/1793961705_ahununu_waiting.wav',
+      menu_audio_name: '',
+      menu_audio_file: '',
       timeout_sec: 15,
       timeout_action: 'no_response_hangup',
       keys: {
@@ -7405,7 +7496,7 @@ class SkyKinDialerApp {
         }
       }
     } else {
-      // Interactive IVR Mode: Step 1 (Greeting) -> Step 2 (Menu Prompt) -> Step 3 (Keypad Wait)
+      // Interactive IVR Mode: Step 1 (Greeting) -> Step 2 (Optional Menu Prompt) -> Step 3 (Keypad Wait)
       ch.ivrState = 'playing_greeting';
       ch.currentAudioName = greetingName;
       ch.menuPlayCount = 1;
@@ -7416,15 +7507,12 @@ class SkyKinDialerApp {
         this.setupRemoteDtmfDetector(pc, lineNum);
       }
 
-      // Identify menu instructions prompt audio (e.g. ivr2)
+      // Identify menu instructions prompt audio (only if explicitly configured and different from greeting)
       let menuAudio = ivrCfg.menu_audio_file || '';
       let menuAudioName = ivrCfg.menu_audio_name || '';
-      if (!menuAudio && this.audioRecordings && this.audioRecordings.length > 0) {
-        const found = this.audioRecordings.find(a => a.name === 'ivr2') || (this.audioRecordings.length > 1 ? this.audioRecordings[1] : this.audioRecordings[0]);
-        if (found) {
-          menuAudio = found.filepath;
-          menuAudioName = found.name;
-        }
+      if (menuAudio === greetingAudio) {
+        menuAudio = '';
+        menuAudioName = '';
       }
 
       const startTimeout = () => {
@@ -7452,10 +7540,10 @@ class SkyKinDialerApp {
               await fetch('api.php?action=schedule_callback', { method: 'POST', body: cbData });
             } catch(e) {}
             this.sipHangup(lineNum, false);
-            if (finishCall) finishCall('callback', ch.duration || 1, 'No response (Follow-up scheduled)');
+            if (finishCall) finishCall('callback', ch.duration || 1, 'No response (Follow-up scheduled)', 'none');
           } else {
             this.sipHangup(lineNum, false);
-            if (finishCall) finishCall('no_answer', ch.duration || 1, 'No response / Timeout');
+            if (finishCall) finishCall('no_answer', ch.duration || 1, 'No response / Timeout', 'none');
           }
         }, tSec * 1000);
       };
@@ -7495,31 +7583,27 @@ class SkyKinDialerApp {
         this.renderActiveChannels();
         console.log(`[Line ${lineNum}] Step 1: Playing initial greeting IVR: ${greetingAudio}`);
 
-        if (pc) {
-          await this.playIvrAudioIntoPeerConnection(greetingAudio, pc, () => {
-            if (!ch.dtmfHandled) {
-              setTimeout(() => {
-                playMenuPrompt();
-              }, 400);
+        const onGreetingDone = () => {
+          if (!ch.dtmfHandled) {
+            if (menuAudio) {
+              setTimeout(() => { playMenuPrompt(); }, 300);
+            } else {
+              startTimeout();
             }
-          }, lineNum);
+          }
+        };
+
+        if (pc) {
+          await this.playIvrAudioIntoPeerConnection(greetingAudio, pc, onGreetingDone, lineNum);
         } else {
           try {
             const a = new Audio(greetingAudio);
             ch.audioPlayer = a;
             a.play().catch(e => console.warn('Interactive greeting audio note:', e));
-            a.onended = () => {
-              if (!ch.dtmfHandled) {
-                setTimeout(() => {
-                  playMenuPrompt();
-                }, 400);
-              }
-            };
-            a.onerror = () => {
-              if (!ch.dtmfHandled) playMenuPrompt();
-            };
+            a.onended = onGreetingDone;
+            a.onerror = onGreetingDone;
           } catch(e) {
-            playMenuPrompt();
+            onGreetingDone();
           }
         }
       };
@@ -7563,6 +7647,8 @@ class SkyKinDialerApp {
     ch.dtmfPressed = keyStr;
     ch.dtmfOutcome = keyConfig.outcome || keyConfig.action;
     ch.ivrState = 'executing_action';
+
+    this.showToast(`[Line ${lineNum}] Caller pressed [${keyStr}]: ${ch.dtmfOutcome}`, 'success');
     this.renderActiveChannels();
 
     const finishWithAction = async () => {
@@ -7590,7 +7676,7 @@ class SkyKinDialerApp {
         setTimeout(() => {
           this.sipHangup(lineNum, false);
           if (ch.finishCall) ch.finishCall('callback', ch.duration || 1, outcomeLabel, keyStr);
-        }, 700);
+        }, 600);
         return;
       }
 
@@ -7598,7 +7684,7 @@ class SkyKinDialerApp {
         setTimeout(() => {
           this.sipHangup(lineNum, false);
           if (ch.finishCall) ch.finishCall('opt_out', ch.duration || 1, 'Opted out', keyStr);
-        }, 700);
+        }, 600);
         return;
       }
 
@@ -7606,14 +7692,14 @@ class SkyKinDialerApp {
         setTimeout(() => {
           this.sipHangup(lineNum, false);
           if (ch.finishCall) ch.finishCall('completed', ch.duration || 1, `Transferred: ${outcomeLabel}`, keyStr);
-        }, 700);
+        }, 600);
         return;
       }
 
       setTimeout(() => {
         this.sipHangup(lineNum, false);
         if (ch.finishCall) ch.finishCall('completed', ch.duration || 1, outcomeLabel, keyStr);
-      }, 700);
+      }, 600);
     };
 
     const respAudio = keyConfig.audio_file;
@@ -7642,6 +7728,334 @@ class SkyKinDialerApp {
     } else {
       await finishWithAction();
     }
+  }
+
+  /* =========================================================
+     Interactive IVR Responses and Analytics Page
+     ========================================================= */
+  async loadIvrResponsesReport() {
+    this.populateIvrCampaignDropdown();
+
+    const campSelect = document.getElementById('ivrRespCampaignSelect');
+    const keySelect = document.getElementById('ivrRespKeySelect');
+    const fromInput = document.getElementById('ivrRespDateFrom');
+    const toInput = document.getElementById('ivrRespDateTo');
+    const searchInput = document.getElementById('ivrRespSearchInput');
+
+    const campId = campSelect?.value || 'all';
+    const keyVal = keySelect?.value || '';
+    const dateFrom = fromInput?.value || '';
+    const dateTo = toInput?.value || '';
+    const search = searchInput?.value || '';
+
+    const params = new URLSearchParams({
+      action: 'get_ivr_responses_report',
+      campaign_id: campId,
+      key: keyVal,
+      date_from: dateFrom,
+      date_to: dateTo,
+      search: search
+    });
+
+    try {
+      const res = await fetch(`api.php?${params.toString()}`);
+      const data = await res.json();
+      if (!data.success) {
+        this.showToast(data.error || 'Failed to load IVR responses report', 'error');
+        return;
+      }
+
+      // Update KPI Cards
+      const sum = data.summary || {};
+      const totalEl = document.getElementById('ivrKpiTotalCalls');
+      const k1CallsEl = document.getElementById('ivrKpiKey1Calls');
+      const k1PctEl = document.getElementById('ivrKpiKey1Pct');
+      const k2CallsEl = document.getElementById('ivrKpiKey2Calls');
+      const k2PctEl = document.getElementById('ivrKpiKey2Pct');
+      const noneCallsEl = document.getElementById('ivrKpiNoneCalls');
+      const nonePctEl = document.getElementById('ivrKpiNonePct');
+
+      if (totalEl) totalEl.textContent = sum.total || 0;
+      if (k1CallsEl) k1CallsEl.textContent = sum.key_1_count || 0;
+      if (k1PctEl) k1PctEl.textContent = `${sum.key_1_pct || 0}%`;
+      if (k2CallsEl) k2CallsEl.textContent = sum.key_2_count || 0;
+      if (k2PctEl) k2PctEl.textContent = `${sum.key_2_pct || 0}%`;
+      if (noneCallsEl) noneCallsEl.textContent = sum.none_count || 0;
+      if (nonePctEl) nonePctEl.textContent = `${sum.none_pct || 0}%`;
+
+      // Update Distribution Bar
+      const barK1 = document.getElementById('ivrDistBarKey1');
+      const barK2 = document.getElementById('ivrDistBarKey2');
+      const barNone = document.getElementById('ivrDistBarNone');
+      const textK1 = document.getElementById('ivrDistKey1Text');
+      const textK2 = document.getElementById('ivrDistKey2Text');
+      const textNone = document.getElementById('ivrDistNoneText');
+
+      if (barK1) barK1.style.width = `${sum.key_1_pct || 0}%`;
+      if (barK2) barK2.style.width = `${sum.key_2_pct || 0}%`;
+      if (barNone) barNone.style.width = `${sum.none_pct || 0}%`;
+      if (textK1) textK1.textContent = `${sum.key_1_pct || 0}%`;
+      if (textK2) textK2.textContent = `${sum.key_2_pct || 0}%`;
+      if (textNone) textNone.textContent = `${sum.none_pct || 0}%`;
+
+      this.ivrReportRows = data.rows || [];
+      this.ivrRespCurrentPage = 1;
+      this.renderIvrResponsesTable();
+    } catch(err) {
+      console.error('loadIvrResponsesReport error:', err);
+    }
+  }
+
+  populateIvrCampaignDropdown() {
+    const sel = document.getElementById('ivrRespCampaignSelect');
+    if (!sel || (this._ivrCampaignsPopulated && sel.options.length > 1)) return;
+    const curVal = sel.value;
+    const camps = this.campaignsList || [];
+    let html = '<option value="all">All campaigns</option>';
+    camps.forEach(c => {
+      html += `<option value="${c.id}">${this.escapeHtml(c.name)}</option>`;
+    });
+    sel.innerHTML = html;
+    if (curVal) sel.value = curVal;
+    this._ivrCampaignsPopulated = true;
+  }
+
+  renderIvrResponsesTable() {
+    const tbody = document.getElementById('ivrResponsesTableBody');
+    const showingEl = document.getElementById('ivrRespPaginationShowingText');
+    const prevBtn = document.getElementById('ivrRespBtnPrevPage');
+    const nextBtn = document.getElementById('ivrRespBtnNextPage');
+
+    if (!tbody) return;
+
+    const rows = this.ivrReportRows || [];
+    const total = rows.length;
+    const rpp = this.ivrRespRowsPerPage || 25;
+    const totalPages = Math.max(1, Math.ceil(total / rpp));
+    if (this.ivrRespCurrentPage > totalPages) this.ivrRespCurrentPage = totalPages;
+    if (this.ivrRespCurrentPage < 1) this.ivrRespCurrentPage = 1;
+    const page = this.ivrRespCurrentPage;
+
+    const startIdx = (page - 1) * rpp;
+    const endIdx = Math.min(startIdx + rpp, total);
+    const pageRows = rows.slice(startIdx, endIdx);
+
+    if (showingEl) {
+      showingEl.textContent = total > 0
+        ? `Showing ${startIdx + 1} to ${endIdx} of ${total} responses`
+        : 'Showing 0 of 0 responses';
+    }
+
+    if (prevBtn) prevBtn.disabled = (page <= 1);
+    if (nextBtn) nextBtn.disabled = (page >= totalPages);
+
+    if (pageRows.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="9" style="text-align:center;padding:36px;color:#94a3b8;font-size:13px;">
+            No interactive IVR responses found matching the current filters.
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    tbody.innerHTML = pageRows.map((r, i) => {
+      const idx = startIdx + i + 1;
+      const k = String(r.dtmf_key || 'none').trim();
+      let badgeHtml = '';
+      if (k === '1') {
+        badgeHtml = `<span class="ivr-key-badge key-1"><span class="ivr-key-num">1</span> Option 1</span>`;
+      } else if (k === '2') {
+        badgeHtml = `<span class="ivr-key-badge key-2"><span class="ivr-key-num">2</span> Option 2</span>`;
+      } else if (k === 'none' || k === '') {
+        badgeHtml = `<span class="ivr-key-badge key-none">None (Timeout)</span>`;
+      } else {
+        badgeHtml = `<span class="ivr-key-badge key-other"><span class="ivr-key-num">${this.escapeHtml(k)}</span> Key ${this.escapeHtml(k)}</span>`;
+      }
+
+      const durM = Math.floor((r.duration_sec || 0) / 60);
+      const durS = (r.duration_sec || 0) % 60;
+      const durStr = `${durM}:${String(durS).padStart(2, '0')}`;
+      const timeClean = r.call_time ? r.call_time.split('.')[0] : '-';
+
+      return `
+        <tr>
+          <td style="color:#94a3b8;font-size:12px;font-weight:600;">${idx}</td>
+          <td style="font-weight:700;color:#0f172a;">${this.escapeHtml(r.customer_name || 'Contact')}</td>
+          <td style="font-family:monospace;font-size:12.5px;color:#007A3D;font-weight:600;">${this.escapeHtml(r.phone_number || '')}</td>
+          <td><span class="sc-badge-clean mint">${this.escapeHtml(r.campaign_name || 'Default')}</span></td>
+          <td>${badgeHtml}</td>
+          <td style="font-size:12px;color:#334155;font-weight:600;">${this.escapeHtml(r.action_label || '-')}</td>
+          <td style="font-family:monospace;font-size:12px;color:#64748b;">${durStr}</td>
+          <td style="font-size:12px;color:#64748b;">${this.escapeHtml(timeClean)}</td>
+          <td style="text-align:right;">
+            <button type="button" class="btn btn-xs btn-outline-success" onclick="app.dialLeadDirectly(${r.lead_id}, '${this.escapeHtml(r.phone_number)}')" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;">
+              Dial
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  filterIvrByCard(key) {
+    const sel = document.getElementById('ivrRespKeySelect');
+    if (sel) {
+      sel.value = (key === 'all') ? '' : key;
+    }
+    const cards = ['ivrCardTotal', 'ivrCardKey1', 'ivrCardKey2', 'ivrCardKeyNone'];
+    cards.forEach(cId => {
+      const el = document.getElementById(cId);
+      if (el) el.classList.remove('active');
+    });
+    if (key === 'all') document.getElementById('ivrCardTotal')?.classList.add('active');
+    else if (key === '1') document.getElementById('ivrCardKey1')?.classList.add('active');
+    else if (key === '2') document.getElementById('ivrCardKey2')?.classList.add('active');
+    else if (key === 'none') document.getElementById('ivrCardKeyNone')?.classList.add('active');
+
+    this.loadIvrResponsesReport();
+  }
+
+  onIvrRespFilterChange() {
+    this.loadIvrResponsesReport();
+  }
+
+  setIvrRespDatePreset(preset) {
+    const presets = ['today', 'yesterday', '7d', '30d', 'custom'];
+    presets.forEach(p => {
+      const btn = document.getElementById('ivrRespDatePreset' + (p === '7d' ? '7d' : (p === '30d' ? '30d' : (p.charAt(0).toUpperCase() + p.slice(1)))));
+      if (btn) btn.classList.remove('active');
+    });
+    const activeBtn = document.getElementById('ivrRespDatePreset' + (preset === '7d' ? '7d' : (preset === '30d' ? '30d' : (preset.charAt(0).toUpperCase() + preset.slice(1)))));
+    if (activeBtn) activeBtn.classList.add('active');
+
+    const fromInput = document.getElementById('ivrRespDateFrom');
+    const toInput = document.getElementById('ivrRespDateTo');
+
+    const fmt = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
+
+    const now = new Date();
+    if (preset === 'today') {
+      const t = fmt(now);
+      if (fromInput) fromInput.value = t;
+      if (toInput) toInput.value = t;
+    } else if (preset === 'yesterday') {
+      const y = new Date(now.getTime() - 86400000);
+      const yt = fmt(y);
+      if (fromInput) fromInput.value = yt;
+      if (toInput) toInput.value = yt;
+    } else if (preset === '7d') {
+      const d7 = new Date(now.getTime() - 7 * 86400000);
+      if (fromInput) fromInput.value = fmt(d7);
+      if (toInput) toInput.value = fmt(now);
+    } else if (preset === '30d') {
+      const d30 = new Date(now.getTime() - 30 * 86400000);
+      if (fromInput) fromInput.value = fmt(d30);
+      if (toInput) toInput.value = fmt(now);
+    } else if (preset === 'custom') {
+      // Leave current values intact
+    }
+
+    this.loadIvrResponsesReport();
+  }
+
+  onIvrRespDateInputChange() {
+    const presets = ['today', 'yesterday', '7d', '30d', 'custom'];
+    presets.forEach(p => {
+      const btn = document.getElementById('ivrRespDatePreset' + (p === '7d' ? '7d' : (p === '30d' ? '30d' : (p.charAt(0).toUpperCase() + p.slice(1)))));
+      if (btn) btn.classList.remove('active');
+    });
+    document.getElementById('ivrRespDatePresetCustom')?.classList.add('active');
+    this.loadIvrResponsesReport();
+  }
+
+  clearIvrRespFilters() {
+    const campSelect = document.getElementById('ivrRespCampaignSelect');
+    const keySelect = document.getElementById('ivrRespKeySelect');
+    const fromInput = document.getElementById('ivrRespDateFrom');
+    const toInput = document.getElementById('ivrRespDateTo');
+    const searchInput = document.getElementById('ivrRespSearchInput');
+
+    if (campSelect) campSelect.value = 'all';
+    if (keySelect) keySelect.value = '';
+    if (fromInput) fromInput.value = '';
+    if (toInput) toInput.value = '';
+    if (searchInput) searchInput.value = '';
+
+    const presets = ['today', 'yesterday', '7d', '30d', 'custom'];
+    presets.forEach(p => {
+      const btn = document.getElementById('ivrRespDatePreset' + (p === '7d' ? '7d' : (p === '30d' ? '30d' : (p.charAt(0).toUpperCase() + p.slice(1)))));
+      if (btn) btn.classList.remove('active');
+    });
+    document.getElementById('ivrRespDatePresetToday')?.classList.add('active');
+
+    this.loadIvrResponsesReport();
+  }
+
+  exportIvrResponsesCsv() {
+    const campSelect = document.getElementById('ivrRespCampaignSelect');
+    const keySelect = document.getElementById('ivrRespKeySelect');
+    const fromInput = document.getElementById('ivrRespDateFrom');
+    const toInput = document.getElementById('ivrRespDateTo');
+    const searchInput = document.getElementById('ivrRespSearchInput');
+
+    const campId = campSelect?.value || 'all';
+    const keyVal = keySelect?.value || '';
+    const dateFrom = fromInput?.value || '';
+    const dateTo = toInput?.value || '';
+    const search = searchInput?.value || '';
+
+    const params = new URLSearchParams({
+      action: 'export_ivr_responses_csv',
+      campaign_id: campId,
+      key: keyVal,
+      date_from: dateFrom,
+      date_to: dateTo,
+      search: search
+    });
+
+    window.location.href = `api.php?${params.toString()}`;
+  }
+
+  prevIvrRespPage() {
+    if ((this.ivrRespCurrentPage || 1) > 1) {
+      this.ivrRespCurrentPage--;
+      this.renderIvrResponsesTable();
+    }
+  }
+
+  nextIvrRespPage() {
+    const total = this.ivrReportRows?.length || 0;
+    const rpp = this.ivrRespRowsPerPage || 25;
+    const totalPages = Math.ceil(total / rpp);
+    if ((this.ivrRespCurrentPage || 1) < totalPages) {
+      this.ivrRespCurrentPage = (this.ivrRespCurrentPage || 1) + 1;
+      this.renderIvrResponsesTable();
+    }
+  }
+
+  onIvrRespRowsPerPageChange(val) {
+    this.ivrRespRowsPerPage = parseInt(val, 10) || 25;
+    this.ivrRespCurrentPage = 1;
+    this.renderIvrResponsesTable();
+  }
+
+  dialLeadDirectly(leadId, phone) {
+    let lead = (this.leads || []).find(l => Number(l.id) === Number(leadId));
+    if (!lead) {
+      lead = { id: leadId, phone_number: phone, customer_name: 'Contact' };
+    }
+    this.activeLead = lead;
+    switchNav('tabDialer', 'dialer/agent');
+    setTimeout(() => {
+      this.originateAgentDirectCall(lead);
+    }, 250);
   }
 
   /* =========================================================

@@ -790,8 +790,8 @@ if ($action === 'get_ivr_responses') {
         $responses = [
             'mode' => 'interactive',
             'broadcast_outcome' => 'Announcement Listened',
-            'menu_audio_name' => 'ivr2',
-            'menu_audio_file' => 'assets/audio/1793961705_ahununu_waiting.wav',
+            'menu_audio_name' => '',
+            'menu_audio_file' => '',
             'timeout_sec' => 15,
             'timeout_action' => 'no_response_hangup',
             'keys' => [
@@ -823,6 +823,217 @@ if ($action === 'save_ivr_responses') {
     $stmt = $db->prepare("UPDATE campaigns SET ivr_responses = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
     $stmt->execute([$responsesJson, $campaignId]);
     jsonOut(['success' => true, 'message' => 'IVR responses saved successfully']);
+}
+
+// Phase 5: Get Interactive IVR Responses Report & Analytics
+if ($action === 'get_ivr_responses_report') {
+    $campaignId = trim($_GET['campaign_id'] ?? 'all');
+    $keyFilter = trim($_GET['key'] ?? '');
+    $dateFrom = trim($_GET['date_from'] ?? '');
+    $dateTo = trim($_GET['date_to'] ?? '');
+    $search = trim($_GET['search'] ?? '');
+
+    $where = [
+        "(l.status != 'pending' OR cl.id IS NOT NULL OR l.dtmf_response != '' OR cl.dtmf_pressed != '')",
+        "(l.dtmf_response != '' OR cl.dtmf_pressed != '' OR c.ivr_responses LIKE '%interactive%')"
+    ];
+    $params = [];
+
+    if ($campaignId !== 'all' && !empty($campaignId)) {
+        $where[] = "l.campaign_id = ?";
+        $params[] = (int)$campaignId;
+    }
+
+    if ($keyFilter === 'none') {
+        $where[] = "(COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = 'none')";
+    } elseif (!empty($keyFilter)) {
+        $where[] = "COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = ?";
+        $params[] = $keyFilter;
+    }
+
+    if (!empty($dateFrom)) {
+        $where[] = "CAST(COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) AS TEXT) >= ?";
+        $params[] = $dateFrom . ' 00:00:00';
+    }
+    if (!empty($dateTo)) {
+        $where[] = "CAST(COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) AS TEXT) <= ?";
+        $params[] = $dateTo . ' 23:59:59';
+    }
+
+    if (!empty($search)) {
+        $where[] = "(l.customer_name LIKE ? OR l.phone_number LIKE ?)";
+        $params[] = "%{$search}%";
+        $params[] = "%{$search}%";
+    }
+
+    $whereClause = implode(' AND ', $where);
+
+    $sql = "
+        SELECT 
+            l.id as lead_id,
+            l.customer_name,
+            l.phone_number,
+            l.status as lead_status,
+            COALESCE(l.duration_sec, cl.duration_sec, 0) as duration_sec,
+            COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') as dtmf_key,
+            l.last_attempt_at,
+            l.created_at,
+            cl.timestamp as call_time_raw,
+            c.id as campaign_id,
+            c.name as campaign_name,
+            c.ivr_responses
+        FROM leads l
+        LEFT JOIN campaigns c ON l.campaign_id = c.id
+        LEFT JOIN (
+            SELECT lead_id, MAX(id) as max_log_id
+            FROM call_logs
+            WHERE lead_id IS NOT NULL
+            GROUP BY lead_id
+        ) latest_cl ON l.id = latest_cl.lead_id
+        LEFT JOIN call_logs cl ON latest_cl.max_log_id = cl.id
+        WHERE {$whereClause}
+        ORDER BY COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) DESC
+    ";
+
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $total = count($rows);
+    $countKey1 = 0;
+    $countKey2 = 0;
+    $countOther = 0;
+    $countNone = 0;
+
+    foreach ($rows as &$r) {
+        $k = trim((string)$r['dtmf_key']);
+        if ($k === '1') $countKey1++;
+        elseif ($k === '2') $countKey2++;
+        elseif ($k === '' || $k === 'none') $countNone++;
+        else $countOther++;
+
+        $cfg = !empty($r['ivr_responses']) ? json_decode($r['ivr_responses'], true) : [];
+        $r['ivr_mode'] = $cfg['mode'] ?? 'interactive';
+        $keyConfig = $cfg['keys'][$k] ?? null;
+        if ($k === '1') {
+            $r['action_label'] = $keyConfig['outcome'] ?? 'Confirmed (Option 1)';
+        } elseif ($k === '2') {
+            $r['action_label'] = $keyConfig['outcome'] ?? 'Callback Requested (Option 2)';
+        } elseif ($k === 'none' || empty($k)) {
+            $r['action_label'] = 'No Key Pressed / Timed Out';
+        } else {
+            $r['action_label'] = $keyConfig['outcome'] ?? "Key {$k} Pressed";
+        }
+    }
+
+    jsonOut([
+        'success' => true,
+        'summary' => [
+            'total' => $total,
+            'key_1_count' => $countKey1,
+            'key_1_pct' => $total > 0 ? round(($countKey1 / $total) * 100, 1) : 0,
+            'key_2_count' => $countKey2,
+            'key_2_pct' => $total > 0 ? round(($countKey2 / $total) * 100, 1) : 0,
+            'other_count' => $countOther,
+            'other_pct' => $total > 0 ? round(($countOther / $total) * 100, 1) : 0,
+            'none_count' => $countNone,
+            'none_pct' => $total > 0 ? round(($countNone / $total) * 100, 1) : 0,
+        ],
+        'rows' => $rows
+    ]);
+}
+
+// Phase 5: Export Interactive IVR Responses CSV
+if ($action === 'export_ivr_responses_csv') {
+    $campaignId = trim($_GET['campaign_id'] ?? 'all');
+    $keyFilter = trim($_GET['key'] ?? '');
+    $dateFrom = trim($_GET['date_from'] ?? '');
+    $dateTo = trim($_GET['date_to'] ?? '');
+    $search = trim($_GET['search'] ?? '');
+
+    $where = [
+        "(l.status != 'pending' OR cl.id IS NOT NULL OR l.dtmf_response != '' OR cl.dtmf_pressed != '')",
+        "(l.dtmf_response != '' OR cl.dtmf_pressed != '' OR c.ivr_responses LIKE '%interactive%')"
+    ];
+    $params = [];
+
+    if ($campaignId !== 'all' && !empty($campaignId)) {
+        $where[] = "l.campaign_id = ?";
+        $params[] = (int)$campaignId;
+    }
+    if ($keyFilter === 'none') {
+        $where[] = "(COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = 'none')";
+    } elseif (!empty($keyFilter)) {
+        $where[] = "COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = ?";
+        $params[] = $keyFilter;
+    }
+    if (!empty($dateFrom)) {
+        $where[] = "CAST(COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) AS TEXT) >= ?";
+        $params[] = $dateFrom . ' 00:00:00';
+    }
+    if (!empty($dateTo)) {
+        $where[] = "CAST(COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) AS TEXT) <= ?";
+        $params[] = $dateTo . ' 23:59:59';
+    }
+    if (!empty($search)) {
+        $where[] = "(l.customer_name LIKE ? OR l.phone_number LIKE ?)";
+        $params[] = "%{$search}%";
+        $params[] = "%{$search}%";
+    }
+
+    $whereClause = implode(' AND ', $where);
+
+    $sql = "
+        SELECT 
+            l.id as lead_id,
+            l.customer_name,
+            l.phone_number,
+            l.status as lead_status,
+            COALESCE(l.duration_sec, cl.duration_sec, 0) as duration_sec,
+            COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') as dtmf_key,
+            COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) as call_time,
+            c.name as campaign_name,
+            c.ivr_responses
+        FROM leads l
+        LEFT JOIN campaigns c ON l.campaign_id = c.id
+        LEFT JOIN (
+            SELECT lead_id, MAX(id) as max_log_id
+            FROM call_logs
+            WHERE lead_id IS NOT NULL
+            GROUP BY lead_id
+        ) latest_cl ON l.id = latest_cl.lead_id
+        LEFT JOIN call_logs cl ON latest_cl.max_log_id = cl.id
+        WHERE {$whereClause}
+        ORDER BY COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) DESC
+    ";
+
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="interactive_ivr_responses_' . date('Y-m-d') . '.csv"');
+    $fp = fopen('php://output', 'w');
+    fputcsv($fp, ['Lead ID', 'Customer Name', 'Phone Number', 'Campaign', 'Key Pressed', 'Action / Outcome', 'Duration (sec)', 'Status', 'Date & Time']);
+    foreach ($rows as $r) {
+        $k = trim((string)$r['dtmf_key']);
+        $cfg = !empty($r['ivr_responses']) ? json_decode($r['ivr_responses'], true) : [];
+        $keyConfig = $cfg['keys'][$k] ?? null;
+        $outcome = $keyConfig['outcome'] ?? ($k === '1' ? 'Confirmed' : ($k === '2' ? 'Callback requested' : ($k === 'none' ? 'No key pressed' : "Key {$k}")));
+        fputcsv($fp, [
+            $r['lead_id'],
+            $r['customer_name'],
+            $r['phone_number'],
+            $r['campaign_name'] ?: 'Default',
+            $k === 'none' ? 'None (Timeout)' : $k,
+            $outcome,
+            $r['duration_sec'],
+            $r['lead_status'],
+            $r['call_time']
+        ]);
+    }
+    fclose($fp);
+    exit;
 }
 
 
