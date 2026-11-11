@@ -5393,10 +5393,18 @@ class SkyKinDialerApp {
           stepBadge.style.color = '#b45309';
           stepBadge.style.borderColor = '#fde68a';
         }
-        if (descEl) descEl.textContent = 'Playing menu instructions. Awaiting key press (1 or 2)...';
+        if (descEl) descEl.textContent = 'Playing menu instructions. Awaiting key press...';
+      } else if (ch.ivrState === 'playing_option') {
+        if (stepBadge) {
+          stepBadge.textContent = ch.currentAudioName || 'Playing Option';
+          stepBadge.style.background = '#fef3c7';
+          stepBadge.style.color = '#b45309';
+          stepBadge.style.borderColor = '#fde68a';
+        }
+        if (descEl) descEl.textContent = `Playing ${ch.currentAudioName || 'menu option'}. Keypad is active for caller input.`;
       } else {
         if (stepBadge) {
-          stepBadge.textContent = 'Awaiting Caller Keypad (1 or 2)';
+          stepBadge.textContent = 'Awaiting Caller Keypad';
           stepBadge.style.background = '#eff6ff';
           stepBadge.style.color = '#1d4ed8';
           stepBadge.style.borderColor = '#bfdbfe';
@@ -7076,9 +7084,9 @@ class SkyKinDialerApp {
 
     const resp = this.ivrResponses || {};
     const keys = resp.keys || {
-      '1': { key: '1', action: 'play_audio_hangup', outcome: 'Confirmed', audio_file: '', audio_name: '' },
-      '2': { key: '2', action: 'callback_requested', outcome: 'Callback requested', audio_file: '', audio_name: '' },
-      '3': { key: '3', action: 'opt_out', outcome: 'Opted out', audio_file: '', audio_name: '' }
+      '1': { key: '1', action: 'play_audio', outcome: 'Confirmed', audio_file: '', audio_name: '' },
+      '2': { key: '2', action: 'play_audio', outcome: 'Callback requested', audio_file: '', audio_name: '' },
+      '3': { key: '3', action: 'play_audio', outcome: 'Opted out', audio_file: '', audio_name: '' }
     };
 
     const keyList = Object.values(keys);
@@ -7090,10 +7098,11 @@ class SkyKinDialerApp {
     const container = document.getElementById('ivrModalKeyRowsContainer');
     if (!container) return;
 
+    const nextIdx = container.children.length + 1;
     const k = keyData || {
-      key: String(container.children.length + 1),
-      action: 'log_outcome',
-      outcome: 'Custom outcome',
+      key: String(nextIdx),
+      action: 'play_audio',
+      outcome: 'Option ' + nextIdx,
       audio_file: '',
       audio_name: '',
       description: ''
@@ -7113,9 +7122,10 @@ class SkyKinDialerApp {
       </div>
       <div>
         <select class="form-control ivr-action-select" style="font-size:12px;padding:5px 6px;">
+          <option value="play_audio" ${k.action === 'play_audio' ? 'selected' : ''}>Play audio</option>
           <option value="play_audio_hangup" ${k.action === 'play_audio_hangup' ? 'selected' : ''}>Play audio &amp; Hang up</option>
-          <option value="log_outcome" ${k.action === 'log_outcome' ? 'selected' : ''}>Log outcome</option>
           <option value="callback_requested" ${k.action === 'callback_requested' ? 'selected' : ''}>Schedule callback</option>
+          <option value="log_outcome" ${k.action === 'log_outcome' ? 'selected' : ''}>Log outcome</option>
           <option value="opt_out" ${k.action === 'opt_out' ? 'selected' : ''}>Opt out / DNC</option>
           <option value="transfer_call" ${k.action === 'transfer_call' ? 'selected' : ''}>Transfer call</option>
           <option value="repeat_menu" ${k.action === 'repeat_menu' ? 'selected' : ''}>Repeat menu</option>
@@ -7345,12 +7355,14 @@ class SkyKinDialerApp {
           listEl.innerHTML = '<div style="font-size:12px;color:#94a3b8;padding:8px;background:#f8fafc;border-radius:6px;text-align:center;">No keypad response keys configured yet. Click "Add key option" above.</div>';
         } else {
           listEl.innerHTML = keyEntries.map(k => {
-            let actionClean = 'Play audio, then hang up';
-            if (k.action === 'callback_requested') actionClean = 'Add to callback list';
+            let actionClean = 'Play audio';
+            if (k.action === 'play_audio') actionClean = 'Play audio';
+            else if (k.action === 'play_audio_hangup') actionClean = 'Play audio, then hang up';
+            else if (k.action === 'callback_requested') actionClean = 'Add to callback list';
             else if (k.action === 'opt_out') actionClean = 'Opt out / Do not call';
             else if (k.action === 'transfer_call') actionClean = 'Transfer call';
             else if (k.action === 'log_outcome') actionClean = 'Log outcome';
-            else if (k.action === 'play_audio_hangup') actionClean = 'Play audio, then hang up';
+            else if (k.action === 'repeat_menu') actionClean = 'Repeat menu';
             else if (k.action) actionClean = k.action.replace(/_/g, ' ');
 
             const audioName = k.audio_name || (k.audio_file ? k.audio_file.split('/').pop().split('\\').pop() : '');
@@ -7496,7 +7508,7 @@ class SkyKinDialerApp {
         }
       }
     } else {
-      // Interactive IVR Mode: Step 1 (Greeting) -> Step 2 (Optional Menu Prompt) -> Step 3 (Keypad Wait)
+      // Interactive IVR Mode: Step 1 (Greeting) -> Step 2 (Optional Menu Prompt) -> Step 3 (Keypad Options in Sequence) -> Step 4 (Timeout / Awaiting Keypad)
       ch.ivrState = 'playing_greeting';
       ch.currentAudioName = greetingName;
       ch.menuPlayCount = 1;
@@ -7507,10 +7519,15 @@ class SkyKinDialerApp {
         this.setupRemoteDtmfDetector(pc, lineNum);
       }
 
-      // Identify menu instructions prompt audio (only if explicitly configured and different from greeting)
+      // Keypad options list ordered by key (1, 2, 3...)
+      const keyEntries = Object.values(ivrCfg.keys || {})
+        .filter(k => k && k.key)
+        .sort((a, b) => String(a.key).localeCompare(String(b.key), undefined, { numeric: true }));
+
+      // Identify menu instructions prompt audio (only if explicitly configured and different from greeting and first option)
       let menuAudio = ivrCfg.menu_audio_file || '';
       let menuAudioName = ivrCfg.menu_audio_name || '';
-      if (menuAudio === greetingAudio) {
+      if (menuAudio === greetingAudio || (keyEntries.length > 0 && menuAudio === keyEntries[0].audio_file)) {
         menuAudio = '';
         menuAudioName = '';
       }
@@ -7518,7 +7535,7 @@ class SkyKinDialerApp {
       const startTimeout = () => {
         if (ch.dtmfHandled) return;
         ch.ivrState = 'awaiting_keypad';
-        ch.currentAudioName = 'Awaiting keypad input (1 or 2)';
+        ch.currentAudioName = 'Awaiting keypad input';
         this.renderActiveChannels();
 
         if (ch.ivrTimeoutTimer) clearTimeout(ch.ivrTimeoutTimer);
@@ -7530,7 +7547,7 @@ class SkyKinDialerApp {
           if (ivrCfg.timeout_action === 'repeat_menu' && ch.menuPlayCount < 2) {
             ch.menuPlayCount++;
             this.showToast(`[Line ${lineNum}] Repeating menu prompt...`, 'info');
-            playMenuPrompt();
+            playSequence();
           } else if (ivrCfg.timeout_action === 'schedule_callback') {
             try {
               const cbData = new FormData();
@@ -7548,10 +7565,71 @@ class SkyKinDialerApp {
         }, tSec * 1000);
       };
 
+      const playOptionAt = async (idx) => {
+        if (ch.dtmfHandled) return;
+
+        if (idx >= keyEntries.length) {
+          // All available option audios finished, enter keypad wait
+          startTimeout();
+          return;
+        }
+
+        const k = keyEntries[idx];
+        const optAudio = k.audio_file;
+        const optAction = k.action || 'play_audio';
+        const optKey = k.key;
+        const optName = k.audio_name || `Option ${optKey}`;
+
+        // If this key doesn't have an audio file, move directly to next
+        if (!optAudio) {
+          playOptionAt(idx + 1);
+          return;
+        }
+
+        ch.ivrState = 'playing_option';
+        ch.currentAudioName = `${optName} (Option ${optKey})`;
+        this.renderActiveChannels();
+        console.log(`[Line ${lineNum}] Playing Option ${optKey} audio: ${optAudio} [Action: ${optAction}]`);
+
+        const onOptDone = () => {
+          if (ch.dtmfHandled) return;
+
+          // If action is explicitly configured as "Play audio & Hang up", hang up after this audio completes
+          if (optAction === 'play_audio_hangup') {
+            console.log(`[Line ${lineNum}] Option ${optKey} is play_audio_hangup: disconnecting.`);
+            setTimeout(() => {
+              this.sipHangup(lineNum, false);
+              if (finishCall) finishCall('completed', ch.duration || 1, k.outcome || 'Confirmed', optKey);
+            }, 600);
+            return;
+          }
+
+          // If action is "Play audio" (or other continuing action), advance to next option in sequence!
+          playOptionAt(idx + 1);
+        };
+
+        if (pc) {
+          await this.playIvrAudioIntoPeerConnection(optAudio, pc, onOptDone, lineNum);
+        } else {
+          try {
+            const a = new Audio(optAudio);
+            ch.audioPlayer = a;
+            a.play().catch(e => {
+              console.warn(`[Line ${lineNum}] Option audio play warning:`, e);
+              onOptDone();
+            });
+            a.onended = onOptDone;
+            a.onerror = onOptDone;
+          } catch(e) {
+            onOptDone();
+          }
+        }
+      };
+
       const playMenuPrompt = async () => {
         if (ch.dtmfHandled) return;
         if (!menuAudio) {
-          startTimeout();
+          playOptionAt(0);
           return;
         }
         ch.ivrState = 'playing_menu';
@@ -7561,54 +7639,60 @@ class SkyKinDialerApp {
 
         if (pc) {
           await this.playIvrAudioIntoPeerConnection(menuAudio, pc, () => {
-            if (!ch.dtmfHandled) startTimeout();
+            if (!ch.dtmfHandled) playOptionAt(0);
           }, lineNum);
         } else {
           try {
             const a = new Audio(menuAudio);
             ch.audioPlayer = a;
             a.play().catch(e => console.warn('Menu prompt audio note:', e));
-            a.onended = () => { if (!ch.dtmfHandled) startTimeout(); };
-            a.onerror = () => { if (!ch.dtmfHandled) startTimeout(); };
+            a.onended = () => { if (!ch.dtmfHandled) playOptionAt(0); };
+            a.onerror = () => { if (!ch.dtmfHandled) playOptionAt(0); };
           } catch(e) {
-            startTimeout();
+            playOptionAt(0);
           }
         }
       };
 
-      const playGreeting = async () => {
+      const playSequence = async () => {
         if (ch.dtmfHandled) return;
-        ch.ivrState = 'playing_greeting';
-        ch.currentAudioName = greetingName || 'IVR Greeting';
-        this.renderActiveChannels();
-        console.log(`[Line ${lineNum}] Step 1: Playing initial greeting IVR: ${greetingAudio}`);
+        if (greetingAudio) {
+          ch.ivrState = 'playing_greeting';
+          ch.currentAudioName = greetingName || 'IVR Greeting';
+          this.renderActiveChannels();
+          console.log(`[Line ${lineNum}] Step 1: Playing initial greeting IVR: ${greetingAudio}`);
 
-        const onGreetingDone = () => {
-          if (!ch.dtmfHandled) {
-            if (menuAudio) {
-              setTimeout(() => { playMenuPrompt(); }, 300);
-            } else {
-              startTimeout();
+          const onGreetingDone = () => {
+            if (!ch.dtmfHandled) {
+              if (menuAudio) {
+                setTimeout(() => { playMenuPrompt(); }, 200);
+              } else {
+                playOptionAt(0);
+              }
+            }
+          };
+
+          if (pc) {
+            await this.playIvrAudioIntoPeerConnection(greetingAudio, pc, onGreetingDone, lineNum);
+          } else {
+            try {
+              const a = new Audio(greetingAudio);
+              ch.audioPlayer = a;
+              a.play().catch(e => console.warn('Interactive greeting audio note:', e));
+              a.onended = onGreetingDone;
+              a.onerror = onGreetingDone;
+            } catch(e) {
+              onGreetingDone();
             }
           }
-        };
-
-        if (pc) {
-          await this.playIvrAudioIntoPeerConnection(greetingAudio, pc, onGreetingDone, lineNum);
+        } else if (menuAudio) {
+          playMenuPrompt();
         } else {
-          try {
-            const a = new Audio(greetingAudio);
-            ch.audioPlayer = a;
-            a.play().catch(e => console.warn('Interactive greeting audio note:', e));
-            a.onended = onGreetingDone;
-            a.onerror = onGreetingDone;
-          } catch(e) {
-            onGreetingDone();
-          }
+          playOptionAt(0);
         }
       };
 
-      playGreeting();
+      playSequence();
     }
   }
 
