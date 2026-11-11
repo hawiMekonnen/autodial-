@@ -121,6 +121,12 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
       </button>
 
       <button class="sc-nav-item" id="sbIvrResponses" onclick="switchNav('tabIvrResponses', 'ivr-responses')">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" y1="3" x2="6" y2="15"></line>
+          <circle cx="18" cy="6" r="3"></circle>
+          <circle cx="6" cy="18" r="3"></circle>
+          <path d="M18 9a9 9 0 0 1-9 9"></path>
+        </svg>
         <span>Interactive IVR</span>
       </button>
 
@@ -905,11 +911,10 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <div style="display:flex;align-items:center;gap:12px;">
               <span style="display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:8px;background:#00A651;color:#fff;">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
-                  <circle cx="8" cy="6" r="1"></circle><circle cx="12" cy="6" r="1"></circle><circle cx="16" cy="6" r="1"></circle>
-                  <circle cx="8" cy="10" r="1"></circle><circle cx="12" cy="10" r="1"></circle><circle cx="16" cy="10" r="1"></circle>
-                  <circle cx="8" cy="14" r="1"></circle><circle cx="12" cy="14" r="1"></circle><circle cx="16" cy="14" r="1"></circle>
-                  <circle cx="12" cy="18" r="1"></circle>
+                  <line x1="6" y1="3" x2="6" y2="15"></line>
+                  <circle cx="18" cy="6" r="3"></circle>
+                  <circle cx="6" cy="18" r="3"></circle>
+                  <path d="M18 9a9 9 0 0 1-9 9"></path>
                 </svg>
               </span>
               <div>
