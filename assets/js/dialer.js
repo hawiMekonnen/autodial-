@@ -4061,10 +4061,20 @@ class SkyKinDialerApp {
       }
 
       // 5. Date filter
-      const itemYmd = this.getLeadEffectiveYmd(item);
-      if (itemYmd) {
-        if (this.unansDateFrom && itemYmd < this.unansDateFrom) return false;
-        if (this.unansDateTo && itemYmd > this.unansDateTo) return false;
+      if (!isCallbacks) {
+        const itemYmd = this.getLeadEffectiveYmd(item);
+        if (itemYmd) {
+          if (this.unansDateFrom && itemYmd < this.unansDateFrom) return false;
+          if (this.unansDateTo && itemYmd > this.unansDateTo) return false;
+        }
+      } else {
+        if (this.unansDatePreset === 'yesterday' || this.unansDatePreset === '7days' || this.unansDatePreset === '30days' || this.unansDatePreset === 'custom') {
+          const itemYmd = this.getLeadEffectiveYmd(item);
+          if (itemYmd) {
+            if (this.unansDateFrom && itemYmd < this.unansDateFrom) return false;
+            if (this.unansDateTo && itemYmd > this.unansDateTo) return false;
+          }
+        }
       }
 
       return true;
@@ -4534,6 +4544,7 @@ class SkyKinDialerApp {
         'ivr_playing': '<span style="background:#dbeafe;color:#1d4ed8;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bfdbfe;"><span style="width:6px;height:6px;border-radius:50%;background:#3b82f6;display:inline-block;"></span>IVR Playing</span>',
         'ivr_completed': '<span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bbf7d0;"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block;"></span>Completed</span>',
         'completed': '<span style="background:#dcfce7;color:#15803d;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bbf7d0;"><span style="width:6px;height:6px;border-radius:50%;background:#22c55e;display:inline-block;"></span>Completed</span>',
+        'callback': '<span style="background:#eff6ff;color:#1e40af;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #bfdbfe;"><span style="width:6px;height:6px;border-radius:50%;background:#3b82f6;display:inline-block;"></span>Callback</span>',
         'busy': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>Busy</span>',
         'no_answer': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>No Answer</span>',
         'failed': '<span style="background:#fee2e2;color:#b91c1c;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;gap:5px;border:1px solid #fecaca;"><span style="width:6px;height:6px;border-radius:50%;background:#ef4444;display:inline-block;"></span>Failed</span>'
@@ -4541,10 +4552,6 @@ class SkyKinDialerApp {
       baseBadge = map[st] || `<span style="background:#f1f5f9;color:#475569;padding:4px 10px;border-radius:12px;font-size:11.5px;font-weight:700;">${st}</span>`;
     }
 
-    if (lead && lead.dtmf_response) {
-      const outcomeTxt = lead.error_message ? ` ${this.escapeHtml(lead.error_message)}` : '';
-      baseBadge += `<div style="margin-top:4px;display:inline-flex;align-items:center;gap:4px;background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;padding:2px 7px;border-radius:12px;font-size:11px;font-weight:700;" title="Customer Keypad Response"><span style="background:#0284c7;color:#fff;border-radius:3px;padding:0 4px;font-size:10px;font-weight:800;">Key ${this.escapeHtml(lead.dtmf_response)}</span><span>${outcomeTxt}</span></div>`;
-    }
     return baseBadge;
   }
 
@@ -5364,8 +5371,10 @@ class SkyKinDialerApp {
       },
       onTerminated: () => {
         const curDtmf = channelData.dtmfPressed || lead.dtmf_response || '';
+        const isCb = channelData.isCallbackRequested || (channelData.dtmfOutcome && channelData.dtmfOutcome.toLowerCase().includes('callback'));
         const curOutcome = channelData.dtmfOutcome || (curDtmf ? `Option ${curDtmf}` : (callSec > 0 ? 'Announcement listened' : 'No Answer'));
-        finishCall(callSec > 0 ? 'completed' : 'no_answer', callSec, curOutcome, curDtmf);
+        const finalSt = isCb ? 'callback' : (callSec > 0 ? 'completed' : 'no_answer');
+        finishCall(finalSt, callSec, curOutcome, curDtmf);
       },
       onError: (err) => {
         finishCall('failed', 0, err?.message || 'Call Failed');
@@ -7769,11 +7778,18 @@ class SkyKinDialerApp {
     ch.dtmfOutcome = keyConfig.outcome || keyConfig.action;
     ch.ivrState = 'executing_action';
 
+    const isCallback = (keyConfig.action === 'callback_requested' || 
+                        (ch.dtmfOutcome && ch.dtmfOutcome.toLowerCase().includes('callback')) ||
+                        (keyConfig.outcome && keyConfig.outcome.toLowerCase().includes('callback')));
+    if (isCallback) {
+      ch.isCallbackRequested = true;
+    }
+
     // Instantly persist the DTMF key into the backend DB so it is never lost even if caller hangs up
     if (ch.lead) {
       ch.lead.dtmf_response = keyStr;
       ch.lead.error_message = ch.dtmfOutcome;
-      ch.lead.status = 'answered';
+      ch.lead.status = isCallback ? 'callback' : 'answered';
 
       try {
         const fd = new FormData();
@@ -7781,8 +7797,13 @@ class SkyKinDialerApp {
         fd.append('campaign_id', ch.lead.campaign_id || this.campaign?.id || 1);
         fd.append('key', keyStr);
         fd.append('outcome', ch.dtmfOutcome);
+        fd.append('action_type', keyConfig.action || (isCallback ? 'callback_requested' : ''));
         fd.append('duration_sec', ch.duration || 1);
-        fetch('api.php?action=record_ivr_key', { method: 'POST', body: fd }).catch(e => console.warn('record_ivr_key note:', e));
+        fetch('api.php?action=record_ivr_key', { method: 'POST', body: fd }).then(() => {
+          if (isCallback && this.loadCallbacksList) {
+            this.loadCallbacksList();
+          }
+        }).catch(e => console.warn('record_ivr_key note:', e));
       } catch(e) {}
     }
 
@@ -7813,13 +7834,16 @@ class SkyKinDialerApp {
         return;
       }
 
-      if (act === 'callback_requested') {
+      if (act === 'callback_requested' || ch.isCallbackRequested) {
         try {
           const cbData = new FormData();
-          cbData.append('lead_id', ch.lead.id);
-          cbData.append('campaign_id', ch.lead.campaign_id || this.campaign?.id || 1);
+          cbData.append('lead_id', ch.lead?.id || 0);
+          cbData.append('campaign_id', ch.lead?.campaign_id || this.campaign?.id || 1);
+          cbData.append('customer_name', ch.lead?.customer_name || 'Contact');
+          cbData.append('phone_number', ch.lead?.phone_number || '');
           cbData.append('notes', `Customer pressed key [${keyStr}]: ${outcomeLabel}`);
           await fetch('api.php?action=schedule_callback', { method: 'POST', body: cbData });
+          if (this.loadCallbacksList) this.loadCallbacksList();
         } catch(e) {}
         setTimeout(() => {
           this.sipHangup(lineNum, false);

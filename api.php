@@ -1573,10 +1573,97 @@ if ($action === 'dispatch_mock_batch') {
 
 // Phase 4: Get Scheduled Callbacks
 if ($action === 'get_callbacks') {
+    // Auto-sync any leads with callback status or callback IVR response into scheduled_callbacks if not already present
+    try {
+        if ($dbDriver === 'pgsql') {
+            $db->exec("
+                INSERT INTO scheduled_callbacks (lead_id, campaign_id, customer_name, phone_number, scheduled_time, assigned_agent, status, notes)
+                SELECT 
+                    l.id,
+                    l.campaign_id,
+                    COALESCE(NULLIF(l.customer_name, ''), 'Contact'),
+                    l.phone_number,
+                    COALESCE(l.last_attempt_at, CURRENT_TIMESTAMP) + INTERVAL '1 hour',
+                    '101',
+                    'pending',
+                    COALESCE(NULLIF(l.error_message, ''), 'Callback requested via IVR')
+                FROM leads l
+                WHERE (l.status = 'callback' OR l.dtmf_response = '2' OR l.error_message ILIKE '%callback%')
+                  AND l.phone_number IS NOT NULL AND l.phone_number != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM scheduled_callbacks sc WHERE sc.lead_id = l.id
+                  )
+            ");
+        } else {
+            $db->exec("
+                INSERT INTO scheduled_callbacks (lead_id, campaign_id, customer_name, phone_number, scheduled_time, assigned_agent, status, notes)
+                SELECT 
+                    l.id,
+                    l.campaign_id,
+                    COALESCE(NULLIF(l.customer_name, ''), 'Contact'),
+                    l.phone_number,
+                    datetime('now', '+1 hour'),
+                    '101',
+                    'pending',
+                    COALESCE(NULLIF(l.error_message, ''), 'Callback requested via IVR')
+                FROM leads l
+                WHERE (l.status = 'callback' OR l.dtmf_response = '2' OR l.error_message LIKE '%callback%')
+                  AND l.phone_number IS NOT NULL AND l.phone_number != ''
+                  AND NOT EXISTS (
+                      SELECT 1 FROM scheduled_callbacks sc WHERE sc.lead_id = l.id
+                  )
+            ");
+        }
+    } catch (Exception $e) {}
+
     $campaignId = (int)($_GET['campaign_id'] ?? 0);
     $sql = "SELECT c.*, l.customer_name as lead_name, l.debt_amount, l.currency, cmp.name as campaign_name FROM scheduled_callbacks c LEFT JOIN leads l ON c.lead_id = l.id LEFT JOIN campaigns cmp ON c.campaign_id = cmp.id ORDER BY c.scheduled_time ASC";
-    $cbs = $db->query($sql)->fetchAll();
+    $cbs = $db->query($sql)->fetchAll(PDO::FETCH_ASSOC);
     jsonOut(['success' => true, 'callbacks' => $cbs]);
+}
+
+// Phase 4: Schedule Callback
+if ($action === 'schedule_callback') {
+    $leadId = (int)($_POST['lead_id'] ?? 0);
+    $campId = (int)($_POST['campaign_id'] ?? 0);
+    $notes = trim($_POST['notes'] ?? 'Callback requested via IVR');
+    $schedTime = trim($_POST['scheduled_time'] ?? '');
+    if (empty($schedTime)) {
+        $schedTime = date('Y-m-d H:i:s', strtotime('+1 hour'));
+    }
+
+    $lead = null;
+    if ($leadId > 0) {
+        $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch(PDO::FETCH_ASSOC);
+    }
+    $cId = $campId ?: (int)($lead['campaign_id'] ?? 1);
+    $custName = trim($_POST['customer_name'] ?? ($lead['customer_name'] ?? 'Contact'));
+    $phone = trim($_POST['phone_number'] ?? ($lead['phone_number'] ?? ''));
+    $agentExt = $_SESSION['dialer_user']['sip_extension'] ?? '101';
+
+    if (!empty($phone)) {
+        $chk = $db->prepare("SELECT id FROM scheduled_callbacks WHERE (lead_id = ? OR (phone_number = ? AND campaign_id = ?)) AND status = 'pending' LIMIT 1");
+        $chk->execute([$leadId, $phone, $cId]);
+        $existingId = $chk->fetchColumn();
+
+        if ($existingId) {
+            $up = $db->prepare("UPDATE scheduled_callbacks SET scheduled_time = ?, notes = ?, campaign_id = ? WHERE id = ?");
+            $up->execute([$schedTime, $notes, $cId, $existingId]);
+            $cbId = $existingId;
+        } else {
+            $ins = $db->prepare("INSERT INTO scheduled_callbacks (lead_id, campaign_id, customer_name, phone_number, scheduled_time, assigned_agent, status, notes) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)");
+            $ins->execute([$leadId ?: null, $cId, $custName, $phone, $schedTime, $agentExt, $notes]);
+            $cbId = $db->lastInsertId();
+        }
+
+        if ($leadId > 0) {
+            $db->prepare("UPDATE leads SET status = 'callback', error_message = ? WHERE id = ?")->execute([$notes, $leadId]);
+        }
+
+        jsonOut(['success' => true, 'callback_id' => $cbId]);
+    }
+
+    jsonOut(['success' => false, 'error' => 'Phone number missing'], 400);
 }
 
 // Phase 4: Complete Callback
@@ -2563,6 +2650,22 @@ if ($action === 'update_lead_status') {
                 $campaign['ivr_audio_name'] ?? 'IVR Audio',
                 $effectiveDtmf
             ]);
+
+            // If callback, ensure scheduled_callbacks record exists
+            if ($status === 'callback') {
+                $phone = $lead['phone_number'] ?? '';
+                $cId = (int)($lead['campaign_id'] ?? 1);
+                $custName = $lead['customer_name'] ?? 'Contact';
+                $cbNotes = $errMsg ?: 'Callback requested via IVR';
+                $schedTime = date('Y-m-d H:i:s', strtotime('+1 hour'));
+
+                $chkCb = $db->prepare("SELECT id FROM scheduled_callbacks WHERE (lead_id = ? OR (phone_number = ? AND campaign_id = ?)) AND status = 'pending' LIMIT 1");
+                $chkCb->execute([$leadId, $phone, $cId]);
+                if (!$chkCb->fetchColumn()) {
+                    $insCb = $db->prepare("INSERT INTO scheduled_callbacks (lead_id, campaign_id, customer_name, phone_number, scheduled_time, assigned_agent, status, notes) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)");
+                    $insCb->execute([$leadId, $cId, $custName, $phone, $schedTime, $_SESSION['dialer_user']['sip_extension'] ?? '101', $cbNotes]);
+                }
+            }
         }
     }
 
@@ -2575,24 +2678,43 @@ if ($action === 'record_ivr_key') {
     $campId = (int)($_POST['campaign_id'] ?? 0);
     $key = trim($_POST['key'] ?? '');
     $outcome = trim($_POST['outcome'] ?? '');
+    $actionType = trim($_POST['action_type'] ?? '');
     $duration = (int)($_POST['duration_sec'] ?? 1);
 
     if ($leadId > 0 && !empty($key)) {
-        $stmt = $db->prepare("UPDATE leads SET status = 'answered', dtmf_response = ?, error_message = ?, duration_sec = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
-        $stmt->execute([$key, $outcome, $duration, $leadId]);
-
         $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch(PDO::FETCH_ASSOC);
+        $cId = $campId ?: (int)($lead['campaign_id'] ?? 1);
+
+        // Check if this key corresponds to a callback request
+        $isCallback = ($actionType === 'callback_requested' || stripos($outcome, 'callback') !== false);
+        if (!$isCallback && $cId > 0) {
+            $cRow = $db->query("SELECT ivr_responses FROM campaigns WHERE id = {$cId}")->fetch(PDO::FETCH_ASSOC);
+            if (!empty($cRow['ivr_responses'])) {
+                $cCfg = json_decode($cRow['ivr_responses'], true);
+                $keyCfg = $cCfg['keys'][$key] ?? null;
+                if ($keyCfg && (($keyCfg['action'] ?? '') === 'callback_requested' || stripos($keyCfg['outcome'] ?? '', 'callback') !== false)) {
+                    $isCallback = true;
+                }
+            }
+        }
+
+        $newStatus = $isCallback ? 'callback' : 'answered';
+
+        $stmt = $db->prepare("UPDATE leads SET status = ?, dtmf_response = ?, error_message = ?, duration_sec = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+        $stmt->execute([$newStatus, $key, $outcome, $duration, $leadId]);
+
         if ($lead) {
-            $cId = $campId ?: (int)($lead['campaign_id'] ?? 1);
             $checkLog = $db->prepare("SELECT id FROM call_logs WHERE lead_id = ? ORDER BY id DESC LIMIT 1");
             $checkLog->execute([$leadId]);
             $existingLogId = $checkLog->fetchColumn();
 
+            $logStatus = $isCallback ? 'callback' : 'completed';
+
             if ($existingLogId) {
-                $upLog = $db->prepare("UPDATE call_logs SET dtmf_pressed = ?, status = 'completed', duration_sec = ? WHERE id = ?");
-                $upLog->execute([$key, $duration, $existingLogId]);
+                $upLog = $db->prepare("UPDATE call_logs SET dtmf_pressed = ?, status = ?, duration_sec = ? WHERE id = ?");
+                $upLog->execute([$key, $logStatus, $duration, $existingLogId]);
             } else {
-                $insLog = $db->prepare("INSERT INTO call_logs (lead_id, campaign_id, customer_name, phone_number, call_time, agent_extension, status, duration_sec, dtmf_pressed) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?)");
+                $insLog = $db->prepare("INSERT INTO call_logs (lead_id, campaign_id, customer_name, phone_number, call_time, agent_extension, status, duration_sec, dtmf_pressed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $insLog->execute([
                     $leadId,
                     $cId,
@@ -2600,13 +2722,34 @@ if ($action === 'record_ivr_key') {
                     $lead['phone_number'] ?? '',
                     $lead['call_time'] ?? date('h:i A'),
                     $_SESSION['dialer_user']['sip_extension'] ?? '101',
+                    $logStatus,
                     $duration,
                     $key
                 ]);
             }
+
+            // If callback chosen, automatically insert or update scheduled_callbacks
+            if ($isCallback) {
+                $phone = $lead['phone_number'] ?? '';
+                $custName = $lead['customer_name'] ?? 'Contact';
+                $notes = "Callback requested via IVR (Option {$key}: {$outcome})";
+                $schedTime = date('Y-m-d H:i:s', strtotime('+1 hour'));
+
+                $chkCb = $db->prepare("SELECT id FROM scheduled_callbacks WHERE (lead_id = ? OR (phone_number = ? AND campaign_id = ?)) AND status = 'pending' LIMIT 1");
+                $chkCb->execute([$leadId, $phone, $cId]);
+                $existingCbId = $chkCb->fetchColumn();
+
+                if ($existingCbId) {
+                    $upCb = $db->prepare("UPDATE scheduled_callbacks SET scheduled_time = ?, notes = ?, campaign_id = ? WHERE id = ?");
+                    $upCb->execute([$schedTime, $notes, $cId, $existingCbId]);
+                } else {
+                    $insCb = $db->prepare("INSERT INTO scheduled_callbacks (lead_id, campaign_id, customer_name, phone_number, scheduled_time, assigned_agent, status, notes) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)");
+                    $insCb->execute([$leadId, $cId, $custName, $phone, $schedTime, $_SESSION['dialer_user']['sip_extension'] ?? '101', $notes]);
+                }
+            }
         }
     }
-    jsonOut(['success' => true, 'key' => $key, 'outcome' => $outcome]);
+    jsonOut(['success' => true, 'key' => $key, 'outcome' => $outcome, 'is_callback' => !empty($isCallback)]);
 }
 
 // 5. Upload Human Audio File (.wav / .mp3 / audio formats)
