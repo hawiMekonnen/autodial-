@@ -105,7 +105,27 @@ class SkyKinDialerApp {
     this.startTelephonyMetricsHeartbeat();
   }
 
+  initAudioContextUnlock() {
+    if (this._audioUnlockInitialized) return;
+    this._audioUnlockInitialized = true;
+    const unlock = () => {
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      if (!this.sharedAudioCtx && AudioCtxClass) {
+        try {
+          this.sharedAudioCtx = new AudioCtxClass();
+        } catch(e) {}
+      }
+      if (this.sharedAudioCtx && this.sharedAudioCtx.state === 'suspended') {
+        this.sharedAudioCtx.resume().catch(() => {});
+      }
+    };
+    ['click', 'touchstart', 'keydown'].forEach(ev => {
+      document.addEventListener(ev, unlock, { passive: true });
+    });
+  }
+
   initElements() {
+    this.initAudioContextUnlock();
     this.btnStart = document.getElementById('btnStartCampaign');
     this.btnPause = document.getElementById('btnPauseCampaign');
     this.btnStop = document.getElementById('btnStopCampaign');
@@ -487,23 +507,30 @@ class SkyKinDialerApp {
       this.updateSipStatus();
 
       // Receive incoming DTMF tones via SIP INFO or delegate events from FreeSWITCH
-      inviter.delegate = {
-        onInfo: (info) => {
-          try {
-            const body = String(info.request?.body || info.request?.message?.body || info.body || '');
-            console.log(`[Line ${lineObj.num}] SIP INFO received:`, body);
-            const match = body.match(/Signal\s*[:=]\s*([0-9*#])/i) || body.match(/([0-9*#])/);
-            if (match && match[1]) {
-              const digit = match[1];
-              console.log(`[Line ${lineObj.num}] Extracted DTMF digit:`, digit);
-              this.handleIvrDtmfInput(lineObj.num, digit);
-            }
-            if (info.accept) info.accept();
-          } catch(e) {
-            console.warn('Error handling SIP INFO:', e);
+      const handleIncomingDtmfInfo = (info) => {
+        try {
+          const body = String(info.request?.body || info.request?.message?.body || info.body || '');
+          console.log(`[Line ${lineObj.num}] SIP INFO received:`, body);
+          const match = body.match(/(?:Signal\s*[:=]\s*|dtmf\s*[:=]\s*|\b)([0-9*#A-D])\b/i);
+          if (match && match[1]) {
+            const digit = match[1];
+            console.log(`[Line ${lineObj.num}] Extracted DTMF digit:`, digit);
+            this.handleIvrDtmfInput(lineObj.num, digit);
           }
+          if (info.accept) info.accept();
+        } catch(e) {
+          console.warn('Error handling SIP INFO:', e);
         }
       };
+
+      inviter.delegate = {
+        onInfo: handleIncomingDtmfInfo
+      };
+      if (lineObj.ua) {
+        lineObj.ua.delegate = {
+          onInfo: handleIncomingDtmfInfo
+        };
+      }
       inviter.onCallDTMFReceived = (tone) => {
         console.log(`[Line ${lineObj.num}] onCallDTMFReceived:`, tone);
         this.handleIvrDtmfInput(lineObj.num, String(tone));
@@ -542,7 +569,11 @@ class SkyKinDialerApp {
             this.showToast(`Line ${lineObj.num} declined: ${response.statusCode} ${response.reasonPhrase}`, 'warning');
             if (callbacks.onReject) callbacks.onReject(response);
           }
-        }
+        },
+        extraHeaders: [
+          'X-DTMF-Type: info',
+          'Recv-Info: application/dtmf-relay, application/dtmf'
+        ]
       });
 
     } catch (e) {
@@ -810,21 +841,26 @@ class SkyKinDialerApp {
       el = document.createElement('audio');
       el.id = 'remoteAudio';
       el.autoplay = true;
-      el.muted = true;
-      el.volume = 0;
       document.body.appendChild(el);
     }
     
-    // Completely silence computer speakers during calls
-    el.muted = true;
-    el.volume = 0;
+    // Silence computer speakers without setting muted=true (which halts WebRTC RTP decoding in Chromium)
+    el.muted = false;
+    el.volume = 0.0001;
 
     const remote = new MediaStream();
     pc.getReceivers().forEach(r => { if (r.track) remote.addTrack(r.track); });
+    if (remote.getTracks().length > 0) {
+      el.srcObject = remote;
+      el.play().catch(() => {});
+    }
+
     pc.ontrack = (ev) => {
       if (el) {
-        el.muted = true;
-        el.volume = 0;
+        el.muted = false;
+        el.volume = 0.0001;
+        el.srcObject = ev.streams[0] || new MediaStream([ev.track]);
+        el.play().catch(() => {});
       }
     };
   }
@@ -832,17 +868,20 @@ class SkyKinDialerApp {
   setupRemoteDtmfDetector(pc, lineNum = 1) {
     if (!pc) return;
     try {
-      const lineObj = lineNum === 2 ? this.line2 : this.line1;
-      if (lineObj.dtmfAudioCtx) {
-        try { lineObj.dtmfAudioCtx.close(); } catch(e) {}
-        lineObj.dtmfAudioCtx = null;
+      this.initAudioContextUnlock();
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+      if (!this.sharedAudioCtx && AudioCtxClass) {
+        try { this.sharedAudioCtx = new AudioCtxClass(); } catch(e) {}
+      }
+      const audioCtx = this.sharedAudioCtx;
+      if (!audioCtx) return;
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
       }
 
       const attachToTrack = (track) => {
         if (!track || track.kind !== 'audio') return;
         try {
-          const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-          const audioCtx = new AudioCtxClass();
           if (audioCtx.state === 'suspended') {
             audioCtx.resume().catch(() => {});
           }
@@ -888,7 +927,7 @@ class SkyKinDialerApp {
             for (let i = 0; i < inputData.length; i++) {
               totalEnergy += inputData[i] * inputData[i];
             }
-            if (totalEnergy < 0.001) {
+            if (totalEnergy < 1e-6) {
               detectCount = 0;
               lastDetected = null;
               return;
@@ -918,9 +957,9 @@ class SkyKinDialerApp {
               }
             }
 
-            const isToneDominant = (maxLowMag > 2.0) && (maxHighMag > 2.0) &&
-                                  (maxLowMag > 1.6 * (secondLowMag + 0.1)) &&
-                                  (maxHighMag > 1.6 * (secondHighMag + 0.1));
+            const isToneDominant = (maxLowMag > 0.5) && (maxHighMag > 0.5) &&
+                                  (maxLowMag > 1.4 * (secondLowMag + 0.05)) &&
+                                  (maxHighMag > 1.4 * (secondHighMag + 0.05));
 
             if (isToneDominant) {
               const key = `${maxLowFreq},${maxHighFreq}`;
@@ -928,7 +967,7 @@ class SkyKinDialerApp {
               if (digit) {
                 if (digit === lastDetected) {
                   detectCount++;
-                  if (detectCount === 2) {
+                  if (detectCount >= 1) {
                     console.log(`[Line ${lineNum}] In-band DTMF detected on audio stream:`, digit);
                     this.handleIvrDtmfInput(lineNum, digit);
                   }
@@ -948,8 +987,6 @@ class SkyKinDialerApp {
           muteGain.gain.value = 0;
           scriptNode.connect(muteGain);
           muteGain.connect(audioCtx.destination);
-
-          lineObj.dtmfAudioCtx = audioCtx;
         } catch(err) {
           console.warn('attachToTrack error:', err);
         }
@@ -959,11 +996,10 @@ class SkyKinDialerApp {
       const audioReceiver = receivers.find(r => r.track && r.track.kind === 'audio');
       if (audioReceiver && audioReceiver.track) {
         attachToTrack(audioReceiver.track);
-      } else {
-        pc.addEventListener('track', (e) => {
-          if (e.track && e.track.kind === 'audio') attachToTrack(e.track);
-        }, { once: true });
       }
+      pc.addEventListener('track', (e) => {
+        if (e.track && e.track.kind === 'audio') attachToTrack(e.track);
+      });
     } catch(e) {
       console.warn('DTMF audio detector setup error:', e);
     }
@@ -5327,7 +5363,9 @@ class SkyKinDialerApp {
         await this.startIvrSessionForChannel(channelData, pc, lineNum, audioSrc, finishCall);
       },
       onTerminated: () => {
-        finishCall(callSec > 0 ? 'completed' : 'no_answer', callSec);
+        const curDtmf = channelData.dtmfPressed || lead.dtmf_response || '';
+        const curOutcome = channelData.dtmfOutcome || (curDtmf ? `Option ${curDtmf}` : (callSec > 0 ? 'Announcement listened' : 'No Answer'));
+        finishCall(callSec > 0 ? 'completed' : 'no_answer', callSec, curOutcome, curDtmf);
       },
       onError: (err) => {
         finishCall('failed', 0, err?.message || 'Call Failed');
@@ -7705,14 +7743,13 @@ class SkyKinDialerApp {
     if (ch.dtmfHandled) return;
 
     const keyStr = String(tone).trim();
-    const keyConfig = ch.ivrConfig?.keys?.[keyStr] || this.ivrResponses?.keys?.[keyStr] || (
+    let keyConfig = ch.ivrConfig?.keys?.[keyStr] || this.ivrResponses?.keys?.[keyStr] || (
       keyStr === '1' ? { key: '1', action: 'play_audio_hangup', outcome: 'Confirmed' } :
       keyStr === '2' ? { key: '2', action: 'callback_requested', outcome: 'Callback requested' } :
       null
     );
     if (!keyConfig) {
-      console.log(`[Line ${lineNum}] Key pressed [${keyStr}] has no configured action.`);
-      return;
+      keyConfig = { key: keyStr, action: 'log_outcome', outcome: `Key ${keyStr} Pressed` };
     }
 
     ch.ivrMode = 'interactive';
@@ -7731,6 +7768,33 @@ class SkyKinDialerApp {
     ch.dtmfPressed = keyStr;
     ch.dtmfOutcome = keyConfig.outcome || keyConfig.action;
     ch.ivrState = 'executing_action';
+
+    // Instantly persist the DTMF key into the backend DB so it is never lost even if caller hangs up
+    if (ch.lead) {
+      ch.lead.dtmf_response = keyStr;
+      ch.lead.error_message = ch.dtmfOutcome;
+      ch.lead.status = 'answered';
+
+      try {
+        const fd = new FormData();
+        fd.append('lead_id', ch.lead.id);
+        fd.append('campaign_id', ch.lead.campaign_id || this.campaign?.id || 1);
+        fd.append('key', keyStr);
+        fd.append('outcome', ch.dtmfOutcome);
+        fd.append('duration_sec', ch.duration || 1);
+        fetch('api.php?action=record_ivr_key', { method: 'POST', body: fd }).catch(e => console.warn('record_ivr_key note:', e));
+      } catch(e) {}
+    }
+
+    // Show key pressed alert on agent live IVR card
+    const detectedAlert = document.getElementById('agentIvrKeyDetectedAlert');
+    const detectedKeyNum = document.getElementById('agentIvrDetectedKeyNum');
+    const detectedKeyLabel = document.getElementById('agentIvrDetectedKeyLabel');
+    if (detectedAlert && detectedKeyNum && detectedKeyLabel) {
+      detectedKeyNum.textContent = keyStr;
+      detectedKeyLabel.textContent = ch.dtmfOutcome;
+      detectedAlert.style.display = 'inline-flex';
+    }
 
     this.showToast(`[Line ${lineNum}] Caller pressed [${keyStr}]: ${ch.dtmfOutcome}`, 'success');
     this.renderActiveChannels();
@@ -7984,7 +8048,9 @@ class SkyKinDialerApp {
       const idx = startIdx + i + 1;
       const k = String(r.dtmf_key || 'none').trim();
       let badgeHtml = '';
-      if (k === '1') {
+      if (k === 'pending' || r.lead_status === 'pending') {
+        badgeHtml = `<span class="ivr-key-badge" style="background:#f8fafc;color:#64748b;border:1px solid #cbd5e1;padding:3px 9px;border-radius:6px;font-size:11.5px;font-weight:600;"><span class="ivr-key-num" style="background:#94a3b8;color:#fff;">&#x25CB;</span> Awaiting Call</span>`;
+      } else if (k === '1') {
         badgeHtml = `<span class="ivr-key-badge key-1"><span class="ivr-key-num">1</span> Option 1</span>`;
       } else if (k === '2') {
         badgeHtml = `<span class="ivr-key-badge key-2"><span class="ivr-key-num">2</span> Option 2</span>`;
@@ -7994,10 +8060,17 @@ class SkyKinDialerApp {
         badgeHtml = `<span class="ivr-key-badge key-other"><span class="ivr-key-num">${this.escapeHtml(k)}</span> Key ${this.escapeHtml(k)}</span>`;
       }
 
+      const isPending = (k === 'pending' || r.lead_status === 'pending');
       const durM = Math.floor((r.duration_sec || 0) / 60);
       const durS = (r.duration_sec || 0) % 60;
-      const durStr = `${durM}:${String(durS).padStart(2, '0')}`;
-      const timeClean = r.call_time ? r.call_time.replace(/\.\d+/, '').replace(/\+.*$/, '').replace('T', ' ') : '-';
+      const durStr = isPending ? '-' : `${durM}:${String(durS).padStart(2, '0')}`;
+      let timeClean = '-';
+      if (!isPending && r.last_attempt_at && r.call_time) {
+        timeClean = String(r.call_time).replace(/\.\d+/, '').replace(/\+.*$/, '').replace('T', ' ');
+      }
+      const outcomeHtml = isPending
+        ? '<span style="color:#94a3b8;font-size:12px;">Scheduled / Not called yet</span>'
+        : `<span style="font-size:12px;color:#334155;font-weight:600;">${this.escapeHtml(r.action_label || '-')}</span>`;
 
       return `
         <tr>
@@ -8006,7 +8079,7 @@ class SkyKinDialerApp {
           <td style="font-family:monospace;font-size:12.5px;color:#007A3D;font-weight:600;">${this.escapeHtml(r.phone_number || '')}</td>
           <td><span class="sc-badge-clean mint">${this.escapeHtml(r.campaign_name || 'Campaign')}</span></td>
           <td>${badgeHtml}</td>
-          <td style="font-size:12px;color:#334155;font-weight:600;">${this.escapeHtml(r.action_label || '-')}</td>
+          <td>${outcomeHtml}</td>
           <td style="font-family:monospace;font-size:12px;color:#64748b;">${durStr}</td>
           <td style="font-size:12px;color:#64748b;">${this.escapeHtml(timeClean)}</td>
           <td style="text-align:right;">
@@ -8172,12 +8245,14 @@ class SkyKinDialerApp {
   dialLeadDirectly(leadId, phone) {
     let lead = (this.leads || []).find(l => Number(l.id) === Number(leadId));
     if (!lead) {
-      lead = { id: leadId, phone_number: phone, customer_name: 'Contact' };
+      const campSelect = document.getElementById('ivrRespCampaignSelect');
+      const curCampId = parseInt(campSelect?.value || '0', 10) || this.campaign?.id || 1;
+      lead = { id: leadId, phone_number: phone, customer_name: 'Contact', campaign_id: curCampId, status: 'pending' };
     }
     this.activeLead = lead;
     switchNav('tabDialer', 'dialer/agent');
     setTimeout(() => {
-      this.originateAgentDirectCall(lead);
+      this.dialCustomerLead(lead, 1, 2);
     }, 250);
   }
 

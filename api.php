@@ -875,15 +875,16 @@ if ($action === 'get_ivr_responses_report') {
     $search = trim($_GET['search'] ?? '');
 
     $where = [
-        "l.campaign_id = ?",
-        "(l.status != 'pending' OR cl.id IS NOT NULL OR l.dtmf_response != '' OR cl.dtmf_pressed != '')"
+        "l.campaign_id = ?"
     ];
     $params = [$campaignId];
 
-    if ($keyFilter === 'none') {
-        $where[] = "(COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = 'none')";
+    if ($keyFilter === 'pending') {
+        $where[] = "(l.status = 'pending' AND NULLIF(l.dtmf_response, '') IS NULL AND NULLIF(cl.dtmf_pressed, '') IS NULL)";
+    } elseif ($keyFilter === 'none') {
+        $where[] = "(l.status != 'pending' AND COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = 'none')";
     } elseif (!empty($keyFilter)) {
-        $where[] = "COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = ?";
+        $where[] = "(COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, '')) = ?)";
         $params[] = $keyFilter;
     }
 
@@ -907,11 +908,16 @@ if ($action === 'get_ivr_responses_report') {
     $sql = "
         SELECT 
             l.id as lead_id,
-            l.customer_name,
-            l.phone_number,
+            COALESCE(NULLIF(l.customer_name, ''), NULLIF(cl.customer_name, ''), 'Contact') as customer_name,
+            COALESCE(NULLIF(l.phone_number, ''), NULLIF(cl.phone_number, ''), '') as phone_number,
             l.status as lead_status,
             COALESCE(l.duration_sec, cl.duration_sec, 0) as duration_sec,
-            COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') as dtmf_key,
+            CASE
+                WHEN NULLIF(l.dtmf_response, '') IS NOT NULL THEN l.dtmf_response
+                WHEN NULLIF(cl.dtmf_pressed, '') IS NOT NULL THEN cl.dtmf_pressed
+                WHEN l.status = 'pending' THEN 'pending'
+                ELSE 'none'
+            END as dtmf_key,
             l.last_attempt_at,
             l.created_at,
             COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) as call_time,
@@ -928,7 +934,9 @@ if ($action === 'get_ivr_responses_report') {
         ) latest_cl ON l.id = latest_cl.lead_id
         LEFT JOIN call_logs cl ON latest_cl.max_log_id = cl.id
         WHERE {$whereClause}
-        ORDER BY COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) DESC
+        ORDER BY 
+            CASE WHEN l.status != 'pending' THEN 0 ELSE 1 END,
+            COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) DESC
     ";
 
     $stmt = $db->prepare($sql);
@@ -940,6 +948,7 @@ if ($action === 'get_ivr_responses_report') {
     $countKey2 = 0;
     $countOther = 0;
     $countNone = 0;
+    $countPending = 0;
     $campaignName = '';
 
     foreach ($rows as &$r) {
@@ -949,13 +958,16 @@ if ($action === 'get_ivr_responses_report') {
         $k = trim((string)$r['dtmf_key']);
         if ($k === '1') $countKey1++;
         elseif ($k === '2') $countKey2++;
+        elseif ($k === 'pending') $countPending++;
         elseif ($k === '' || $k === 'none') $countNone++;
         else $countOther++;
 
         $cfg = !empty($r['ivr_responses']) ? json_decode($r['ivr_responses'], true) : [];
         $r['ivr_mode'] = $cfg['mode'] ?? 'interactive';
         $keyConfig = $cfg['keys'][$k] ?? null;
-        if ($k === '1') {
+        if ($k === 'pending') {
+            $r['action_label'] = 'Awaiting Call / Scheduled';
+        } elseif ($k === '1') {
             $r['action_label'] = $keyConfig['outcome'] ?? 'Confirmed (Option 1)';
         } elseif ($k === '2') {
             $r['action_label'] = $keyConfig['outcome'] ?? 'Callback Requested (Option 2)';
@@ -972,20 +984,25 @@ if ($action === 'get_ivr_responses_report') {
         $campaignName = (string)$cStmt->fetchColumn();
     }
 
+    $totalCalled = max(0, $total - $countPending);
+    $denom = $totalCalled > 0 ? $totalCalled : ($total > 0 ? $total : 1);
+
     jsonOut([
         'success' => true,
         'campaign_id' => $campaignId,
         'campaign_name' => $campaignName,
         'summary' => [
             'total' => $total,
+            'total_called' => $totalCalled,
+            'pending_count' => $countPending,
             'key_1_count' => $countKey1,
-            'key_1_pct' => $total > 0 ? round(($countKey1 / $total) * 100, 1) : 0,
+            'key_1_pct' => round(($countKey1 / $denom) * 100, 1),
             'key_2_count' => $countKey2,
-            'key_2_pct' => $total > 0 ? round(($countKey2 / $total) * 100, 1) : 0,
+            'key_2_pct' => round(($countKey2 / $denom) * 100, 1),
             'other_count' => $countOther,
-            'other_pct' => $total > 0 ? round(($countOther / $total) * 100, 1) : 0,
+            'other_pct' => round(($countOther / $denom) * 100, 1),
             'none_count' => $countNone,
-            'none_pct' => $total > 0 ? round(($countNone / $total) * 100, 1) : 0,
+            'none_pct' => round(($countNone / $denom) * 100, 1),
         ],
         'rows' => $rows
     ]);
@@ -1009,15 +1026,16 @@ if ($action === 'export_ivr_responses_csv') {
     $search = trim($_GET['search'] ?? '');
 
     $where = [
-        "l.campaign_id = ?",
-        "(l.status != 'pending' OR cl.id IS NOT NULL OR l.dtmf_response != '' OR cl.dtmf_pressed != '')"
+        "l.campaign_id = ?"
     ];
     $params = [$campaignId];
 
-    if ($keyFilter === 'none') {
-        $where[] = "(COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = 'none')";
+    if ($keyFilter === 'pending') {
+        $where[] = "(l.status = 'pending' AND NULLIF(l.dtmf_response, '') IS NULL AND NULLIF(cl.dtmf_pressed, '') IS NULL)";
+    } elseif ($keyFilter === 'none') {
+        $where[] = "(l.status != 'pending' AND COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = 'none')";
     } elseif (!empty($keyFilter)) {
-        $where[] = "COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') = ?";
+        $where[] = "(COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, '')) = ?)";
         $params[] = $keyFilter;
     }
     if (!empty($dateFrom)) {
@@ -1039,11 +1057,16 @@ if ($action === 'export_ivr_responses_csv') {
     $sql = "
         SELECT 
             l.id as lead_id,
-            l.customer_name,
-            l.phone_number,
+            COALESCE(NULLIF(l.customer_name, ''), NULLIF(cl.customer_name, ''), 'Contact') as customer_name,
+            COALESCE(NULLIF(l.phone_number, ''), NULLIF(cl.phone_number, ''), '') as phone_number,
             l.status as lead_status,
             COALESCE(l.duration_sec, cl.duration_sec, 0) as duration_sec,
-            COALESCE(NULLIF(l.dtmf_response, ''), NULLIF(cl.dtmf_pressed, ''), 'none') as dtmf_key,
+            CASE
+                WHEN NULLIF(l.dtmf_response, '') IS NOT NULL THEN l.dtmf_response
+                WHEN NULLIF(cl.dtmf_pressed, '') IS NOT NULL THEN cl.dtmf_pressed
+                WHEN l.status = 'pending' THEN 'pending'
+                ELSE 'none'
+            END as dtmf_key,
             COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) as call_time,
             c.name as campaign_name,
             c.ivr_responses
@@ -1057,7 +1080,9 @@ if ($action === 'export_ivr_responses_csv') {
         ) latest_cl ON l.id = latest_cl.lead_id
         LEFT JOIN call_logs cl ON latest_cl.max_log_id = cl.id
         WHERE {$whereClause}
-        ORDER BY COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) DESC
+        ORDER BY 
+            CASE WHEN l.status != 'pending' THEN 0 ELSE 1 END,
+            COALESCE(cl.timestamp, l.last_attempt_at, l.created_at) DESC
     ";
 
     $stmt = $db->prepare($sql);
@@ -2511,13 +2536,20 @@ if ($action === 'update_lead_status') {
         jsonOut(['success' => false, 'error' => 'Invalid lead ID.'], 400);
     }
 
-    $stmt = $db->prepare("UPDATE leads SET status = ?, duration_sec = ?, dtmf_response = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
-    $stmt->execute([$status, $duration, $dtmf, $errMsg, $leadId]);
+    // If $dtmf is provided, update it. If empty, preserve existing dtmf_response on the lead.
+    if ($dtmf !== '') {
+        $stmt = $db->prepare("UPDATE leads SET status = ?, duration_sec = ?, dtmf_response = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+        $stmt->execute([$status, $duration, $dtmf, $errMsg, $leadId]);
+    } else {
+        $stmt = $db->prepare("UPDATE leads SET status = ?, duration_sec = ?, error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+        $stmt->execute([$status, $duration, $errMsg, $leadId]);
+    }
 
     if (in_array($status, ['completed', 'ivr_completed', 'busy', 'no_answer', 'failed', 'callback', 'opt_out'])) {
-        $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch();
+        $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch(PDO::FETCH_ASSOC);
         if ($lead) {
-            $campaign = $db->query("SELECT * FROM campaigns WHERE id = {$lead['campaign_id']}")->fetch();
+            $effectiveDtmf = $dtmf !== '' ? $dtmf : (string)($lead['dtmf_response'] ?? '');
+            $campaign = $db->query("SELECT * FROM campaigns WHERE id = {$lead['campaign_id']}")->fetch(PDO::FETCH_ASSOC);
             $insLog = $db->prepare("INSERT INTO call_logs (lead_id, campaign_id, customer_name, phone_number, call_time, agent_extension, status, duration_sec, audio_played, dtmf_pressed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $insLog->execute([
                 $leadId,
@@ -2529,12 +2561,52 @@ if ($action === 'update_lead_status') {
                 $status,
                 $duration,
                 $campaign['ivr_audio_name'] ?? 'IVR Audio',
-                $dtmf
+                $effectiveDtmf
             ]);
         }
     }
 
     jsonOut(['success' => true]);
+}
+
+// 4b. Record Real-Time Interactive IVR Keypad Response
+if ($action === 'record_ivr_key') {
+    $leadId = (int)($_POST['lead_id'] ?? 0);
+    $campId = (int)($_POST['campaign_id'] ?? 0);
+    $key = trim($_POST['key'] ?? '');
+    $outcome = trim($_POST['outcome'] ?? '');
+    $duration = (int)($_POST['duration_sec'] ?? 1);
+
+    if ($leadId > 0 && !empty($key)) {
+        $stmt = $db->prepare("UPDATE leads SET status = 'answered', dtmf_response = ?, error_message = ?, duration_sec = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+        $stmt->execute([$key, $outcome, $duration, $leadId]);
+
+        $lead = $db->query("SELECT * FROM leads WHERE id = {$leadId}")->fetch(PDO::FETCH_ASSOC);
+        if ($lead) {
+            $cId = $campId ?: (int)($lead['campaign_id'] ?? 1);
+            $checkLog = $db->prepare("SELECT id FROM call_logs WHERE lead_id = ? ORDER BY id DESC LIMIT 1");
+            $checkLog->execute([$leadId]);
+            $existingLogId = $checkLog->fetchColumn();
+
+            if ($existingLogId) {
+                $upLog = $db->prepare("UPDATE call_logs SET dtmf_pressed = ?, status = 'completed', duration_sec = ? WHERE id = ?");
+                $upLog->execute([$key, $duration, $existingLogId]);
+            } else {
+                $insLog = $db->prepare("INSERT INTO call_logs (lead_id, campaign_id, customer_name, phone_number, call_time, agent_extension, status, duration_sec, dtmf_pressed) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?)");
+                $insLog->execute([
+                    $leadId,
+                    $cId,
+                    $lead['customer_name'] ?? 'Contact',
+                    $lead['phone_number'] ?? '',
+                    $lead['call_time'] ?? date('h:i A'),
+                    $_SESSION['dialer_user']['sip_extension'] ?? '101',
+                    $duration,
+                    $key
+                ]);
+            }
+        }
+    }
+    jsonOut(['success' => true, 'key' => $key, 'outcome' => $outcome]);
 }
 
 // 5. Upload Human Audio File (.wav / .mp3 / audio formats)
