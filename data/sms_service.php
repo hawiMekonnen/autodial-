@@ -64,7 +64,7 @@ class SmsService {
         $apiUrl = $env['SMS_API_URL'] ?? $dbSettings['sms_api_url'] ?? '';
         $senderId = $env['SMS_SENDER_ID'] ?? $dbSettings['sms_sender_id'] ?? 'SkyConnect';
         $provider = $env['SMS_PROVIDER'] ?? $dbSettings['sms_provider'] ?? 'generic_api';
-        $mockMode = isset($dbSettings['sms_mock_mode']) ? (int)$dbSettings['sms_mock_mode'] : (empty($apiKey) ? 1 : 0);
+        $mockMode = isset($env['SMS_MOCK_MODE']) ? (int)$env['SMS_MOCK_MODE'] : (isset($dbSettings['sms_mock_mode']) ? (int)$dbSettings['sms_mock_mode'] : (empty($apiKey) ? 1 : 0));
 
         $this->config = [
             'enabled' => (int)($dbSettings['sms_enabled'] ?? 1),
