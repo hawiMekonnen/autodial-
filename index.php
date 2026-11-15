@@ -130,6 +130,13 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
         <span>Interactive IVR</span>
       </button>
 
+      <button class="sc-nav-item" id="sbSmsCampaigns" onclick="app.showSmsCampaignsView()">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span>SMS Campaigns</span>
+      </button>
+
       <!-- INSIGHTS & CONTROL Group -->
       <div class="sc-sidebar-section-title" style="margin-top:16px;">INSIGHTS &amp; CONTROL</div>
 
@@ -309,142 +316,229 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                 </select>
               </div>
 
-              <input type="hidden" id="newCampaignModeSelect" value="automated_ivr">
+              <div class="form-group" style="margin-bottom:16px;">
+                <label class="camp-input-label" style="display:block;margin-bottom:8px;">Campaign Channel &amp; Execution Mode</label>
+                <input type="hidden" id="newCampaignModeSelect" value="automated_ivr">
+                <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;" id="newCampModeGrid">
+                  
+                  <!-- Option 1: Interactive IVR Call -->
+                  <div id="campModeCard_ivr" onclick="app.selectCampaignMode('automated_ivr')" style="border:2px solid #00A651;background:#f0fdf4;border-radius:8px;padding:12px 10px;cursor:pointer;transition:all 0.2s;">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+                      <input type="radio" name="camp_mode_radio" id="radioModeIvr" value="automated_ivr" checked style="accent-color:#00A651;cursor:pointer;">
+                      <span style="font-size:12px;font-weight:700;color:#0f172a;">Interactive IVR</span>
+                    </div>
+                    <div style="font-size:11px;color:#475569;line-height:1.4;">Call contact with interactive keypad menu responses.</div>
+                  </div>
 
-              <div class="form-group" style="margin-bottom:14px;">
-                <label class="camp-input-label">Caller ID</label>
-                <select id="newCampaignCallerIdSelect" class="camp-input-field">
-                  <option value="">Select Caller ID (or add in Settings)</option>
-                </select>
-              </div>
+                  <!-- Option 2: Play & Hang Up (Voice Broadcast) -->
+                  <div id="campModeCard_broadcast" onclick="app.selectCampaignMode('broadcast')" style="border:1.5px solid #cbd5e1;background:#fff;border-radius:8px;padding:12px 10px;cursor:pointer;transition:all 0.2s;">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+                      <input type="radio" name="camp_mode_radio" id="radioModeBroadcast" value="broadcast" style="accent-color:#00A651;cursor:pointer;">
+                      <span style="font-size:12px;font-weight:700;color:#0f172a;">Play &amp; Hang Up</span>
+                    </div>
+                    <div style="font-size:11px;color:#64748b;line-height:1.4;">Call contact, play announcement audio, then end call.</div>
+                  </div>
 
-              <div class="form-group" style="margin-bottom:14px;">
-                <label class="camp-input-label">Calling &amp; Scheduling Method</label>
-                <select id="newCampaignCallingMethodSelect" class="camp-input-field" onchange="app.handleCallingMethodChange(this.value)">
-                  <option value="auto_schedule" selected>System Auto-Schedule (Upload Name &amp; Phone only)</option>
-                  <option value="manual">Manual Scheduling (Upload exact times or Immediate)</option>
-                </select>
-                <div style="font-size:11px;color:#64748b;margin-top:4px;">
-                  In System Auto-Schedule mode, the system automatically schedules the calls. The dialer will place calls at scheduled times when you click Start Auto-Dialer.
+                  <!-- Option 3: SMS Only Campaign -->
+                  <div id="campModeCard_sms" onclick="app.selectCampaignMode('sms_only')" style="border:1.5px solid #cbd5e1;background:#fff;border-radius:8px;padding:12px 10px;cursor:pointer;transition:all 0.2s;">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+                      <input type="radio" name="camp_mode_radio" id="radioModeSms" value="sms_only" style="accent-color:#00A651;cursor:pointer;">
+                      <span style="font-size:12px;font-weight:700;color:#0f172a;">SMS Only</span>
+                    </div>
+                    <div style="font-size:11px;color:#64748b;line-height:1.4;">No call. Contact receives a direct SMS text message.</div>
+                  </div>
+
                 </div>
               </div>
 
-              <!-- Configurable System Auto-Scheduling Options -->
-              <div id="newCampaignAutoScheduleOptions" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
-                <div style="font-size:11.5px;font-weight:700;color:#166534;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
-                  <span>How do you want the system to schedule calls?</span>
-                </div>
-
-                <div style="margin-bottom:10px;">
-                  <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Scheduling Strategy</label>
-                  <select id="newCampaignScheduleStrategy" class="camp-input-field" style="background:#fff;font-size:12px;padding:6px 10px;" onchange="app.handleScheduleStrategyChange(this.value)">
-                    <option value="smart" selected>Smart Optimized Schedule (Fastest: Consumes least time)</option>
-                    <option value="interval">Interval Staggering (Spread calls every X minutes)</option>
-                    <option value="window">Business Hours Window (Distribute calls within hours)</option>
+              <!-- ==============================================
+                   VOICE CAMPAIGN SETTINGS (Interactive IVR & Broadcast)
+                   ============================================== -->
+              <div id="newCampVoiceSection" style="display:block;">
+                <div class="form-group" style="margin-bottom:14px;">
+                  <label class="camp-input-label">Caller ID</label>
+                  <select id="newCampaignCallerIdSelect" class="camp-input-field">
+                    <option value="">Select Caller ID (or add in Settings)</option>
                   </select>
                 </div>
 
-                <div id="rowScheduleInterval" style="display:none;margin-bottom:8px;">
-                  <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Stagger Interval (Time between calls)</label>
-                  <select id="newCampaignScheduleInterval" class="camp-input-field" style="background:#fff;font-size:12px;padding:6px 10px;">
-                    <option value="2">Every 2 minutes</option>
-                    <option value="5" selected>Every 5 minutes (Recommended)</option>
-                    <option value="10">Every 10 minutes</option>
-                    <option value="15">Every 15 minutes</option>
-                    <option value="30">Every 30 minutes</option>
+                <div class="form-group" style="margin-bottom:14px;">
+                  <label class="camp-input-label">Calling &amp; Scheduling Method</label>
+                  <select id="newCampaignCallingMethodSelect" class="camp-input-field" onchange="app.handleCallingMethodChange(this.value)">
+                    <option value="auto_schedule" selected>System Auto-Schedule (Upload Name &amp; Phone only)</option>
+                    <option value="manual">Manual Scheduling (Upload exact times or Immediate)</option>
                   </select>
-                </div>
-
-                <div id="rowScheduleWindow" style="display:none;margin-bottom:8px;">
-                  <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Business Hours Window</label>
-                  <div style="display:flex;gap:8px;align-items:center;">
-                    <input type="time" id="newCampaignWindowStart" value="09:00" class="camp-input-field" style="background:#fff;font-size:12px;padding:5px 8px;flex:1;">
-                    <span style="font-size:11.5px;color:#64748b;">to</span>
-                    <input type="time" id="newCampaignWindowEnd" value="17:00" class="camp-input-field" style="background:#fff;font-size:12px;padding:5px 8px;flex:1;">
-                  </div>
-                  <div style="font-size:10.5px;color:#64748b;margin-top:3px;">Uploaded contacts will be distributed evenly between these hours.</div>
-                </div>
-              </div>
-
-              <div class="form-group" style="margin-bottom:22px;">
-                <label class="camp-input-label">Initial contacts</label>
-                <div class="camp-browse-container">
-                  <input type="text" id="newCampaignContactsInput" placeholder="No file chosen (Click Browse to upload)" readonly class="camp-browse-input">
-                  <input type="file" id="newCampaignFileInput" accept=".xlsx,.csv,.xls,.txt,.tsv" style="display:none;" onchange="app.handleNewCampaignFileSelect(this)">
-                  <button type="button" class="camp-browse-btn" onclick="document.getElementById('newCampaignFileInput').click()">Browse</button>
-                </div>
-
-                <!-- Smart Schedule Suggestion Offer (Shows dynamically when file is selected) -->
-                <div id="newCampSmartOffer" style="display:none;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:12px 14px;margin-top:10px;">
-                  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                    <div style="font-size:12px;font-weight:700;color:#15803d;">
-                      Smart Time-Saving Schedule
-                    </div>
-                    <span id="smartOfferBadge" style="font-size:11px;font-weight:700;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;">0 contacts</span>
-                  </div>
-                  <div id="smartOfferSummary" style="font-size:11.5px;color:#334155;line-height:1.5;margin-bottom:10px;">
-                    <!-- Populated dynamically when file is selected -->
-                  </div>
-                  <div id="smartOfferActions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    <button type="button" class="btn btn-sm btn-primary" onclick="app.approveSmartScheduleSuggestion()" style="font-size:11.5px;padding:5px 14px;background:#00A651;border:none;border-radius:6px;font-weight:700;color:#fff;cursor:pointer;">
-                      Approve suggested schedule
-                    </button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.rejectSmartScheduleSuggestion()" style="font-size:11.5px;padding:5px 12px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;color:#475569;cursor:pointer;">
-                      Use standard interval
-                    </button>
-                  </div>
-                  <div id="smartOfferApproved" style="display:none;font-size:11.5px;font-weight:600;color:#166534;">
-                    <span>Suggested schedule approved. Contacts will be dispatched concurrently across available lines.</span>
+                  <div style="font-size:11px;color:#64748b;margin-top:4px;">
+                    In System Auto-Schedule mode, the system automatically schedules the calls. The dialer will place calls at scheduled times when you click Start Auto-Dialer.
                   </div>
                 </div>
-              </div>
 
-              <!-- SMS Follow-Up Option in Campaign Creation Wizard -->
-              <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:18px;">
-                <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="const chk = document.getElementById('newCampaignSmsEnabled'); if (chk) { chk.checked = !chk.checked; app.toggleWizardSmsOptions(chk.checked); }">
-                  <div style="display:flex;align-items:center;gap:10px;">
-                    <div style="width:32px;height:32px;border-radius:8px;background:#e0f2fe;color:#0284c7;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                      </svg>
-                    </div>
-                    <div>
-                      <div style="font-size:12.5px;font-weight:700;color:#0f172a;">Send SMS to Contact</div>
-                      <div style="font-size:11px;color:#64748b;">Automated text follow-up after call or IVR outcome</div>
-                    </div>
+                <!-- Configurable System Auto-Scheduling Options -->
+                <div id="newCampaignAutoScheduleOptions" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
+                  <div style="font-size:11.5px;font-weight:700;color:#166534;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
+                    <span>How do you want the system to schedule calls?</span>
                   </div>
-                  <input type="checkbox" id="newCampaignSmsEnabled" style="accent-color:#00A651;width:18px;height:18px;cursor:pointer;" onclick="event.stopPropagation(); app.toggleWizardSmsOptions(this.checked);">
-                </div>
 
-                <div id="newCampaignSmsDetails" style="display:none;margin-top:12px;padding-top:12px;border-top:1px dashed #cbd5e1;">
                   <div style="margin-bottom:10px;">
-                    <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">When should SMS be sent?</label>
-                    <select id="newCampaignSmsTrigger" class="camp-input-field" style="background:#fff;font-size:12px;padding:6px 10px;">
-                      <option value="call_completed" selected>When call completes / answered</option>
-                      <option value="ivr_choice">When caller chooses an IVR option</option>
-                      <option value="all_calls">Always (all dialed calls)</option>
-                      <option value="unanswered">When call is unanswered / busy (Missed call)</option>
-                      <option value="manual_only">Agent manual dispatch only</option>
+                    <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Scheduling Strategy</label>
+                    <select id="newCampaignScheduleStrategy" class="camp-input-field" style="background:#fff;font-size:12px;padding:6px 10px;" onchange="app.handleScheduleStrategyChange(this.value)">
+                      <option value="smart" selected>Smart Optimized Schedule (Fastest: Consumes least time)</option>
+                      <option value="interval">Interval Staggering (Spread calls every X minutes)</option>
+                      <option value="window">Business Hours Window (Distribute calls within hours)</option>
                     </select>
                   </div>
 
-                  <div style="margin-bottom:8px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
-                      <label style="font-size:11px;font-weight:600;color:#374151;margin:0;">SMS Message Template</label>
-                      <span id="newCampSmsCharCount" style="font-size:10.5px;color:#64748b;">0 / 160</span>
+                  <div id="rowScheduleInterval" style="display:none;margin-bottom:8px;">
+                    <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Stagger Interval (Time between calls)</label>
+                    <select id="newCampaignScheduleInterval" class="camp-input-field" style="background:#fff;font-size:12px;padding:6px 10px;">
+                      <option value="2">Every 2 minutes</option>
+                      <option value="5" selected>Every 5 minutes (Recommended)</option>
+                      <option value="10">Every 10 minutes</option>
+                      <option value="15">Every 15 minutes</option>
+                      <option value="30">Every 30 minutes</option>
+                    </select>
+                  </div>
+
+                  <div id="rowScheduleWindow" style="display:none;margin-bottom:8px;">
+                    <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Business Hours Window</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                      <input type="time" id="newCampaignWindowStart" value="09:00" class="camp-input-field" style="background:#fff;font-size:12px;padding:5px 8px;flex:1;">
+                      <span style="font-size:11.5px;color:#64748b;">to</span>
+                      <input type="time" id="newCampaignWindowEnd" value="17:00" class="camp-input-field" style="background:#fff;font-size:12px;padding:5px 8px;flex:1;">
                     </div>
-                    <textarea id="newCampaignSmsTemplate" class="camp-input-field" rows="2" style="background:#fff;font-size:12px;padding:8px 10px;resize:vertical;font-family:inherit;min-height:56px;" placeholder="Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your confirmation." oninput="app.updateSmsCharCount(this, 'newCampSmsCharCount')">Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.</textarea>
-                    <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
-                      <button type="button" class="btn btn-xs" style="font-size:10px;padding:1px 6px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#475569;cursor:pointer;" onclick="app.insertSmsTag('newCampaignSmsTemplate', '{name}')">+{name}</button>
-                      <button type="button" class="btn btn-xs" style="font-size:10px;padding:1px 6px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#475569;cursor:pointer;" onclick="app.insertSmsTag('newCampaignSmsTemplate', '{campaign}')">+{campaign}</button>
-                      <button type="button" class="btn btn-xs" style="font-size:10px;padding:1px 6px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#475569;cursor:pointer;" onclick="app.insertSmsTag('newCampaignSmsTemplate', '{phone}')">+{phone}</button>
-                      <button type="button" class="btn btn-xs" style="font-size:10px;padding:1px 6px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#475569;cursor:pointer;" onclick="app.insertSmsTag('newCampaignSmsTemplate', '{outcome}')">+{outcome}</button>
+                    <div style="font-size:10.5px;color:#64748b;margin-top:3px;">Uploaded contacts will be distributed evenly between these hours.</div>
+                  </div>
+                </div>
+
+                <div class="form-group" style="margin-bottom:18px;">
+                  <label class="camp-input-label">Initial contacts</label>
+                  <div class="camp-browse-container">
+                    <input type="text" id="newCampaignContactsInput" placeholder="No file chosen (Click Browse to upload)" readonly class="camp-browse-input">
+                    <input type="file" id="newCampaignFileInput" accept=".xlsx,.csv,.xls,.txt,.tsv" style="display:none;" onchange="app.handleNewCampaignFileSelect(this)">
+                    <button type="button" class="camp-browse-btn" onclick="document.getElementById('newCampaignFileInput').click()">Browse</button>
+                  </div>
+
+                  <!-- Smart Schedule Suggestion Offer -->
+                  <div id="newCampSmartOffer" style="display:none;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:12px 14px;margin-top:10px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                      <div style="font-size:12px;font-weight:700;color:#15803d;">
+                        Smart Time-Saving Schedule
+                      </div>
+                      <span id="smartOfferBadge" style="font-size:11px;font-weight:700;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;">0 contacts</span>
+                    </div>
+                    <div id="smartOfferSummary" style="font-size:11.5px;color:#334155;line-height:1.5;margin-bottom:10px;"></div>
+                    <div id="smartOfferActions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                      <button type="button" class="btn btn-sm btn-primary" onclick="app.approveSmartScheduleSuggestion()" style="font-size:11.5px;padding:5px 14px;background:#00A651;border:none;border-radius:6px;font-weight:700;color:#fff;cursor:pointer;">
+                        Approve suggested schedule
+                      </button>
+                      <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.rejectSmartScheduleSuggestion()" style="font-size:11.5px;padding:5px 12px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;color:#475569;cursor:pointer;">
+                        Use standard interval
+                      </button>
+                    </div>
+                    <div id="smartOfferApproved" style="display:none;font-size:11.5px;font-weight:600;color:#166534;">
+                      <span>Suggested schedule approved. Contacts will be dispatched concurrently across available lines.</span>
                     </div>
                   </div>
                 </div>
+
+                <!-- Optional SMS Follow-up toggle for voice calls -->
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:18px;">
+                  <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="const chk = document.getElementById('newCampaignSmsEnabled'); if (chk) { chk.checked = !chk.checked; app.toggleWizardSmsOptions(chk.checked); }">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      <div style="width:28px;height:28px;border-radius:6px;background:#e0f2fe;color:#0284c7;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                      </div>
+                      <div>
+                        <div style="font-size:12px;font-weight:700;color:#0f172a;">Send SMS Follow-Up after call</div>
+                        <div style="font-size:10.5px;color:#64748b;">Text contact when call completes or key is pressed</div>
+                      </div>
+                    </div>
+                    <input type="checkbox" id="newCampaignSmsEnabled" style="accent-color:#00A651;width:17px;height:17px;cursor:pointer;" onclick="event.stopPropagation(); app.toggleWizardSmsOptions(this.checked);">
+                  </div>
+
+                  <div id="newCampaignSmsDetails" style="display:none;margin-top:10px;padding-top:10px;border-top:1px dashed #cbd5e1;">
+                    <div style="margin-bottom:8px;">
+                      <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Trigger</label>
+                      <select id="newCampaignSmsTrigger" class="camp-input-field" style="background:#fff;font-size:12px;padding:5px 8px;">
+                        <option value="call_completed" selected>When call completes / answered</option>
+                        <option value="ivr_choice">When caller chooses an IVR option</option>
+                        <option value="all_calls">Always (all dialed calls)</option>
+                        <option value="unanswered">When call is unanswered / busy</option>
+                      </select>
+                    </div>
+                    <div style="margin-bottom:6px;">
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+                        <label style="font-size:11px;font-weight:600;color:#374151;margin:0;">SMS Message Template</label>
+                        <span id="newCampSmsCharCount" style="font-size:10px;color:#64748b;">0 / 160</span>
+                      </div>
+                      <textarea id="newCampaignSmsTemplate" class="camp-input-field" rows="2" style="background:#fff;font-size:11.5px;padding:6px 8px;resize:vertical;font-family:inherit;min-height:50px;" oninput="app.updateSmsCharCount(this, 'newCampSmsCharCount')">Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.</textarea>
+                    </div>
+                  </div>
+                </div>
+
               </div>
 
-              <button type="submit" class="camp-btn-submit">Continue to message design</button>
+              <!-- ==============================================
+                   SMS ONLY CAMPAIGN SETTINGS (No voice call)
+                   ============================================== -->
+              <div id="newCampSmsOnlySection" style="display:none;">
+                <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:12px 14px;margin-bottom:16px;">
+                  <div style="font-size:12px;font-weight:700;color:#166534;display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    <span>SMS Only Campaign Mode Active</span>
+                  </div>
+                  <div style="font-size:11px;color:#334155;line-height:1.4;">
+                    Contacts in this campaign will directly receive your SMS message. No phone calls will be placed.
+                  </div>
+                </div>
+
+                <!-- Sender ID / Mask -->
+                <div class="form-group" style="margin-bottom:14px;">
+                  <label class="camp-input-label">Sender ID / Mask</label>
+                  <input type="text" id="newCampSmsOnlySenderId" class="camp-input-field" value="SkyConnect" placeholder="e.g. SkyConnect">
+                  <div style="font-size:11px;color:#64748b;margin-top:3px;">The sender name that appears on customer mobile phones.</div>
+                </div>
+
+                <!-- SMS Text Template -->
+                <div class="form-group" style="margin-bottom:14px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+                    <label class="camp-input-label" style="margin:0;">SMS Message Template</label>
+                    <span id="newCampSmsOnlyCharCount" style="font-size:11px;color:#64748b;font-weight:600;">0 / 160 (1 SMS)</span>
+                  </div>
+                  <textarea id="newCampSmsOnlyTemplate" class="camp-input-field" rows="3" style="font-size:12.5px;padding:8px 10px;resize:vertical;font-family:inherit;min-height:70px;" placeholder="Hello {name}, this is a notification from {campaign}..." oninput="app.updateSmsCharCount(this, 'newCampSmsOnlyCharCount'); app.updateWizardSmsOnlyPreview();">Hello {name}, this is an important message regarding {campaign}. Please contact us if you have any questions.</textarea>
+                  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px;">
+                    <button type="button" class="btn btn-xs" style="font-size:10.5px;padding:2px 7px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('newCampSmsOnlyTemplate', '{name}')">+{name}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:10.5px;padding:2px 7px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('newCampSmsOnlyTemplate', '{campaign}')">+{campaign}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:10.5px;padding:2px 7px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('newCampSmsOnlyTemplate', '{phone}')">+{phone}</button>
+                  </div>
+                </div>
+
+                <!-- Initial Contacts File Upload for SMS -->
+                <div class="form-group" style="margin-bottom:18px;">
+                  <label class="camp-input-label">Initial contacts (CSV, XLSX, TXT)</label>
+                  <div class="camp-browse-container">
+                    <input type="text" id="newCampaignSmsContactsInput" placeholder="No file chosen (Click Browse to upload)" readonly class="camp-browse-input">
+                    <input type="file" id="newCampaignSmsFileInput" accept=".xlsx,.csv,.xls,.txt,.tsv" style="display:none;" onchange="app.handleNewCampaignSmsFileSelect(this)">
+                    <button type="button" class="camp-browse-btn" onclick="document.getElementById('newCampaignSmsFileInput').click()">Browse</button>
+                  </div>
+                  <div id="newCampSmsFileNotice" style="display:none;font-size:11.5px;color:#166534;margin-top:6px;font-weight:600;"></div>
+                </div>
+
+                <!-- Recipient Preview -->
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:18px;">
+                  <div style="font-size:10.5px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Preview Message</div>
+                  <div id="newCampSmsOnlyPreviewBubble" style="background:#e0f2fe;border-radius:10px 10px 10px 2px;padding:8px 12px;color:#0369a1;font-size:11.5px;line-height:1.45;">
+                    Hello Abebe Bikila, this is an important message regarding Appointment Reminder. Please contact us if you have any questions.
+                  </div>
+                </div>
+
+              </div>
+
+              <button type="submit" id="btnNewCampaignSubmit" class="camp-btn-submit">Continue to message design</button>
             </form>
           </div>
         </div>
@@ -463,14 +557,30 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             </button>
           </div>
 
-          <!-- Top Right Action Buttons (Picture 3: Open queue | Save | Launch campaign) -->
-          <div style="display:flex;align-items:center;gap:10px;">
+          <!-- Top Right Action Buttons (Voice & SMS Variants) -->
+          <div id="designerVoiceTopActions" style="display:flex;align-items:center;gap:10px;">
             <button type="button" class="des-btn-text" onclick="app.openCampaignInQueue(app.activeCampaignId || app.campaign?.id)">Open queue</button>
             <button type="button" class="des-btn-save" onclick="app.saveCampaignDesigner()">Save</button>
             <button type="button" id="btnLaunchDesignerCampaign" class="des-btn-launch" onclick="app.toggleCampaignLaunch()">Launch campaign</button>
           </div>
+
+          <div id="designerSmsTopActions" style="display:none;align-items:center;gap:10px;">
+            <button type="button" class="btn-clean-white" style="font-size:12px;font-weight:600;padding:6px 14px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;" onclick="app.openAddContactsModal(app.activeCampaignId || app.campaign?.id)">Add numbers</button>
+            <button type="button" class="des-btn-save" onclick="app.saveSmsCampaignDesigner()">Save SMS Setup</button>
+            <button type="button" id="btnLaunchSmsCampaignTop" class="des-btn-launch" onclick="app.dispatchSmsCampaign()" style="background:#00A651;border:none;display:inline-flex;align-items:center;gap:6px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+              <span>Dispatch SMS</span>
+            </button>
+          </div>
         </div>
 
+        <!-- ==============================================
+             WORKSPACE 1: VOICE CAMPAIGN DESIGNER (IVR & Broadcast)
+             ============================================== -->
+        <div id="designerVoiceWorkspace" style="display:block;">
         <!-- Main Two-Column Layout: Message, Responses (Left) | Preview, Progress & Schedule (Right) -->
         <div class="des-grid" style="grid-template-columns: 1.4fr 1.1fr; gap: 20px; align-items: start;">
           
@@ -752,11 +862,181 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
           </div>
 
         </div>
+        </div><!-- End designerVoiceWorkspace -->
 
-        <!-- ── SECTION C: CONTACTS (Bottom Full Width Card - Picture 1 Match) ── -->
+        <!-- ==============================================
+             WORKSPACE 2: DEDICATED SMS CAMPAIGN DESIGNER
+             ============================================== -->
+        <div id="designerSmsWorkspace" style="display:none;">
+          <div class="des-grid" style="grid-template-columns: 1.35fr 1.15fr; gap: 20px; align-items: start;">
+            
+            <!-- LEFT COLUMN: SMS Message Composer -->
+            <div style="display:flex;flex-direction:column;gap:18px;">
+              
+              <!-- CARD 1: SMS Message Setup -->
+              <div class="des-panel" style="padding: 24px;">
+                <div style="margin-bottom: 16px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                      <h2 style="font-size: 16px; font-weight: 700; color: #0f172a; margin: 0 0 4px 0;">SMS Message Composer</h2>
+                      <div style="font-size: 12px; color: #64748b;">Set what contacts receive on their mobile phones.</div>
+                    </div>
+                    <span style="background:#e0f2fe;color:#0284c7;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px;border:1px solid #bae6fd;">SMS Campaign</span>
+                  </div>
+                </div>
+
+                <!-- Sender ID / Mask -->
+                <div style="margin-bottom: 14px;">
+                  <label style="display:block;font-size:12px;font-weight:600;color:#475569;margin-bottom:5px;">Sender ID / Mask (Displayed on recipient's phone)</label>
+                  <input type="text" id="smsDesignerSenderId" class="des-clean-field" style="width:100%;font-size:12.5px;padding:8px 12px;" value="SkyConnect" placeholder="e.g. SkyConnect, MyCompany" oninput="app.updateSmsDesignerLivePreview()">
+                  <div style="font-size:11px;color:#64748b;margin-top:4px;">Standard alphanumeric sender mask (e.g. SkyConnect).</div>
+                </div>
+
+                <!-- SMS Message Text -->
+                <div style="margin-bottom: 14px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+                    <label style="font-size:12px;font-weight:600;color:#475569;margin:0;">SMS Message Body</label>
+                    <span id="smsDesignerCharCount" style="font-size:11px;font-weight:600;color:#64748b;">0 / 160 characters (1 SMS)</span>
+                  </div>
+                  <textarea id="smsDesignerTemplate" class="des-clean-field" style="width:100%;min-height:110px;font-size:13px;padding:12px;line-height:1.5;resize:vertical;font-family:inherit;" placeholder="Hello {name}, this is a message from {campaign}..." oninput="app.updateSmsCharCount(this, 'smsDesignerCharCount'); app.updateSmsDesignerLivePreview();">Hello {name}, this is an important message regarding {campaign}. Please reply or call us if you have any questions.</textarea>
+                  
+                  <!-- Variable Tags -->
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">
+                    <span style="font-size:11px;color:#64748b;font-weight:600;margin-right:2px;">Insert Tag:</span>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:3px 9px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('smsDesignerTemplate', '{name}')">+{name}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:3px 9px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('smsDesignerTemplate', '{campaign}')">+{campaign}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:3px 9px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('smsDesignerTemplate', '{phone}')">+{phone}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:3px 9px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('smsDesignerTemplate', '{date}')">+{date}</button>
+                  </div>
+                </div>
+
+                <!-- Quick Test SMS Box -->
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-top:14px;">
+                  <div style="font-size:11.5px;font-weight:700;color:#334155;margin-bottom:6px;">Send Quick Test SMS</div>
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <input type="tel" id="smsDesignerTestPhone" class="des-clean-field" placeholder="+251911223344" style="flex:1;font-size:12px;padding:6px 10px;">
+                    <button type="button" class="btn btn-sm" onclick="app.sendTestSmsFromSmsDesigner()" style="background:#0f172a;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11.5px;font-weight:600;cursor:pointer;">Send Test</button>
+                  </div>
+                  <div style="font-size:10.5px;color:#64748b;margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
+                    <span>Delivery Gateway: Real SMS if API key set in Settings, simulator if empty.</span>
+                    <span id="smsGatewayModeBadge" style="color:#059669;font-weight:700;">Active</span>
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+
+            <!-- RIGHT COLUMN: Mobile Preview & Dispatch Controls -->
+            <div style="display:flex;flex-direction:column;gap:18px;">
+              
+              <!-- CARD 1: Mobile Phone SMS Preview -->
+              <div class="des-panel" style="padding: 22px;">
+                <div style="margin-bottom: 12px; display:flex; justify-content:space-between; align-items:center;">
+                  <h3 style="font-size:14.5px;font-weight:700;color:#0f172a;margin:0;">Mobile Phone Preview</h3>
+                  <span style="font-size:11px;color:#64748b;">Live message view</span>
+                </div>
+
+                <!-- Phone mockup frame -->
+                <div style="background:#0f172a;border-radius:24px;padding:12px 10px;box-shadow:0 8px 24px rgba(15,23,42,0.12);max-width:320px;margin:0 auto;">
+                  <!-- Notch / speaker -->
+                  <div style="width:60px;height:4px;background:#334155;border-radius:4px;margin:0 auto 10px auto;"></div>
+                  
+                  <!-- Screen area -->
+                  <div style="background:#ffffff;border-radius:16px;padding:14px 12px;min-height:180px;display:flex;flex-direction:column;justify-content:space-between;">
+                    <div>
+                      <!-- Chat top bar -->
+                      <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #f1f5f9;padding-bottom:8px;margin-bottom:12px;">
+                        <div style="display:flex;align-items:center;gap:6px;">
+                          <div style="width:24px;height:24px;border-radius:50%;background:#00A651;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;">
+                            S
+                          </div>
+                          <div>
+                            <div id="smsPhonePreviewSender" style="font-size:11px;font-weight:700;color:#0f172a;line-height:1.2;">SkyConnect</div>
+                            <div style="font-size:9.5px;color:#94a3b8;">SMS Message</div>
+                          </div>
+                        </div>
+                        <span style="font-size:9.5px;color:#94a3b8;">Today</span>
+                      </div>
+
+                      <!-- Chat bubble -->
+                      <div style="background:#e0f2fe;border-radius:14px 14px 14px 2px;padding:10px 12px;color:#0369a1;font-size:11.5px;line-height:1.45;word-break:break-word;" id="smsPhonePreviewBubble">
+                        Hello Abebe Bikila, this is an important message regarding Appointment Reminder. Please reply or call us if you have any questions.
+                      </div>
+                    </div>
+
+                    <!-- Message timestamp & status -->
+                    <div style="text-align:right;margin-top:8px;">
+                      <span style="font-size:9.5px;color:#94a3b8;">Delivered &bull; Just now</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- CARD 2: Campaign Progress & Dispatch -->
+              <div class="des-panel" style="padding: 22px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                  <h3 style="font-size:14.5px;font-weight:700;color:#0f172a;margin:0;">SMS Dispatch &amp; Progress</h3>
+                  <span id="smsProgressPercentBadge" style="font-size:11px;font-weight:700;color:#007A3D;background:#e8f8ee;padding:2px 8px;border-radius:10px;">0% Sent</span>
+                </div>
+
+                <!-- 4 Stats Counters -->
+                <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:6px;text-align:center;margin-bottom:16px;">
+                  <div style="background:#f8fafc;padding:8px 4px;border-radius:6px;border:1px solid #e2e8f0;">
+                    <div id="smsChipTotal" style="font-size:17px;font-weight:700;color:#0f172a;line-height:1.1;">0</div>
+                    <div style="font-size:10.5px;color:#64748b;margin-top:2px;">Total</div>
+                  </div>
+                  <div style="background:#f0fdf4;padding:8px 4px;border-radius:6px;border:1px solid #bbf7d0;">
+                    <div id="smsChipSent" style="font-size:17px;font-weight:700;color:#166534;line-height:1.1;">0</div>
+                    <div style="font-size:10.5px;color:#166534;margin-top:2px;">Sent</div>
+                  </div>
+                  <div style="background:#fffbeb;padding:8px 4px;border-radius:6px;border:1px solid #fde68a;">
+                    <div id="smsChipPending" style="font-size:17px;font-weight:700;color:#b45309;line-height:1.1;">0</div>
+                    <div style="font-size:10.5px;color:#b45309;margin-top:2px;">Pending</div>
+                  </div>
+                  <div style="background:#fef2f2;padding:8px 4px;border-radius:6px;border:1px solid #fecaca;">
+                    <div id="smsChipFailed" style="font-size:17px;font-weight:700;color:#b91c1c;line-height:1.1;">0</div>
+                    <div style="font-size:10.5px;color:#b91c1c;margin-top:2px;">Failed</div>
+                  </div>
+                </div>
+
+                <!-- Progress track -->
+                <div style="margin-bottom:16px;">
+                  <div class="camp-progress-track" style="height:8px;border-radius:4px;background:#e2e8f0;overflow:hidden;">
+                    <div id="smsProgressBarFill" class="camp-progress-fill" style="width:0%;height:100%;background:#00A651;transition:width 0.3s ease;"></div>
+                  </div>
+                </div>
+
+                <!-- Dispatch Action Button -->
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                  <button type="button" id="btnDispatchSmsCampaign" class="btn btn-primary" onclick="app.dispatchSmsCampaign()" style="width:100%;padding:10px 14px;background:#00A651;color:#fff;border:none;border-radius:6px;font-weight:700;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="22" y1="2" x2="11" y2="13"></line>
+                      <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                    <span>Dispatch SMS Campaign</span>
+                  </button>
+                  <div style="display:flex;gap:8px;">
+                    <button type="button" class="btn-clean-white" style="flex:1;padding:6px 10px;font-size:11.5px;font-weight:600;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;" onclick="app.openAddContactsModal(app.activeCampaignId || app.campaign?.id)">
+                      + Add Contacts
+                    </button>
+                    <button type="button" id="btnResetFailedSms" class="btn-clean-white" style="flex:1;padding:6px 10px;font-size:11.5px;font-weight:600;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;" onclick="app.resetFailedSms()">
+                      Reset Failed
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+        </div><!-- End designerSmsWorkspace -->
+
+        <!-- ── SECTION C: CONTACTS (Bottom Full Width Card) ── -->
         <div class="des-panel" style="margin-top:20px;padding:24px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-            <h3 style="font-size:16px;font-weight:700;color:#0f172a;margin:0;">Contacts</h3>
+            <h3 id="designerContactsTitle" style="font-size:16px;font-weight:700;color:#0f172a;margin:0;">Contacts</h3>
             <span id="designerContactsSubtitle" style="font-size:12px;color:#64748b;font-weight:500;">0 scheduled calls</span>
           </div>
 
@@ -768,9 +1048,9 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
               <select id="designerContactStatusFilter" class="des-clean-field" style="width:auto;min-width:120px;font-size:12.5px;padding:7px 10px;cursor:pointer;" onchange="app.onDesignerContactFilterChange()">
                 <option value="">All statuses</option>
                 <option value="pending">Pending</option>
-                <option value="answered">Answered</option>
+                <option value="answered">Answered / Delivered</option>
                 <option value="busy">Busy</option>
-                <option value="no_answer">No answer</option>
+                <option value="no_answer">No answer / Failed</option>
               </select>
 
               <!-- Schedule Filter Dropdown -->
@@ -785,13 +1065,14 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
             <div style="display:flex;gap:10px;align-items:center;">
               <button type="button" class="btn-clean-white" style="font-size:12px;font-weight:600;padding:6px 14px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;" onclick="app.exportCampaignContacts(app.activeCampaignId || app.campaign?.id)">Export CSV</button>
+              <button type="button" id="btnContactsDispatchSms" class="btn btn-primary" style="display:none;background:#00A651;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-weight:700;font-size:12.5px;cursor:pointer;" onclick="app.dispatchSmsCampaign()">Dispatch All Pending</button>
               <button type="button" class="btn btn-primary" style="background:#00A651;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-weight:700;font-size:12.5px;cursor:pointer;" onclick="app.openAddContactsModal(app.activeCampaignId || app.campaign?.id)">Add numbers</button>
             </div>
           </div>
 
           <div style="overflow-x:auto;">
             <table class="des-contact-table">
-              <thead>
+              <thead id="designerContactsTableHead">
                 <tr>
                   <th>CUSTOMER</th>
                   <th>PHONE</th>

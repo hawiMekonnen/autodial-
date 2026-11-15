@@ -1524,22 +1524,32 @@ class SkyKinDialerApp {
         progressText = `0% · 0 of 0`;
       }
 
-      const typeDisplay = 'Automated IVR';
+      let typeDisplay = 'Automated IVR';
+      if (c.type === 'sms_only') {
+        typeDisplay = 'SMS Only';
+      } else if (c.type === 'broadcast') {
+        typeDisplay = 'Play & Hang Up';
+      }
+
       const callerId = c.caller_id_number || 'Default';
+      const isSmsOnly = (c.type === 'sms_only');
+      const subInfo = isSmsOnly
+        ? `Sender ID: ${this.escapeHtml(c.sms_sender_id || 'SkyConnect')}`
+        : `Caller ID ${this.escapeHtml(callerId)}`;
 
       return `
         <tr class="camp-table-row" style="cursor:pointer;" onclick="selectCampaignForDesigner(${c.id})">
           <td style="padding:14px 12px;vertical-align:middle;">
             <div style="font-weight:700;color:#0f172a;font-size:13.5px;line-height:1.3;cursor:pointer;" onclick="selectCampaignForDesigner(${c.id})">${this.escapeHtml(c.name)}</div>
-            <div style="font-size:11.5px;color:#64748b;margin-top:2px;">Caller ID ${this.escapeHtml(callerId)}</div>
+            <div style="font-size:11.5px;color:#64748b;margin-top:2px;">${subInfo}</div>
           </td>
           <td style="padding:14px 12px;vertical-align:middle;color:#334155;font-size:13px;font-weight:500;">
             <div style="display:flex;align-items:center;gap:6px;">
               <span>${typeDisplay}</span>
-              ${Number(c.sms_enabled) === 1 ? '<span style="background:#e0f2fe;color:#0284c7;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #bae6fd;" title="SMS Follow-up Active">SMS</span>' : ''}
+              ${isSmsOnly ? '<span style="background:#e0f2fe;color:#0284c7;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #bae6fd;">SMS</span>' : (Number(c.sms_enabled) === 1 ? '<span style="background:#e0f2fe;color:#0284c7;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #bae6fd;" title="SMS Follow-up Active">SMS</span>' : '')}
             </div>
             <div style="font-size:11px;color:${c.calling_method === 'auto_schedule' ? '#15803d' : '#64748b'};font-weight:600;margin-top:2px;">
-              ${c.calling_method === 'auto_schedule' ? `Auto (${c.schedule_interval_mins || 5}m)` : 'Manual'}
+              ${isSmsOnly ? 'Direct text dispatch' : (c.calling_method === 'auto_schedule' ? `Auto (${c.schedule_interval_mins || 5}m)` : 'Manual')}
             </div>
           </td>
           <td style="padding:14px 12px;vertical-align:middle;">
@@ -1557,8 +1567,11 @@ class SkyKinDialerApp {
             </div>
           </td>
           <td style="padding:14px 12px;vertical-align:middle;text-align:right;white-space:nowrap;" onclick="event.stopPropagation()">
-            <button type="button" class="btn btn-sm btn-success" style="padding:4px 10px;font-size:12px;font-weight:700;margin-right:4px;" onclick="app.openCampaignInQueue(${c.id})" title="Launch Outbound Dialer for this Campaign">Dial</button>
-            <button type="button" class="camp-btn-design" onclick="selectCampaignForDesigner(${c.id})" title="Configure Audio, TTS &amp; IVR Message">Design</button>
+            ${isSmsOnly
+              ? `<button type="button" class="btn btn-sm btn-success" style="padding:4px 10px;font-size:12px;font-weight:700;margin-right:4px;background:#00A651;border:none;" onclick="selectCampaignForDesigner(${c.id})" title="Open SMS Campaign Designer">Send SMS</button>`
+              : `<button type="button" class="btn btn-sm btn-success" style="padding:4px 10px;font-size:12px;font-weight:700;margin-right:4px;" onclick="app.openCampaignInQueue(${c.id})" title="Launch Outbound Dialer for this Campaign">Dial</button>`
+            }
+            <button type="button" class="camp-btn-design" onclick="selectCampaignForDesigner(${c.id})" title="Configure Campaign Message">Design</button>
             <button type="button" class="camp-btn-more" onclick="app.openCampaignActionMenu(${c.id}, event)" title="More options">More</button>
           </td>
         </tr>
@@ -1715,11 +1728,82 @@ class SkyKinDialerApp {
     if (helpWin) helpWin.style.display = (val === 'window') ? 'block' : 'none';
   }
 
+  selectCampaignMode(mode) {
+    const hiddenInp = document.getElementById('newCampaignModeSelect');
+    if (hiddenInp) hiddenInp.value = mode;
+
+    const cardIvr = document.getElementById('campModeCard_ivr');
+    const cardBroadcast = document.getElementById('campModeCard_broadcast');
+    const cardSms = document.getElementById('campModeCard_sms');
+    const radIvr = document.getElementById('radioModeIvr');
+    const radBroadcast = document.getElementById('radioModeBroadcast');
+    const radSms = document.getElementById('radioModeSms');
+
+    const voiceSec = document.getElementById('newCampVoiceSection');
+    const smsSec = document.getElementById('newCampSmsOnlySection');
+    const submitBtn = document.getElementById('btnNewCampaignSubmit');
+
+    const resetCard = (card, radio, active) => {
+      if (!card) return;
+      if (active) {
+        card.style.borderColor = '#00A651';
+        card.style.borderWidth = '2px';
+        card.style.background = '#f0fdf4';
+        if (radio) radio.checked = true;
+      } else {
+        card.style.borderColor = '#cbd5e1';
+        card.style.borderWidth = '1.5px';
+        card.style.background = '#ffffff';
+        if (radio) radio.checked = false;
+      }
+    };
+
+    resetCard(cardIvr, radIvr, mode === 'automated_ivr');
+    resetCard(cardBroadcast, radBroadcast, mode === 'broadcast');
+    resetCard(cardSms, radSms, mode === 'sms_only');
+
+    if (mode === 'sms_only') {
+      if (voiceSec) voiceSec.style.display = 'none';
+      if (smsSec) smsSec.style.display = 'block';
+      if (submitBtn) submitBtn.textContent = 'Continue to SMS campaign designer';
+      this.updateWizardSmsOnlyPreview();
+    } else {
+      if (voiceSec) voiceSec.style.display = 'block';
+      if (smsSec) smsSec.style.display = 'none';
+      if (submitBtn) submitBtn.textContent = 'Continue to message design';
+    }
+  }
+
+  updateWizardSmsOnlyPreview() {
+    const bubble = document.getElementById('newCampSmsOnlyPreviewBubble');
+    const txtEl = document.getElementById('newCampSmsOnlyTemplate');
+    const campName = document.getElementById('newCampaignNameInput')?.value.trim() || 'Appointment Reminder';
+    if (!bubble) return;
+    const tpl = txtEl?.value.trim() || 'Hello {name}, this is an important message regarding {campaign}. Please contact us if you have any questions.';
+    bubble.textContent = tpl
+      .replace(/{name}|{customer_name}/g, 'Abebe Bikila')
+      .replace(/{campaign}|{campaign_name}/g, campName)
+      .replace(/{phone}|{phone_number}/g, '+251911223344');
+  }
+
+  handleNewCampaignSmsFileSelect(input) {
+    if (!input || !input.files || input.files.length === 0) return;
+    const file = input.files[0];
+    const campInp = document.getElementById('newCampaignSmsContactsInput');
+    const notice = document.getElementById('newCampSmsFileNotice');
+    if (campInp) campInp.value = file.name;
+    this.pendingCampaignFile = file;
+    if (notice) {
+      notice.style.display = 'block';
+      notice.textContent = `Selected: ${file.name} (${Math.round(file.size / 1024)} KB). File will be uploaded automatically upon campaign creation.`;
+    }
+  }
+
   async handleNewCampaignWizardSubmit(e) {
     if (e) e.preventDefault();
     const name = document.getElementById('newCampaignNameInput')?.value.trim();
-    const type = document.getElementById('newCampaignTypeSelect')?.value || 'bill_reminder';
-    const mode = document.getElementById('newCampaignModeSelect')?.value || 'agentless';
+    const type = document.getElementById('newCampaignTypeSelect')?.value || 'appointment_reminder';
+    const mode = document.getElementById('newCampaignModeSelect')?.value || 'automated_ivr';
     const callerIdSelect = document.getElementById('newCampaignCallerIdSelect');
     const callerId = callerIdSelect?.value || '';
     const callerIdName = callerIdSelect?.selectedOptions?.[0]?.dataset?.name || 'SkyConnect';
@@ -1731,10 +1815,22 @@ class SkyKinDialerApp {
     const windowStart = document.getElementById('newCampaignWindowStart')?.value || '09:00';
     const windowEnd = document.getElementById('newCampaignWindowEnd')?.value || '17:00';
 
-    const smsEnabled = document.getElementById('newCampaignSmsEnabled')?.checked ? 1 : 0;
-    const smsTrigger = document.getElementById('newCampaignSmsTrigger')?.value || 'call_completed';
-    const smsTemplate = document.getElementById('newCampaignSmsTemplate')?.value || '';
-    const smsSenderId = document.getElementById('newCampaignSmsSenderId')?.value || 'SkyConnect';
+    let smsEnabled = 0;
+    let smsTrigger = 'call_completed';
+    let smsTemplate = '';
+    let smsSenderId = 'SkyConnect';
+
+    if (mode === 'sms_only') {
+      smsEnabled = 1;
+      smsTrigger = 'sms_blast';
+      smsTemplate = document.getElementById('newCampSmsOnlyTemplate')?.value.trim() || 'Hello {name}, this is an important message regarding {campaign}.';
+      smsSenderId = document.getElementById('newCampSmsOnlySenderId')?.value.trim() || 'SkyConnect';
+    } else {
+      smsEnabled = document.getElementById('newCampaignSmsEnabled')?.checked ? 1 : 0;
+      smsTrigger = document.getElementById('newCampaignSmsTrigger')?.value || 'call_completed';
+      smsTemplate = document.getElementById('newCampaignSmsTemplate')?.value || '';
+      smsSenderId = document.getElementById('newCampaignSmsSenderId')?.value || 'SkyConnect';
+    }
 
     if (!name) {
       this.showToast('Please enter a campaign name', 'warning');
@@ -2088,11 +2184,17 @@ class SkyKinDialerApp {
 
   updateDesignerUI() {
     if (!this.campaign) return;
+    const isSms = (this.campaign.type === 'sms_only');
+
     const nameEl = document.getElementById('designerCampaignNameText');
     if (nameEl) nameEl.textContent = this.campaign.name || 'Outbound Campaign';
 
     const tabNameEl = document.getElementById('designerTabCampaignName');
-    if (tabNameEl) tabNameEl.textContent = this.campaign.name || 'Campaign';
+    if (tabNameEl) {
+      tabNameEl.textContent = isSms
+        ? `${this.campaign.name || 'Campaign'} (SMS Designer)`
+        : `${this.campaign.name || 'Campaign'} · Designer`;
+    }
 
     const subPill = document.getElementById('subBtnCampaignsDesigner');
     if (subPill) subPill.textContent = `${this.campaign.name || 'Campaign'} Designer`;
@@ -2102,120 +2204,184 @@ class SkyKinDialerApp {
       typeBadge.textContent = (this.campaign.type || 'preview').toUpperCase();
     }
 
-    const txtArea = document.getElementById('campaignMessageText');
-    if (txtArea && this.campaign.ivr_message_text) {
-      txtArea.value = this.campaign.ivr_message_text;
-    }
+    // Toggle Workspace views and Actions
+    const voiceWork = document.getElementById('designerVoiceWorkspace');
+    const smsWork = document.getElementById('designerSmsWorkspace');
+    const voiceTopActs = document.getElementById('designerVoiceTopActions');
+    const smsTopActs = document.getElementById('designerSmsTopActions');
+    const btnContactDispatch = document.getElementById('btnContactsDispatchSms');
+    const schedFilter = document.getElementById('designerContactScheduleFilter');
+    const contactsTitle = document.getElementById('designerContactsTitle');
 
-    const lang = (this.campaign.ivr_language || 'amharic').toLowerCase();
-    document.querySelectorAll('#langBtnAmharic, #langBtnOromifa, #langBtnEnglish').forEach(b => {
-      b.className = 'des-lang-btn';
-    });
-    if (lang === 'amharic') document.getElementById('langBtnAmharic')?.classList.add('active');
-    else if (lang === 'oromifa') document.getElementById('langBtnOromifa')?.classList.add('active');
-    else document.getElementById('langBtnEnglish')?.classList.add('active');
+    if (isSms) {
+      if (voiceWork) voiceWork.style.display = 'none';
+      if (smsWork) smsWork.style.display = 'block';
+      if (voiceTopActs) voiceTopActs.style.display = 'none';
+      if (smsTopActs) smsTopActs.style.display = 'flex';
+      if (btnContactDispatch) btnContactDispatch.style.display = 'inline-block';
+      if (schedFilter) schedFilter.style.display = 'none';
+      if (contactsTitle) contactsTitle.textContent = 'SMS Campaign Contacts';
 
-    // Audio prompt dropdown
-    this.populateDesignerAudioDropdown();
+      // Populate SMS Designer fields
+      const smsSender = document.getElementById('smsDesignerSenderId');
+      const smsTpl = document.getElementById('smsDesignerTemplate');
+      if (smsSender) smsSender.value = this.campaign.sms_sender_id || 'SkyConnect';
+      if (smsTpl) {
+        smsTpl.value = this.campaign.sms_template || 'Hello {name}, this is an important message regarding {campaign}. Please reply or call us if you have any questions.';
+        this.updateSmsCharCount(smsTpl, 'smsDesignerCharCount');
+      }
+      this.updateSmsDesignerLivePreview();
 
-    // Calling & Scheduling fields
-    const callingMethodSel = document.getElementById('designerCallingMethodSelect');
-    if (callingMethodSel && this.campaign.calling_method) {
-      callingMethodSel.value = this.campaign.calling_method;
-      this.handleDesignerCallingMethodChange(this.campaign.calling_method);
-    }
-    const stratSel = document.getElementById('designerScheduleStrategy');
-    if (stratSel && this.campaign.schedule_strategy) {
-      stratSel.value = this.campaign.schedule_strategy;
-      this.handleDesignerScheduleStrategyChange(this.campaign.schedule_strategy);
-    }
-    const intvSel = document.getElementById('designerScheduleInterval');
-    if (intvSel && this.campaign.schedule_interval_mins) {
-      intvSel.value = String(this.campaign.schedule_interval_mins);
-    }
-    const winStartInp = document.getElementById('designerWindowStart');
-    if (winStartInp && this.campaign.schedule_window_start) {
-      winStartInp.value = this.campaign.schedule_window_start;
-    }
-    const winEndInp = document.getElementById('designerWindowEnd');
-    if (winEndInp && this.campaign.schedule_window_end) {
-      winEndInp.value = this.campaign.schedule_window_end;
-    }
-    const batchSel = document.getElementById('designerBatchSize');
-    if (batchSel && this.campaign.schedule_batch_size) {
-      batchSel.value = String(this.campaign.schedule_batch_size);
-    }
+      // SMS Stats calculation
+      const campLeads = (this.leads || []).filter(l => Number(l.campaign_id) === Number(this.campaign.id));
+      const total = (this.campaign.total_leads > 0) ? Number(this.campaign.total_leads) : campLeads.length;
+      let sent = 0, pending = 0, failed = 0;
+      campLeads.forEach(l => {
+        const s = (l.status || 'pending').toLowerCase();
+        if (['completed', 'answered'].includes(s)) sent++;
+        else if (['failed', 'no_answer'].includes(s)) failed++;
+        else pending++;
+      });
+      const pct = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : 0;
 
-    // Populate SMS Follow-up settings in Designer
-    const chkSms = document.getElementById('designerSmsEnabled');
-    const selSmsTrigger = document.getElementById('designerSmsTrigger');
-    const txtSmsTemplate = document.getElementById('designerSmsTemplate');
-    const inpSmsSender = document.getElementById('designerSmsSenderId');
-    const isSmsOn = (Number(this.campaign.sms_enabled) === 1);
-    if (chkSms) {
-      chkSms.checked = isSmsOn;
-      this.toggleDesignerSmsOptions(isSmsOn);
-    }
-    if (selSmsTrigger && this.campaign.sms_trigger) {
-      selSmsTrigger.value = this.campaign.sms_trigger;
-    }
-    if (txtSmsTemplate) {
-      txtSmsTemplate.value = this.campaign.sms_template || 'Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.';
-    }
-    if (inpSmsSender && this.campaign.sms_sender_id) {
-      inpSmsSender.value = this.campaign.sms_sender_id;
-    }
-    this.updateDesignerSmsPreview();
+      const elTot = document.getElementById('smsChipTotal');
+      const elSent = document.getElementById('smsChipSent');
+      const elPend = document.getElementById('smsChipPending');
+      const elFail = document.getElementById('smsChipFailed');
+      const elBar = document.getElementById('smsProgressBarFill');
+      const elBadge = document.getElementById('smsProgressPercentBadge');
 
-    // Live Results calculation
-    const total = (this.campaign.total_leads > 0) ? this.campaign.total_leads : this.leads.length;
-    let pending = 0, answered = 0, busy = 0, noAnswer = 0;
-    this.leads.forEach(l => {
-      const s = l.status;
-      if (s === 'pending') pending++;
-      else if (['answered', 'completed', 'ivr_completed', 'ivr_playing'].includes(s)) answered++;
-      else if (s === 'busy') busy++;
-      else if (s === 'no_answer') noAnswer++;
-    });
+      if (elTot) elTot.textContent = total;
+      if (elSent) elSent.textContent = sent;
+      if (elPend) elPend.textContent = pending;
+      if (elFail) elFail.textContent = failed;
+      if (elBar) elBar.style.width = `${pct}%`;
+      if (elBadge) elBadge.textContent = `${pct}% Sent`;
 
-    const dialed = total > 0 ? (total - pending) : 0;
-    const pct = total > 0 ? Math.min(100, Math.round((dialed / total) * 100)) : 0;
+    } else {
+      if (voiceWork) voiceWork.style.display = 'block';
+      if (smsWork) smsWork.style.display = 'none';
+      if (voiceTopActs) voiceTopActs.style.display = 'flex';
+      if (smsTopActs) smsTopActs.style.display = 'none';
+      if (btnContactDispatch) btnContactDispatch.style.display = 'none';
+      if (schedFilter) schedFilter.style.display = 'inline-block';
+      if (contactsTitle) contactsTitle.textContent = 'Contacts';
 
-    const elSched = document.getElementById('chipScheduled');
-    const elDialed = document.getElementById('chipDialed');
-    const elAns = document.getElementById('chipAnswered');
-    const elBusy = document.getElementById('chipBusy');
-    const elNoAns = document.getElementById('chipNoAnswer');
+      const txtArea = document.getElementById('campaignMessageText');
+      if (txtArea && this.campaign.ivr_message_text) {
+        txtArea.value = this.campaign.ivr_message_text;
+      }
 
-    const displayTotal = total > 0 ? total : 0;
-    this.updateDesignerPreview();
-    this.renderIvrResponsesSummary();
-    this.updateDesignerChecklist();
-    if (elSched) elSched.textContent = displayTotal;
-    if (elDialed) elDialed.textContent = dialed;
-    if (elAns) elAns.textContent = answered;
-    if (elBusy) elBusy.textContent = busy;
-    if (elNoAns) elNoAns.textContent = noAnswer;
+      const lang = (this.campaign.ivr_language || 'amharic').toLowerCase();
+      document.querySelectorAll('#langBtnAmharic, #langBtnOromifa, #langBtnEnglish').forEach(b => {
+        b.className = 'des-lang-btn';
+      });
+      if (lang === 'amharic') document.getElementById('langBtnAmharic')?.classList.add('active');
+      else if (lang === 'oromifa') document.getElementById('langBtnOromifa')?.classList.add('active');
+      else document.getElementById('langBtnEnglish')?.classList.add('active');
 
-    const pctEl = document.getElementById('designerProgressPercent');
-    const ratioEl = document.getElementById('designerProgressRatio');
-    const barEl = document.getElementById('designerProgressBarFill');
+      // Audio prompt dropdown
+      this.populateDesignerAudioDropdown();
 
-    if (pctEl) pctEl.textContent = `Progress ${pct}%`;
-    if (ratioEl) ratioEl.textContent = `${dialed} of ${displayTotal} dialed`;
-    if (barEl) barEl.style.width = `${pct}%`;
+      // Calling & Scheduling fields
+      const callingMethodSel = document.getElementById('designerCallingMethodSelect');
+      if (callingMethodSel && this.campaign.calling_method) {
+        callingMethodSel.value = this.campaign.calling_method;
+        this.handleDesignerCallingMethodChange(this.campaign.calling_method);
+      }
+      const stratSel = document.getElementById('designerScheduleStrategy');
+      if (stratSel && this.campaign.schedule_strategy) {
+        stratSel.value = this.campaign.schedule_strategy;
+        this.handleDesignerScheduleStrategyChange(this.campaign.schedule_strategy);
+      }
+      const intvSel = document.getElementById('designerScheduleInterval');
+      if (intvSel && this.campaign.schedule_interval_mins) {
+        intvSel.value = String(this.campaign.schedule_interval_mins);
+      }
+      const winStartInp = document.getElementById('designerWindowStart');
+      if (winStartInp && this.campaign.schedule_window_start) {
+        winStartInp.value = this.campaign.schedule_window_start;
+      }
+      const winEndInp = document.getElementById('designerWindowEnd');
+      if (winEndInp && this.campaign.schedule_window_end) {
+        winEndInp.value = this.campaign.schedule_window_end;
+      }
+      const batchSel = document.getElementById('designerBatchSize');
+      if (batchSel && this.campaign.schedule_batch_size) {
+        batchSel.value = String(this.campaign.schedule_batch_size);
+      }
 
-    const statusBadge = document.getElementById('designerCampaignStatusBadge');
-    const btnLaunch = document.getElementById('btnLaunchDesignerCampaign');
+      // Populate SMS Follow-up settings in Designer
+      const chkSms = document.getElementById('designerSmsEnabled');
+      const selSmsTrigger = document.getElementById('designerSmsTrigger');
+      const txtSmsTemplate = document.getElementById('designerSmsTemplate');
+      const inpSmsSender = document.getElementById('designerSmsSenderId');
+      const isSmsOn = (Number(this.campaign.sms_enabled) === 1);
+      if (chkSms) {
+        chkSms.checked = isSmsOn;
+        this.toggleDesignerSmsOptions(isSmsOn);
+      }
+      if (selSmsTrigger && this.campaign.sms_trigger) {
+        selSmsTrigger.value = this.campaign.sms_trigger;
+      }
+      if (txtSmsTemplate) {
+        txtSmsTemplate.value = this.campaign.sms_template || 'Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.';
+      }
+      if (inpSmsSender && this.campaign.sms_sender_id) {
+        inpSmsSender.value = this.campaign.sms_sender_id;
+      }
+      this.updateDesignerSmsPreview();
 
-    const isRunning = (this.campaign.status === 'running');
-    if (statusBadge) {
-      statusBadge.innerHTML = `<span class="dot"></span>${isRunning ? 'Running' : (this.campaign.status === 'completed' ? 'Done' : 'Paused')}`;
-      statusBadge.className = `des-status-pill ${isRunning ? 'running' : 'idle'}`;
-    }
-    if (btnLaunch) {
-      btnLaunch.textContent = isRunning ? 'Pause campaign' : 'Launch campaign';
-      btnLaunch.className = `des-btn-launch ${isRunning ? 'running' : ''}`;
+      // Live Results calculation
+      const total = (this.campaign.total_leads > 0) ? this.campaign.total_leads : this.leads.length;
+      let pending = 0, answered = 0, busy = 0, noAnswer = 0;
+      this.leads.forEach(l => {
+        const s = l.status;
+        if (s === 'pending') pending++;
+        else if (['answered', 'completed', 'ivr_completed', 'ivr_playing'].includes(s)) answered++;
+        else if (s === 'busy') busy++;
+        else if (s === 'no_answer') noAnswer++;
+      });
+
+      const dialed = total > 0 ? (total - pending) : 0;
+      const pct = total > 0 ? Math.min(100, Math.round((dialed / total) * 100)) : 0;
+
+      const elSched = document.getElementById('chipScheduled');
+      const elDialed = document.getElementById('chipDialed');
+      const elAns = document.getElementById('chipAnswered');
+      const elBusy = document.getElementById('chipBusy');
+      const elNoAns = document.getElementById('chipNoAnswer');
+
+      const displayTotal = total > 0 ? total : 0;
+      this.updateDesignerPreview();
+      this.renderIvrResponsesSummary();
+      this.updateDesignerChecklist();
+      if (elSched) elSched.textContent = displayTotal;
+      if (elDialed) elDialed.textContent = dialed;
+      if (elAns) elAns.textContent = answered;
+      if (elBusy) elBusy.textContent = busy;
+      if (elNoAns) elNoAns.textContent = noAnswer;
+
+      const pctEl = document.getElementById('designerProgressPercent');
+      const ratioEl = document.getElementById('designerProgressRatio');
+      const barEl = document.getElementById('designerProgressBarFill');
+
+      if (pctEl) pctEl.textContent = `Progress ${pct}%`;
+      if (ratioEl) ratioEl.textContent = `${dialed} of ${displayTotal} dialed`;
+      if (barEl) barEl.style.width = `${pct}%`;
+
+      const statusBadge = document.getElementById('designerCampaignStatusBadge');
+      const btnLaunch = document.getElementById('btnLaunchDesignerCampaign');
+
+      const isRunning = (this.campaign.status === 'running');
+      if (statusBadge) {
+        statusBadge.innerHTML = `<span class="dot"></span>${isRunning ? 'Running' : (this.campaign.status === 'completed' ? 'Done' : 'Paused')}`;
+        statusBadge.className = `des-status-pill ${isRunning ? 'running' : 'idle'}`;
+      }
+      if (btnLaunch) {
+        btnLaunch.textContent = isRunning ? 'Pause campaign' : 'Launch campaign';
+        btnLaunch.className = `des-btn-launch ${isRunning ? 'running' : ''}`;
+      }
     }
 
     this.renderDesignerContactsTable();
@@ -2239,6 +2405,33 @@ class SkyKinDialerApp {
     const campLeads = (this.leads || []).filter(l => Number(l.campaign_id) === campId);
     let rawList = (campLeads && campLeads.length > 0) ? campLeads : [];
 
+    const isSms = (this.campaign?.type === 'sms_only');
+    const thead = document.getElementById('designerContactsTableHead');
+    if (thead) {
+      if (isSms) {
+        thead.innerHTML = `
+          <tr>
+            <th>CUSTOMER</th>
+            <th>PHONE</th>
+            <th>SMS STATUS</th>
+            <th>MESSAGE PREVIEW</th>
+            <th style="text-align:right;">ACTIONS</th>
+          </tr>
+        `;
+      } else {
+        thead.innerHTML = `
+          <tr>
+            <th>CUSTOMER</th>
+            <th>PHONE</th>
+            <th>SCHEDULED</th>
+            <th>STATUS</th>
+            <th>DURATION</th>
+            <th style="text-align:right;"></th>
+          </tr>
+        `;
+      }
+    }
+
     const searchVal = document.getElementById('designerLeadSearch')?.value.toLowerCase().trim() || '';
     const statusVal = document.getElementById('designerContactStatusFilter')?.value.toLowerCase().trim() || '';
     const schedVal = document.getElementById('designerContactScheduleFilter')?.value.toLowerCase().trim() || '';
@@ -2255,13 +2448,13 @@ class SkyKinDialerApp {
       if (statusVal) {
         const s = (l.status || 'pending').toLowerCase();
         if (statusVal === 'pending' && s !== 'pending') return false;
-        if (statusVal === 'answered' && !['answered', 'completed', 'ivr_completed', 'ivr_playing'].includes(s)) return false;
+        if ((statusVal === 'answered' || statusVal === 'completed') && !['answered', 'completed', 'ivr_completed', 'ivr_playing'].includes(s)) return false;
         if (statusVal === 'busy' && s !== 'busy') return false;
-        if (statusVal === 'no_answer' && !['no_answer', 'failed'].includes(s)) return false;
+        if ((statusVal === 'no_answer' || statusVal === 'failed') && !['no_answer', 'failed'].includes(s)) return false;
       }
 
-      // 3. Schedule Filter
-      if (schedVal) {
+      // 3. Schedule Filter (for voice only)
+      if (!isSms && schedVal) {
         const sched = this.getLeadScheduleInfo(l);
         if (schedVal === 'upcoming' && sched.type !== 'upcoming') return false;
         if (schedVal === 'today' && sched.type !== 'today') return false;
@@ -2274,21 +2467,27 @@ class SkyKinDialerApp {
 
     const subTitle = document.getElementById('designerContactsSubtitle');
     if (subTitle) {
-      if (rawList.length === 0) {
-        subTitle.textContent = '0 scheduled calls';
-      } else if (filtered.length !== rawList.length) {
-        subTitle.textContent = `Showing ${filtered.length} of ${rawList.length} scheduled calls`;
+      if (isSms) {
+        const sentNum = rawList.filter(l => ['completed', 'answered'].includes((l.status || '').toLowerCase())).length;
+        const pendingNum = rawList.filter(l => (l.status || '').toLowerCase() === 'pending').length;
+        subTitle.textContent = `${rawList.length} contacts (${sentNum} sent, ${pendingNum} pending)`;
       } else {
-        subTitle.textContent = `${rawList.length} scheduled calls`;
+        if (rawList.length === 0) {
+          subTitle.textContent = '0 scheduled calls';
+        } else if (filtered.length !== rawList.length) {
+          subTitle.textContent = `Showing ${filtered.length} of ${rawList.length} scheduled calls`;
+        } else {
+          subTitle.textContent = `${rawList.length} scheduled calls`;
+        }
       }
     }
 
     tbody.innerHTML = '';
     if (filtered.length === 0) {
       const emptyMsg = rawList.length === 0
-        ? 'No contacts uploaded for this campaign yet. Click "Upload CSV File" above to import your contact list.'
+        ? (isSms ? 'No contacts uploaded for this SMS campaign yet. Click "Add numbers" above to import your contact list.' : 'No contacts uploaded for this campaign yet. Click "Add numbers" above to import your contact list.')
         : 'No contacts match the current filters.';
-      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#64748b;padding:36px 20px;font-size:13px;">${emptyMsg}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${isSms ? 5 : 6}" style="text-align:center;color:#64748b;padding:36px 20px;font-size:13px;">${emptyMsg}</td></tr>`;
       return;
     }
 
@@ -2298,46 +2497,82 @@ class SkyKinDialerApp {
     const visibleContacts = (filtered.length > LIMIT && !isExpanded) ? filtered.slice(0, LIMIT) : filtered;
     const hiddenCount = filtered.length - LIMIT;
 
+    const tpl = (this.campaign?.sms_template || 'Hello {name}, thank you for choosing {campaign}.');
+    const campName = this.campaign?.name || 'Campaign';
+
     let rowsHtml = '';
     visibleContacts.forEach(l => {
-      const sched = this.getLeadScheduleInfo(l);
-      const dur = (l.duration_sec && l.duration_sec > 0) ? `${l.duration_sec}s` : '-';
       const rawStatus = (l.status || 'pending').toLowerCase();
-      
-      let statusClass = 'des-badge-pending';
-      let statusLabel = 'Pending';
-      if (['answered', 'completed', 'ivr_completed', 'ivr_playing'].includes(rawStatus)) {
-        statusClass = 'des-badge-answered';
-        statusLabel = 'Answered';
-      } else if (rawStatus === 'busy') {
-        statusClass = 'des-badge-busy';
-        statusLabel = 'Busy';
-      } else if (['no_answer', 'failed'].includes(rawStatus)) {
-        statusClass = 'des-badge-noanswer';
-        statusLabel = 'No answer';
-      }
 
-      rowsHtml += `
-        <tr>
-          <td style="font-weight:600;color:#0f172a;">${this.escapeHtml(l.customer_name || 'Customer')}</td>
-          <td style="color:#334155;font-weight:500;">${this.escapeHtml(l.phone_number)}</td>
-          <td><span class="${sched.badgeClass}">${this.escapeHtml(sched.fullLabel)}</span></td>
-          <td><span class="${statusClass}">${this.escapeHtml(statusLabel)}</span></td>
-          <td style="color:#94a3b8;">${dur}</td>
-          <td style="text-align:right;white-space:nowrap;">
-            <button type="button" class="des-btn-call-pill" onclick="app.clickToDial('${this.escapeHtml(l.phone_number)}', '${this.escapeHtml(l.customer_name)}')">Call</button>
-            <button type="button" class="des-btn-delete-link" onclick="app.deleteLead(${typeof l.id === 'number' ? l.id : `'${l.id}'`})">Delete</button>
-          </td>
-        </tr>
-      `;
+      if (isSms) {
+        let statusClass = 'des-badge-pending';
+        let statusLabel = 'Pending';
+        if (['completed', 'answered'].includes(rawStatus)) {
+          statusClass = 'des-badge-answered';
+          statusLabel = 'Delivered';
+        } else if (['failed', 'no_answer'].includes(rawStatus)) {
+          statusClass = 'des-badge-noanswer';
+          statusLabel = 'Failed';
+        }
+
+        const previewMsg = tpl
+          .replace(/{name}|{customer_name}/g, l.customer_name || 'Contact')
+          .replace(/{campaign}|{campaign_name}/g, campName)
+          .replace(/{phone}|{phone_number}/g, l.phone_number || '');
+        const shortPreview = previewMsg.length > 55 ? (previewMsg.substring(0, 52) + '...') : previewMsg;
+
+        rowsHtml += `
+          <tr>
+            <td style="font-weight:600;color:#0f172a;">${this.escapeHtml(l.customer_name || 'Contact')}</td>
+            <td style="color:#334155;font-weight:500;">${this.escapeHtml(l.phone_number)}</td>
+            <td><span class="${statusClass}">${this.escapeHtml(statusLabel)}</span></td>
+            <td style="color:#64748b;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${this.escapeHtml(previewMsg)}">${this.escapeHtml(shortPreview)}</td>
+            <td style="text-align:right;white-space:nowrap;">
+              <button type="button" class="des-btn-call-pill" style="background:#00A651;color:#fff;border:none;padding:4px 12px;border-radius:12px;font-size:11.5px;font-weight:700;cursor:pointer;" onclick="app.sendSingleContactSms(${typeof l.id === 'number' ? l.id : `'${l.id}'`}, '${this.escapeHtml(l.phone_number)}', '${this.escapeHtml(l.customer_name || 'Contact')}')">Send SMS</button>
+              <button type="button" class="des-btn-delete-link" onclick="app.deleteLead(${typeof l.id === 'number' ? l.id : `'${l.id}'`})">Delete</button>
+            </td>
+          </tr>
+        `;
+      } else {
+        const sched = this.getLeadScheduleInfo(l);
+        const dur = (l.duration_sec && l.duration_sec > 0) ? `${l.duration_sec}s` : '-';
+        
+        let statusClass = 'des-badge-pending';
+        let statusLabel = 'Pending';
+        if (['answered', 'completed', 'ivr_completed', 'ivr_playing'].includes(rawStatus)) {
+          statusClass = 'des-badge-answered';
+          statusLabel = 'Answered';
+        } else if (rawStatus === 'busy') {
+          statusClass = 'des-badge-busy';
+          statusLabel = 'Busy';
+        } else if (['no_answer', 'failed'].includes(rawStatus)) {
+          statusClass = 'des-badge-noanswer';
+          statusLabel = 'No answer';
+        }
+
+        rowsHtml += `
+          <tr>
+            <td style="font-weight:600;color:#0f172a;">${this.escapeHtml(l.customer_name || 'Customer')}</td>
+            <td style="color:#334155;font-weight:500;">${this.escapeHtml(l.phone_number)}</td>
+            <td><span class="${sched.badgeClass}">${this.escapeHtml(sched.fullLabel)}</span></td>
+            <td><span class="${statusClass}">${this.escapeHtml(statusLabel)}</span></td>
+            <td style="color:#94a3b8;">${dur}</td>
+            <td style="text-align:right;white-space:nowrap;">
+              <button type="button" class="des-btn-call-pill" onclick="app.clickToDial('${this.escapeHtml(l.phone_number)}', '${this.escapeHtml(l.customer_name)}')">Call</button>
+              <button type="button" class="des-btn-delete-link" onclick="app.deleteLead(${typeof l.id === 'number' ? l.id : `'${l.id}'`})">Delete</button>
+            </td>
+          </tr>
+        `;
+      }
     });
 
-    // Expand / Show More Row (NO ARROW)
+    // Expand / Show More Row
     if (filtered.length > LIMIT) {
+      const colSpan = isSms ? 5 : 6;
       if (!isExpanded) {
         rowsHtml += `
           <tr>
-            <td colspan="6" style="padding:14px;text-align:center;border-top:1px solid #f1f5f9;">
+            <td colspan="${colSpan}" style="padding:14px;text-align:center;border-top:1px solid #f1f5f9;">
               <button type="button" onclick="app.toggleDesignerContactsExpand(true)"
                 style="background:none;border:1.5px solid #e2e8f0;border-radius:8px;padding:7px 24px;font-size:12.5px;font-weight:600;color:#475569;cursor:pointer;transition:all 0.15s;"
                 onmouseover="this.style.borderColor='#00A651';this.style.color='#00A651';"
@@ -2350,7 +2585,7 @@ class SkyKinDialerApp {
       } else {
         rowsHtml += `
           <tr>
-            <td colspan="6" style="padding:14px;text-align:center;border-top:1px solid #f1f5f9;">
+            <td colspan="${colSpan}" style="padding:14px;text-align:center;border-top:1px solid #f1f5f9;">
               <button type="button" onclick="app.toggleDesignerContactsExpand(false)"
                 style="background:none;border:1.5px solid #e2e8f0;border-radius:8px;padding:7px 24px;font-size:12.5px;font-weight:600;color:#475569;cursor:pointer;transition:all 0.15s;"
                 onmouseover="this.style.borderColor='#00A651';this.style.color='#00A651';"
@@ -2364,6 +2599,264 @@ class SkyKinDialerApp {
     }
 
     tbody.innerHTML = rowsHtml;
+  }
+
+  updateSmsDesignerLivePreview() {
+    const bubble = document.getElementById('smsPhonePreviewBubble');
+    const sender = document.getElementById('smsPhonePreviewSender');
+    const txtEl = document.getElementById('smsDesignerTemplate');
+    const senderInp = document.getElementById('smsDesignerSenderId');
+
+    const sName = senderInp?.value.trim() || 'SkyConnect';
+    if (sender) sender.textContent = sName;
+
+    if (!bubble) return;
+    const tpl = txtEl?.value.trim() || 'Hello {name}, this is an important message regarding {campaign}. Please reply or call us if you have any questions.';
+    const campName = this.campaign?.name || 'Appointment Reminder';
+    bubble.textContent = tpl
+      .replace(/{name}|{customer_name}/g, 'Abebe Bikila')
+      .replace(/{campaign}|{campaign_name}/g, campName)
+      .replace(/{phone}|{phone_number}/g, '+251911223344')
+      .replace(/{date}/g, new Date().toISOString().split('T')[0]);
+  }
+
+  async saveSmsCampaignDesigner() {
+    const campId = Number(this.activeCampaignId || this.campaign?.id);
+    if (!campId) return;
+
+    const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || '';
+    const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || 'SkyConnect';
+
+    const fd = new FormData();
+    fd.append('campaign_id', campId);
+    fd.append('sms_template', tpl);
+    fd.append('sms_sender_id', sender);
+    fd.append('sms_enabled', '1');
+
+    try {
+      const res = await fetch('api.php?action=save_campaign_designer', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data && data.success) {
+        if (this.campaign) {
+          this.campaign.sms_template = tpl;
+          this.campaign.sms_sender_id = sender;
+        }
+        this.showToast('SMS campaign settings saved!', 'success');
+      } else {
+        this.showToast(data.error || 'Failed to save SMS settings', 'error');
+      }
+    } catch (e) {
+      this.showToast('Error saving SMS campaign', 'error');
+    }
+  }
+
+  async dispatchSmsCampaign(campId = null) {
+    const targetId = Number(campId || this.activeCampaignId || this.campaign?.id);
+    if (!targetId) {
+      this.showToast('Please select a campaign first', 'warning');
+      return;
+    }
+
+    const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || (this.campaign?.sms_template || '');
+    const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || (this.campaign?.sms_sender_id || 'SkyConnect');
+
+    const btn = document.getElementById('btnDispatchSmsCampaign');
+    const topBtn = document.getElementById('btnLaunchSmsCampaignTop');
+    const contactBtn = document.getElementById('btnContactsDispatchSms');
+
+    const setBusy = (busy) => {
+      [btn, topBtn, contactBtn].forEach(b => {
+        if (b) {
+          b.disabled = busy;
+          if (busy) {
+            b.dataset.origText = b.dataset.origText || b.innerHTML;
+            b.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin 0.75s linear infinite;margin-right:6px;"></span>Dispatching SMS...';
+          } else {
+            b.innerHTML = b.dataset.origText || 'Dispatch SMS Campaign';
+          }
+        }
+      });
+    };
+
+    setBusy(true);
+
+    try {
+      let totalSent = 0;
+      let totalFailed = 0;
+      let remaining = 1;
+      let iterations = 0;
+
+      while (remaining > 0 && iterations < 20) {
+        iterations++;
+        const fd = new FormData();
+        fd.append('campaign_id', targetId);
+        fd.append('template', tpl);
+        fd.append('sender_id', sender);
+        fd.append('batch_size', '50');
+
+        const res = await fetch('api.php?action=dispatch_sms_campaign', { method: 'POST', body: fd });
+        const data = await res.json();
+
+        if (!data || !data.success) {
+          this.showToast(data.error || 'SMS dispatch batch failed', 'error');
+          break;
+        }
+
+        totalSent += (data.sent_count || 0);
+        totalFailed += (data.failed_count || 0);
+        remaining = Number(data.remaining_pending || 0);
+
+        if (data.batch_processed === 0) {
+          break;
+        }
+
+        if (remaining > 0) {
+          this.showToast(`Dispatched ${totalSent} SMS (${remaining} remaining)...`, 'info');
+          await new Promise(r => setTimeout(r, 400));
+        }
+      }
+
+      await this.loadCampaignData(targetId);
+      this.updateDesignerUI();
+      this.renderDesignerContactsTable();
+
+      if (totalSent > 0) {
+        this.showToast(`Successfully dispatched ${totalSent} SMS messages!`, 'success');
+      } else if (remaining === 0) {
+        this.showToast('All contacts in this campaign have already been reached.', 'info');
+      } else {
+        this.showToast('No pending SMS messages to dispatch.', 'info');
+      }
+    } catch (e) {
+      console.warn('dispatchSmsCampaign error:', e);
+      this.showToast('Network error during SMS dispatch', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async sendSingleContactSms(leadId, phone, name) {
+    if (!phone) {
+      this.showToast('Contact has no valid phone number', 'warning');
+      return;
+    }
+    const campId = Number(this.activeCampaignId || this.campaign?.id);
+    const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || (this.campaign?.sms_template || 'Hello {name}, thank you for choosing {campaign}.');
+    const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || (this.campaign?.sms_sender_id || 'SkyConnect');
+    const campName = this.campaign?.name || 'Campaign';
+
+    const rendered = tpl
+      .replace(/{name}|{customer_name}/g, name || 'Contact')
+      .replace(/{campaign}|{campaign_name}/g, campName)
+      .replace(/{phone}|{phone_number}/g, phone)
+      .replace(/{outcome}/g, 'Delivered');
+
+    const fd = new FormData();
+    fd.append('phone_number', phone);
+    fd.append('message', rendered);
+    fd.append('lead_id', leadId);
+    fd.append('campaign_id', campId);
+    fd.append('customer_name', name || 'Contact');
+    fd.append('sender_id', sender);
+
+    try {
+      const res = await fetch('api.php?action=send_sms', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast(`SMS sent to ${phone}: ${data.note || 'Logged'}`, 'success');
+        const lead = (this.leads || []).find(l => Number(l.id) === Number(leadId));
+        if (lead) {
+          lead.status = 'completed';
+        }
+        this.updateDesignerUI();
+        this.renderDesignerContactsTable();
+      } else {
+        this.showToast(data.error || 'Failed to send SMS', 'error');
+      }
+    } catch (e) {
+      this.showToast('Network error sending SMS', 'error');
+    }
+  }
+
+  async sendTestSmsFromSmsDesigner() {
+    const phone = document.getElementById('smsDesignerTestPhone')?.value.trim();
+    if (!phone) {
+      this.showToast('Please enter a test phone number', 'warning');
+      document.getElementById('smsDesignerTestPhone')?.focus();
+      return;
+    }
+    const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || 'Hello {name}, this is a test SMS from SkyConnect.';
+    const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || 'SkyConnect';
+    const campName = this.campaign?.name || 'Test Campaign';
+
+    const rendered = tpl
+      .replace(/{name}|{customer_name}/g, 'Test Recipient')
+      .replace(/{campaign}|{campaign_name}/g, campName)
+      .replace(/{phone}|{phone_number}/g, phone)
+      .replace(/{outcome}/g, 'Test');
+
+    const fd = new FormData();
+    fd.append('phone_number', phone);
+    fd.append('message', rendered);
+    fd.append('sender_id', sender);
+    fd.append('customer_name', 'Test Recipient');
+
+    try {
+      const res = await fetch('api.php?action=send_sms', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast(`Test SMS sent to ${phone}! (${data.mode === 'live' ? 'Live gateway' : 'Simulator recorded'})`, 'success');
+      } else {
+        this.showToast(data.error || 'Failed to send test SMS', 'error');
+      }
+    } catch (e) {
+      this.showToast('Network error sending test SMS', 'error');
+    }
+  }
+
+  async resetFailedSms() {
+    const campId = Number(this.activeCampaignId || this.campaign?.id);
+    if (!campId) return;
+
+    const fd = new FormData();
+    fd.append('campaign_id', campId);
+
+    try {
+      const res = await fetch('api.php?action=reset_sms_leads', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast(`Reset ${data.reset_count || 0} failed contacts back to pending.`, 'success');
+        await this.loadCampaignData(campId);
+        this.updateDesignerUI();
+        this.renderDesignerContactsTable();
+      } else {
+        this.showToast(data.error || 'Failed to reset leads', 'error');
+      }
+    } catch (e) {
+      this.showToast('Error resetting leads', 'error');
+    }
+  }
+
+  showSmsCampaignsView() {
+    if (typeof window.switchNav === 'function') {
+      window.switchNav('tabCampaigns', 'campaigns');
+    }
+    const smsCamp = (this.allCampaigns || []).find(c => c.type === 'sms_only');
+    if (smsCamp) {
+      this.selectCampaignForDesigner(smsCamp.id);
+      this.showToast(`Opened SMS Campaign: "${smsCamp.name}"`, 'info');
+    } else {
+      if (typeof window.switchCampaignSubView === 'function') {
+        window.switchCampaignSubView('list');
+      }
+      this.selectCampaignMode('sms_only');
+      const nameInp = document.getElementById('newCampaignNameInput');
+      if (nameInp) {
+        nameInp.focus();
+        nameInp.scrollIntoView({ behavior: 'smooth' });
+      }
+      this.showToast('Set campaign mode to SMS Only. Enter campaign name to create.', 'info');
+    }
   }
 
   populateDesignerAudioDropdown() {

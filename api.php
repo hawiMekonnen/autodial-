@@ -450,7 +450,10 @@ if ($action === 'agent_heartbeat' || $action === 'telephony_heartbeat') {
 // Create New Campaign
 if ($action === 'create_campaign') {
     $name = trim($_POST['name'] ?? 'New Campaign');
-    $type = 'automated_ivr';
+    $type = trim($_POST['type'] ?? 'automated_ivr');
+    if (!in_array($type, ['automated_ivr', 'broadcast', 'sms_only', 'agentless', 'preview'])) {
+        $type = 'automated_ivr';
+    }
     $callerIdName = trim($_POST['caller_id_name'] ?? '');
     $callerIdNumber = trim($_POST['caller_id_number'] ?? '');
     $language = trim($_POST['language'] ?? 'en');
@@ -492,6 +495,13 @@ if ($action === 'create_campaign') {
     $smsTrigger = trim($_POST['sms_trigger'] ?? 'call_completed');
     $smsTemplate = trim($_POST['sms_template'] ?? '');
     $smsSenderId = trim($_POST['sms_sender_id'] ?? 'SkyConnect');
+
+    if ($type === 'sms_only') {
+        $smsEnabled = 1;
+        if (empty($smsTemplate)) {
+            $smsTemplate = "Hello {name}, thank you for choosing {campaign}.";
+        }
+    }
 
     $stmt = $db->prepare("INSERT INTO campaigns (name, type, status, caller_id_name, caller_id_number, ivr_language, ivr_message_text, ivr_audio_file, ivr_audio_name, ivr_responses, created_by, calling_method, schedule_strategy, schedule_interval_mins, schedule_window_start, schedule_window_end, schedule_batch_size, schedule_start_time, sms_enabled, sms_trigger, sms_template, sms_sender_id) VALUES (?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     $stmt->execute([
@@ -3563,7 +3573,102 @@ if ($action === 'send_sms') {
         'sent_by' => $_SESSION['username'] ?? 'agent'
     ]);
 
+    if ($res['success'] && $leadId > 0) {
+        $db->prepare("UPDATE leads SET status = 'completed', last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?")->execute([$leadId]);
+        if ($campId > 0) {
+            $db->prepare("UPDATE campaigns SET completed_leads = (SELECT COUNT(*) FROM leads WHERE campaign_id = ? AND status = 'completed') WHERE id = ?")->execute([$campId, $campId]);
+        }
+    }
+
     jsonOut($res, $res['success'] ? 200 : 400);
+}
+
+// Dispatch Pending SMS for an SMS Campaign Batch
+if ($action === 'dispatch_sms_campaign') {
+    $campaignId = (int)($_POST['campaign_id'] ?? 0);
+    if ($campaignId <= 0) {
+        jsonOut(['success' => false, 'error' => 'Campaign ID is required.'], 400);
+    }
+
+    $camp = $db->query("SELECT * FROM campaigns WHERE id = {$campaignId}")->fetch(PDO::FETCH_ASSOC);
+    if (!$camp) {
+        jsonOut(['success' => false, 'error' => 'Campaign not found.'], 404);
+    }
+
+    $template = trim($_POST['template'] ?? ($camp['sms_template'] ?? ''));
+    if (empty($template)) {
+        $template = "Hello {name}, thank you for choosing {campaign}.";
+    }
+    $senderId = trim($_POST['sender_id'] ?? ($camp['sms_sender_id'] ?: 'SkyConnect'));
+    if (empty($senderId)) {
+        $senderId = 'SkyConnect';
+    }
+
+    // Persist template and sender updates if passed
+    if (!empty($_POST['template']) || !empty($_POST['sender_id'])) {
+        $db->prepare("UPDATE campaigns SET sms_template = ?, sms_sender_id = ? WHERE id = ?")->execute([$template, $senderId, $campaignId]);
+    }
+
+    $batchLimit = min(200, max(1, (int)($_POST['batch_size'] ?? 50)));
+
+    $stmt = $db->prepare("SELECT * FROM leads WHERE campaign_id = ? AND status = 'pending' ORDER BY id ASC LIMIT ?");
+    $stmt->execute([$campaignId, $batchLimit]);
+    $pendingLeads = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $sentCount = 0;
+    $failedCount = 0;
+    $smsSvc = SmsService::getInstance();
+
+    foreach ($pendingLeads as $l) {
+        $msg = $smsSvc->renderTemplate($template, [
+            'name' => $l['customer_name'] ?? 'Contact',
+            'phone' => $l['phone_number'],
+            'campaign' => $camp['name'],
+            'outcome' => 'Delivered'
+        ]);
+
+        $res = $smsSvc->send($l['phone_number'], $msg, [
+            'campaign_id' => $campaignId,
+            'lead_id' => $l['id'],
+            'customer_name' => $l['customer_name'] ?? 'Contact',
+            'sender_id' => $senderId,
+            'trigger_event' => 'sms_blast',
+            'sent_by' => $_SESSION['username'] ?? 'admin'
+        ]);
+
+        if ($res['success']) {
+            $db->prepare("UPDATE leads SET status = 'completed', last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?")->execute([$l['id']]);
+            $sentCount++;
+        } else {
+            $db->prepare("UPDATE leads SET status = 'failed', error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?")->execute([$res['error'] ?? 'SMS dispatch failed', $l['id']]);
+            $failedCount++;
+        }
+    }
+
+    $db->prepare("UPDATE campaigns SET completed_leads = (SELECT COUNT(*) FROM leads WHERE campaign_id = ? AND status = 'completed'), total_leads = (SELECT COUNT(*) FROM leads WHERE campaign_id = ?) WHERE id = ?")->execute([$campaignId, $campaignId, $campaignId]);
+
+    $remaining = (int)$db->query("SELECT COUNT(*) FROM leads WHERE campaign_id = {$campaignId} AND status = 'pending'")->fetchColumn();
+
+    jsonOut([
+        'success' => true,
+        'batch_processed' => count($pendingLeads),
+        'sent_count' => $sentCount,
+        'failed_count' => $failedCount,
+        'remaining_pending' => $remaining,
+        'mode' => $smsSvc->getConfig()['mock_mode'] ? 'simulated' : 'live'
+    ]);
+}
+
+// Reset Failed SMS Leads to Pending for Retry
+if ($action === 'reset_sms_leads') {
+    $campaignId = (int)($_POST['campaign_id'] ?? 0);
+    if ($campaignId <= 0) {
+        jsonOut(['success' => false, 'error' => 'Campaign ID is required.'], 400);
+    }
+    $stmt = $db->prepare("UPDATE leads SET status = 'pending', error_message = NULL WHERE campaign_id = ? AND status = 'failed'");
+    $stmt->execute([$campaignId]);
+    $resetCount = $stmt->rowCount();
+    jsonOut(['success' => true, 'reset_count' => $resetCount]);
 }
 
 // Get SMS Logs
