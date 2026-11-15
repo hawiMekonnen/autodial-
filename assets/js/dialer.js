@@ -1534,7 +1534,10 @@ class SkyKinDialerApp {
             <div style="font-size:11.5px;color:#64748b;margin-top:2px;">Caller ID ${this.escapeHtml(callerId)}</div>
           </td>
           <td style="padding:14px 12px;vertical-align:middle;color:#334155;font-size:13px;font-weight:500;">
-            <div>${typeDisplay}</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span>${typeDisplay}</span>
+              ${Number(c.sms_enabled) === 1 ? '<span style="background:#e0f2fe;color:#0284c7;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #bae6fd;" title="SMS Follow-up Active">SMS</span>' : ''}
+            </div>
             <div style="font-size:11px;color:${c.calling_method === 'auto_schedule' ? '#15803d' : '#64748b'};font-weight:600;margin-top:2px;">
               ${c.calling_method === 'auto_schedule' ? `Auto (${c.schedule_interval_mins || 5}m)` : 'Manual'}
             </div>
@@ -1728,6 +1731,11 @@ class SkyKinDialerApp {
     const windowStart = document.getElementById('newCampaignWindowStart')?.value || '09:00';
     const windowEnd = document.getElementById('newCampaignWindowEnd')?.value || '17:00';
 
+    const smsEnabled = document.getElementById('newCampaignSmsEnabled')?.checked ? 1 : 0;
+    const smsTrigger = document.getElementById('newCampaignSmsTrigger')?.value || 'call_completed';
+    const smsTemplate = document.getElementById('newCampaignSmsTemplate')?.value || '';
+    const smsSenderId = document.getElementById('newCampaignSmsSenderId')?.value || 'SkyConnect';
+
     if (!name) {
       this.showToast('Please enter a campaign name', 'warning');
       return;
@@ -1745,6 +1753,11 @@ class SkyKinDialerApp {
     formData.append('schedule_interval_mins', scheduleInterval);
     formData.append('schedule_window_start', windowStart);
     formData.append('schedule_window_end', windowEnd);
+
+    formData.append('sms_enabled', smsEnabled);
+    formData.append('sms_trigger', smsTrigger);
+    formData.append('sms_template', smsTemplate);
+    formData.append('sms_sender_id', smsSenderId);
 
     try {
       const res = await fetch('api.php?action=create_campaign', { method: 'POST', body: formData });
@@ -2133,6 +2146,27 @@ class SkyKinDialerApp {
       batchSel.value = String(this.campaign.schedule_batch_size);
     }
 
+    // Populate SMS Follow-up settings in Designer
+    const chkSms = document.getElementById('designerSmsEnabled');
+    const selSmsTrigger = document.getElementById('designerSmsTrigger');
+    const txtSmsTemplate = document.getElementById('designerSmsTemplate');
+    const inpSmsSender = document.getElementById('designerSmsSenderId');
+    const isSmsOn = (Number(this.campaign.sms_enabled) === 1);
+    if (chkSms) {
+      chkSms.checked = isSmsOn;
+      this.toggleDesignerSmsOptions(isSmsOn);
+    }
+    if (selSmsTrigger && this.campaign.sms_trigger) {
+      selSmsTrigger.value = this.campaign.sms_trigger;
+    }
+    if (txtSmsTemplate) {
+      txtSmsTemplate.value = this.campaign.sms_template || 'Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.';
+    }
+    if (inpSmsSender && this.campaign.sms_sender_id) {
+      inpSmsSender.value = this.campaign.sms_sender_id;
+    }
+    this.updateDesignerSmsPreview();
+
     // Live Results calculation
     const total = (this.campaign.total_leads > 0) ? this.campaign.total_leads : this.leads.length;
     let pending = 0, answered = 0, busy = 0, noAnswer = 0;
@@ -2411,6 +2445,23 @@ class SkyKinDialerApp {
     if (winEnd) formData.append('schedule_window_end', winEnd);
     const batchSize = document.getElementById('designerBatchSize')?.value;
     if (batchSize) formData.append('schedule_batch_size', batchSize);
+
+    // Save SMS Follow-up settings
+    const smsEnabled = document.getElementById('designerSmsEnabled')?.checked ? 1 : 0;
+    const smsTrigger = document.getElementById('designerSmsTrigger')?.value || 'call_completed';
+    const smsTemplate = document.getElementById('designerSmsTemplate')?.value || '';
+    const smsSenderId = document.getElementById('designerSmsSenderId')?.value || 'SkyConnect';
+    formData.append('sms_enabled', smsEnabled);
+    formData.append('sms_trigger', smsTrigger);
+    formData.append('sms_template', smsTemplate);
+    formData.append('sms_sender_id', smsSenderId);
+
+    if (this.campaign) {
+      this.campaign.sms_enabled = smsEnabled;
+      this.campaign.sms_trigger = smsTrigger;
+      this.campaign.sms_template = smsTemplate;
+      this.campaign.sms_sender_id = smsSenderId;
+    }
 
     try {
       const res = await fetch('api.php?action=save_campaign_designer', {
@@ -2905,6 +2956,8 @@ class SkyKinDialerApp {
     const formData = new FormData();
     formData.append('lead_id', this.activeLead.id);
     formData.append('campaign_id', this.campaign?.id || 1);
+    const sendSms = document.getElementById('agentSendSmsOnSave')?.checked ? '1' : '0';
+    formData.append('send_sms', sendSms);
     formData.append('disposition', dispo);
     formData.append('promise_date', promiseDate);
     formData.append('notes', notes);
@@ -8298,6 +8351,288 @@ class SkyKinDialerApp {
     this.selectedUnansweredIds.clear();
     this.unansCurrentPage = 1;
     this.renderUnansweredTable();
+  }
+
+  // -------------------------------------------------------------------------
+  // SMS Notification & Follow-Up Methods
+  // -------------------------------------------------------------------------
+
+  toggleWizardSmsOptions(checked) {
+    const details = document.getElementById('newCampaignSmsDetails');
+    if (details) details.style.display = checked ? 'block' : 'none';
+    if (checked) {
+      const txt = document.getElementById('newCampaignSmsTemplate');
+      if (txt) this.updateSmsCharCount(txt, 'newCampSmsCharCount');
+    }
+  }
+
+  toggleDesignerSmsOptions(checked) {
+    const panel = document.getElementById('designerSmsConfigPanel');
+    const badge = document.getElementById('designerSmsStatusBadge');
+    const slider = document.getElementById('designerSmsSlider');
+    if (panel) panel.style.display = checked ? 'block' : 'none';
+    if (badge) {
+      badge.textContent = checked ? 'Enabled (Simulator)' : 'Disabled';
+      badge.style.background = checked ? '#dcfce7' : '#f1f5f9';
+      badge.style.color = checked ? '#166534' : '#475569';
+    }
+    if (slider) {
+      slider.style.backgroundColor = checked ? '#00A651' : '#cbd5e1';
+    }
+    if (checked) {
+      this.updateDesignerSmsPreview();
+    }
+  }
+
+  updateSmsCharCount(input, countId) {
+    const el = document.getElementById(countId);
+    if (!el || !input) return;
+    const len = input.value.length;
+    const segments = Math.max(1, Math.ceil(len / 160));
+    el.textContent = `${len} / 160 chars (${segments} SMS)`;
+  }
+
+  insertSmsTag(textareaId, tag) {
+    const ta = document.getElementById(textareaId);
+    if (!ta) return;
+    const start = ta.selectionStart || ta.value.length;
+    const end = ta.selectionEnd || ta.value.length;
+    const text = ta.value;
+    ta.value = text.substring(0, start) + tag + text.substring(end);
+    ta.selectionStart = ta.selectionEnd = start + tag.length;
+    ta.focus();
+    if (textareaId === 'designerSmsTemplate') {
+      this.updateSmsCharCount(ta, 'designerSmsCharCount');
+      this.updateDesignerSmsPreview();
+    } else if (textareaId === 'newCampaignSmsTemplate') {
+      this.updateSmsCharCount(ta, 'newCampSmsCharCount');
+    }
+  }
+
+  updateDesignerSmsPreview() {
+    const bubble = document.getElementById('designerSmsLivePreviewBubble');
+    const txtEl = document.getElementById('designerSmsTemplate');
+    const senderEl = document.getElementById('designerSmsSenderId');
+    const previewSender = document.getElementById('previewSenderIdText');
+    if (previewSender && senderEl) {
+      previewSender.textContent = senderEl.value.trim() || 'SkyConnect';
+    }
+    if (!bubble) return;
+    let template = (txtEl && txtEl.value.trim()) ? txtEl.value.trim() : 'Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.';
+    const sampleCamp = this.campaign?.name || 'Appointment Reminder';
+    const rendered = template
+      .replace(/{name}|{customer_name}/g, 'Abebe Bikila')
+      .replace(/{campaign}|{campaign_name}/g, sampleCamp)
+      .replace(/{phone}|{phone_number}/g, '+251911223344')
+      .replace(/{outcome}/g, 'Confirmed')
+      .replace(/{key}|{key_pressed}/g, '1')
+      .replace(/{date}/g, new Date().toISOString().split('T')[0])
+      .replace(/{time}/g, '10:30 AM');
+    bubble.textContent = rendered;
+  }
+
+  openAgentSmsModal() {
+    const lead = this.activeLead;
+    const custNameInp = document.getElementById('quickSmsCustomerName');
+    const phoneInp = document.getElementById('quickSmsPhoneNumber');
+    const msgInp = document.getElementById('quickSmsMessageText');
+    const leadIdInp = document.getElementById('quickSmsLeadId');
+    const campIdInp = document.getElementById('quickSmsCampaignId');
+    const senderInp = document.getElementById('quickSmsSenderId');
+
+    const name = lead?.customer_name || 'Contact';
+    const phone = lead?.phone_number || '';
+    const campName = this.campaign?.name || 'SkyConnect';
+
+    if (custNameInp) custNameInp.value = name;
+    if (phoneInp) phoneInp.value = phone;
+    if (leadIdInp) leadIdInp.value = lead?.id || '';
+    if (campIdInp) campIdInp.value = this.campaign?.id || '';
+    if (senderInp && this.campaign?.sms_sender_id) senderInp.value = this.campaign.sms_sender_id;
+
+    let template = this.campaign?.sms_template || 'Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.';
+    const rendered = template
+      .replace(/{name}|{customer_name}/g, name)
+      .replace(/{campaign}|{campaign_name}/g, campName)
+      .replace(/{phone}|{phone_number}/g, phone)
+      .replace(/{outcome}/g, this.selectedDispo || 'Completed')
+      .replace(/{key}|{key_pressed}/g, lead?.dtmf_response || '1');
+
+    if (msgInp) {
+      msgInp.value = rendered;
+      this.updateSmsCharCount(msgInp, 'quickSmsCharCount');
+    }
+
+    this.openModal('modalAgentQuickSms');
+  }
+
+  async handleAgentQuickSmsSubmit(e) {
+    if (e) e.preventDefault();
+    const phone = document.getElementById('quickSmsPhoneNumber')?.value.trim();
+    const message = document.getElementById('quickSmsMessageText')?.value.trim();
+    const leadId = document.getElementById('quickSmsLeadId')?.value || 0;
+    const campId = document.getElementById('quickSmsCampaignId')?.value || 0;
+    const custName = document.getElementById('quickSmsCustomerName')?.value || '';
+    const senderId = document.getElementById('quickSmsSenderId')?.value || 'SkyConnect';
+
+    if (!phone || !message) {
+      this.showToast('Please enter both phone number and message', 'warning');
+      return;
+    }
+
+    const btn = document.getElementById('btnSubmitQuickSms');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
+
+    const fd = new FormData();
+    fd.append('phone_number', phone);
+    fd.append('message', message);
+    fd.append('lead_id', leadId);
+    fd.append('campaign_id', campId);
+    fd.append('customer_name', custName);
+    fd.append('sender_id', senderId);
+
+    try {
+      const res = await fetch('api.php?action=send_sms', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast(`SMS captured: ${data.note || 'Logged in simulator mode'}`, 'success');
+        this.closeModal('modalAgentQuickSms');
+      } else {
+        this.showToast(data.error || 'Failed to send SMS', 'error');
+      }
+    } catch(err) {
+      this.showToast('Network error sending SMS', 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Send SMS Now'; }
+    }
+  }
+
+  async sendTestSmsFromDesigner() {
+    const phone = prompt('Enter recipient phone number for Test SMS (e.g. +251911223344):', '+251911000000');
+    if (!phone) return;
+    const txt = document.getElementById('designerSmsTemplate')?.value || 'Test SMS from SkyConnect';
+    const sender = document.getElementById('designerSmsSenderId')?.value || 'SkyConnect';
+    const camp = this.campaign?.name || 'Campaign';
+    const rendered = txt
+      .replace(/{name}|{customer_name}/g, 'Test Contact')
+      .replace(/{campaign}|{campaign_name}/g, camp)
+      .replace(/{phone}|{phone_number}/g, phone)
+      .replace(/{outcome}/g, 'Confirmed')
+      .replace(/{key}|{key_pressed}/g, '1');
+
+    const fd = new FormData();
+    fd.append('phone_number', phone);
+    fd.append('message', rendered);
+    fd.append('sender_id', sender);
+    fd.append('campaign_id', this.campaign?.id || 0);
+
+    try {
+      const res = await fetch('api.php?action=send_sms', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast(`Test SMS captured (${data.mode || 'simulated'}): ${data.note}`, 'success');
+      } else {
+        this.showToast(data.error || 'Failed to dispatch test SMS', 'error');
+      }
+    } catch(e) {
+      this.showToast('Network error testing SMS', 'error');
+    }
+  }
+
+  async sendTestSmsFromSettings() {
+    const phone = prompt('Enter recipient phone number for Test SMS (e.g. +251911223344):', '+251911000000');
+    if (!phone) return;
+    const sender = document.getElementById('smsSettingSenderId')?.value || 'SkyConnect';
+    const fd = new FormData();
+    fd.append('phone_number', phone);
+    fd.append('message', 'SkyConnect SMS Gateway Test: Your SMS connection is working successfully.');
+    fd.append('sender_id', sender);
+
+    try {
+      const res = await fetch('api.php?action=send_sms', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast(`Test SMS processed (${data.mode}): ${data.note}`, 'success');
+      } else {
+        this.showToast(data.error || 'Test SMS failed', 'error');
+      }
+    } catch(e) {
+      this.showToast('Network error testing SMS', 'error');
+    }
+  }
+
+  async loadSmsSettings() {
+    try {
+      const res = await fetch('api.php?action=get_sms_settings');
+      const data = await res.json();
+      if (data && data.success && data.settings) {
+        const s = data.settings;
+        const provEl = document.getElementById('smsSettingProvider');
+        const urlEl = document.getElementById('smsSettingApiUrl');
+        const keyEl = document.getElementById('smsSettingApiKey');
+        const senderEl = document.getElementById('smsSettingSenderId');
+        const mockEl = document.getElementById('smsSettingMockMode');
+        const badge = document.getElementById('smsGatewayStatusBadge');
+
+        if (provEl && s.provider) provEl.value = s.provider;
+        if (urlEl && s.api_url) urlEl.value = s.api_url;
+        if (keyEl && s.api_key) keyEl.value = s.api_key;
+        if (senderEl && s.sender_id) senderEl.value = s.sender_id;
+        if (mockEl) mockEl.value = String(s.mock_mode !== undefined ? s.mock_mode : 1);
+
+        if (badge) {
+          if (s.has_api_key && Number(s.mock_mode) === 0) {
+            badge.textContent = 'Live Gateway Active';
+            badge.style.background = '#dcfce7';
+            badge.style.color = '#166534';
+            badge.style.borderColor = '#86efac';
+          } else {
+            badge.textContent = 'Simulator Mode (Pending API Key)';
+            badge.style.background = '#fef3c7';
+            badge.style.color = '#92400e';
+            badge.style.borderColor = '#fde68a';
+          }
+        }
+      }
+    } catch(e) {
+      console.warn('Error loading SMS settings:', e);
+    }
+  }
+
+  async handleSaveSmsSettingsSubmit(e) {
+    if (e) e.preventDefault();
+    const provider = document.getElementById('smsSettingProvider')?.value || 'generic_api';
+    const apiUrl = document.getElementById('smsSettingApiUrl')?.value.trim() || '';
+    const apiKey = document.getElementById('smsSettingApiKey')?.value.trim() || '';
+    const senderId = document.getElementById('smsSettingSenderId')?.value.trim() || 'SkyConnect';
+    const mockMode = document.getElementById('smsSettingMockMode')?.value || '1';
+
+    const fd = new FormData();
+    fd.append('sms_provider', provider);
+    fd.append('sms_api_url', apiUrl);
+    fd.append('sms_api_key', apiKey);
+    fd.append('sms_sender_id', senderId);
+    fd.append('sms_mock_mode', mockMode);
+    fd.append('sms_enabled', '1');
+
+    try {
+      const res = await fetch('api.php?action=save_sms_settings', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast('SMS Gateway settings saved successfully!', 'success');
+        this.loadSmsSettings();
+      } else {
+        this.showToast(data.error || 'Failed to save SMS settings', 'error');
+      }
+    } catch(err) {
+      this.showToast('Error saving SMS settings', 'error');
+    }
+  }
+
+  toggleApiKeyVisibility(inputId) {
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    el.type = (el.type === 'password') ? 'text' : 'password';
   }
 
 }

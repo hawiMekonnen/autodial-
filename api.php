@@ -11,6 +11,7 @@ if (session_status() === PHP_SESSION_NONE) {
 
 require_once __DIR__ . '/data/db.php';
 require_once __DIR__ . '/data/scheduler.php';
+require_once __DIR__ . '/data/sms_service.php';
 require_once __DIR__ . '/telephony/esl_client.php';
 
 $dbInstance = DialerDB::getInstance();
@@ -487,11 +488,17 @@ if ($action === 'create_campaign') {
     $scheduleBatchSize = max(1, (int)($_POST['schedule_batch_size'] ?? 5));
     $scheduleStartTime = trim($_POST['schedule_start_time'] ?? 'now');
 
-    $stmt = $db->prepare("INSERT INTO campaigns (name, type, status, caller_id_name, caller_id_number, ivr_language, ivr_message_text, ivr_audio_file, ivr_audio_name, ivr_responses, created_by, calling_method, schedule_strategy, schedule_interval_mins, schedule_window_start, schedule_window_end, schedule_batch_size, schedule_start_time) VALUES (?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    $smsEnabled = isset($_POST['sms_enabled']) ? (int)$_POST['sms_enabled'] : 0;
+    $smsTrigger = trim($_POST['sms_trigger'] ?? 'call_completed');
+    $smsTemplate = trim($_POST['sms_template'] ?? '');
+    $smsSenderId = trim($_POST['sms_sender_id'] ?? 'SkyConnect');
+
+    $stmt = $db->prepare("INSERT INTO campaigns (name, type, status, caller_id_name, caller_id_number, ivr_language, ivr_message_text, ivr_audio_file, ivr_audio_name, ivr_responses, created_by, calling_method, schedule_strategy, schedule_interval_mins, schedule_window_start, schedule_window_end, schedule_batch_size, schedule_start_time, sms_enabled, sms_trigger, sms_template, sms_sender_id) VALUES (?, ?, 'idle', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     $stmt->execute([
         $name, $type, $callerIdName, $callerIdNumber, $language, $messageText, $audioFile, $audioName, $defaultIvrResponses,
         $_SESSION['username'] ?? 'admin',
-        $callingMethod, $scheduleStrategy, $scheduleIntervalMins, $scheduleWindowStart, $scheduleWindowEnd, $scheduleBatchSize, $scheduleStartTime
+        $callingMethod, $scheduleStrategy, $scheduleIntervalMins, $scheduleWindowStart, $scheduleWindowEnd, $scheduleBatchSize, $scheduleStartTime,
+        $smsEnabled, $smsTrigger, $smsTemplate, $smsSenderId
     ]);
     $newId = (int)$db->lastInsertId();
 
@@ -705,6 +712,19 @@ if ($action === 'save_campaign_designer') {
     }
     if ($scheduleBatchSize !== null && $scheduleBatchSize > 0) {
         $updates[] = "schedule_batch_size = ?"; $params[] = $scheduleBatchSize;
+    }
+
+    if (isset($_POST['sms_enabled'])) {
+        $updates[] = "sms_enabled = ?"; $params[] = (int)$_POST['sms_enabled'];
+    }
+    if (isset($_POST['sms_trigger'])) {
+        $updates[] = "sms_trigger = ?"; $params[] = trim($_POST['sms_trigger']);
+    }
+    if (isset($_POST['sms_template'])) {
+        $updates[] = "sms_template = ?"; $params[] = trim($_POST['sms_template']);
+    }
+    if (isset($_POST['sms_sender_id'])) {
+        $updates[] = "sms_sender_id = ?"; $params[] = trim($_POST['sms_sender_id']);
     }
 
     if (!empty($updates)) {
@@ -1234,6 +1254,19 @@ if ($action === 'save_agent_outcome') {
                     $agentExt,
                     "Outcome: " . strtoupper(str_replace('_', ' ', $disposition)) . ($notes ? " - " . $notes : "")
                 ]);
+            }
+
+            // Optional or Automated SMS Dispatch on Save
+            if (isset($_POST['send_sms']) && $_POST['send_sms'] === '1') {
+                try {
+                    SmsService::getInstance()->triggerCampaignSms($leadId, $leadStatus, [
+                        'duration' => $duration,
+                        'outcome' => ucfirst($disposition),
+                        'notes' => $notes
+                    ]);
+                } catch (Exception $e) {
+                    error_log("[SkyKin Dialer] SMS error in save_agent_outcome: " . $e->getMessage());
+                }
             }
         }
     }
@@ -2666,6 +2699,17 @@ if ($action === 'update_lead_status') {
                     $insCb->execute([$leadId, $cId, $custName, $phone, $schedTime, $_SESSION['dialer_user']['sip_extension'] ?? '101', $cbNotes]);
                 }
             }
+
+            // Automated Campaign SMS Follow-Up
+            try {
+                SmsService::getInstance()->triggerCampaignSms($leadId, $status, [
+                    'duration' => $duration,
+                    'outcome' => $errMsg ?: ucfirst($status),
+                    'dtmf' => $effectiveDtmf
+                ]);
+            } catch (Exception $e) {
+                error_log("[SkyKin Dialer] SMS auto-dispatch error on update_lead_status: " . $e->getMessage());
+            }
         }
     }
 
@@ -2746,6 +2790,17 @@ if ($action === 'record_ivr_key') {
                     $insCb = $db->prepare("INSERT INTO scheduled_callbacks (lead_id, campaign_id, customer_name, phone_number, scheduled_time, assigned_agent, status, notes) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)");
                     $insCb->execute([$leadId, $cId, $custName, $phone, $schedTime, $_SESSION['dialer_user']['sip_extension'] ?? '101', $notes]);
                 }
+            }
+
+            // Automated Campaign SMS on IVR Keypress
+            try {
+                SmsService::getInstance()->triggerCampaignSms($leadId, 'ivr_choice', [
+                    'key' => $key,
+                    'outcome' => $outcome,
+                    'duration' => $duration
+                ]);
+            } catch (Exception $e) {
+                error_log("[SkyKin Dialer] SMS auto-dispatch error on record_ivr_key: " . $e->getMessage());
             }
         }
     }
@@ -3476,6 +3531,69 @@ if ($action === 'clean_invalid_leads') {
         'success' => true,
         'affected_count' => $affectedCount,
         'message' => $msg
+    ]);
+}
+
+// -------------------------------------------------------------------------
+// SMS NOTIFICATION & MESSAGING ENDPOINTS
+// -------------------------------------------------------------------------
+
+// Send Single SMS (Manual Agent Dispatch or Test Send)
+if ($action === 'send_sms') {
+    $phone = trim($_POST['phone_number'] ?? '');
+    $message = trim($_POST['message'] ?? '');
+    $leadId = (int)($_POST['lead_id'] ?? 0);
+    $campId = (int)($_POST['campaign_id'] ?? 0);
+    $custName = trim($_POST['customer_name'] ?? '');
+    $senderId = trim($_POST['sender_id'] ?? '');
+
+    if (empty($phone)) {
+        jsonOut(['success' => false, 'error' => 'Phone number is required.'], 400);
+    }
+    if (empty($message)) {
+        jsonOut(['success' => false, 'error' => 'SMS message text is required.'], 400);
+    }
+
+    $res = SmsService::getInstance()->send($phone, $message, [
+        'campaign_id' => $campId,
+        'lead_id' => $leadId,
+        'customer_name' => $custName,
+        'sender_id' => $senderId,
+        'trigger_event' => 'agent_manual',
+        'sent_by' => $_SESSION['username'] ?? 'agent'
+    ]);
+
+    jsonOut($res, $res['success'] ? 200 : 400);
+}
+
+// Get SMS Logs
+if ($action === 'get_sms_logs') {
+    $campaignId = (int)($_GET['campaign_id'] ?? 0);
+    $limit = min(200, max(1, (int)($_GET['limit'] ?? 50)));
+    $logs = SmsService::getInstance()->getLogs($campaignId, $limit);
+    jsonOut(['success' => true, 'logs' => $logs]);
+}
+
+// Get SMS Gateway Settings & Status
+if ($action === 'get_sms_settings') {
+    $cfg = SmsService::getInstance()->getConfig();
+    if (!empty($cfg['api_key'])) {
+        $keyLen = strlen($cfg['api_key']);
+        $cfg['api_key_masked'] = ($keyLen > 8)
+            ? substr($cfg['api_key'], 0, 4) . '****' . substr($cfg['api_key'], -4)
+            : '****';
+    } else {
+        $cfg['api_key_masked'] = '';
+    }
+    jsonOut(['success' => true, 'settings' => $cfg]);
+}
+
+// Save SMS Gateway Settings & API Key
+if ($action === 'save_sms_settings') {
+    $success = SmsService::getInstance()->saveSettings($_POST);
+    jsonOut([
+        'success' => $success,
+        'message' => $success ? 'SMS settings saved successfully.' : 'Failed to save SMS settings.'
     ]);
 }
 

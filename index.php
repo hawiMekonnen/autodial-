@@ -399,6 +399,51 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                 </div>
               </div>
 
+              <!-- SMS Follow-Up Option in Campaign Creation Wizard -->
+              <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:18px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;" onclick="const chk = document.getElementById('newCampaignSmsEnabled'); if (chk) { chk.checked = !chk.checked; app.toggleWizardSmsOptions(chk.checked); }">
+                  <div style="display:flex;align-items:center;gap:10px;">
+                    <div style="width:32px;height:32px;border-radius:8px;background:#e0f2fe;color:#0284c7;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                      </svg>
+                    </div>
+                    <div>
+                      <div style="font-size:12.5px;font-weight:700;color:#0f172a;">Send SMS to Contact</div>
+                      <div style="font-size:11px;color:#64748b;">Automated text follow-up after call or IVR outcome</div>
+                    </div>
+                  </div>
+                  <input type="checkbox" id="newCampaignSmsEnabled" style="accent-color:#00A651;width:18px;height:18px;cursor:pointer;" onclick="event.stopPropagation(); app.toggleWizardSmsOptions(this.checked);">
+                </div>
+
+                <div id="newCampaignSmsDetails" style="display:none;margin-top:12px;padding-top:12px;border-top:1px dashed #cbd5e1;">
+                  <div style="margin-bottom:10px;">
+                    <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">When should SMS be sent?</label>
+                    <select id="newCampaignSmsTrigger" class="camp-input-field" style="background:#fff;font-size:12px;padding:6px 10px;">
+                      <option value="call_completed" selected>When call completes / answered</option>
+                      <option value="ivr_choice">When caller chooses an IVR option</option>
+                      <option value="all_calls">Always (all dialed calls)</option>
+                      <option value="unanswered">When call is unanswered / busy (Missed call)</option>
+                      <option value="manual_only">Agent manual dispatch only</option>
+                    </select>
+                  </div>
+
+                  <div style="margin-bottom:8px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+                      <label style="font-size:11px;font-weight:600;color:#374151;margin:0;">SMS Message Template</label>
+                      <span id="newCampSmsCharCount" style="font-size:10.5px;color:#64748b;">0 / 160</span>
+                    </div>
+                    <textarea id="newCampaignSmsTemplate" class="camp-input-field" rows="2" style="background:#fff;font-size:12px;padding:8px 10px;resize:vertical;font-family:inherit;min-height:56px;" placeholder="Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your confirmation." oninput="app.updateSmsCharCount(this, 'newCampSmsCharCount')">Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.</textarea>
+                    <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;">
+                      <button type="button" class="btn btn-xs" style="font-size:10px;padding:1px 6px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#475569;cursor:pointer;" onclick="app.insertSmsTag('newCampaignSmsTemplate', '{name}')">+{name}</button>
+                      <button type="button" class="btn btn-xs" style="font-size:10px;padding:1px 6px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#475569;cursor:pointer;" onclick="app.insertSmsTag('newCampaignSmsTemplate', '{campaign}')">+{campaign}</button>
+                      <button type="button" class="btn btn-xs" style="font-size:10px;padding:1px 6px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#475569;cursor:pointer;" onclick="app.insertSmsTag('newCampaignSmsTemplate', '{phone}')">+{phone}</button>
+                      <button type="button" class="btn btn-xs" style="font-size:10px;padding:1px 6px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#475569;cursor:pointer;" onclick="app.insertSmsTag('newCampaignSmsTemplate', '{outcome}')">+{outcome}</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <button type="submit" class="camp-btn-submit">Continue to message design</button>
             </form>
           </div>
@@ -540,6 +585,78 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                 <div id="designerIvrTimeoutNotice" style="margin-top:14px;font-size:11.5px;color:#64748b;padding-top:10px;border-top:1px dashed #e2e8f0;display:flex;justify-content:space-between;align-items:center;">
                   <span>No key pressed after 15 seconds: mark no response and hang up.</span>
                   <a href="javascript:void(0)" onclick="app.openIvrResponsesModal()" style="color:#00A651;font-weight:700;text-decoration:none;font-size:12px;">Edit</a>
+                </div>
+              </div>
+            </div>
+
+            <!-- CARD 3: SMS Follow-Up & Notifications -->
+            <div class="des-panel" style="padding: 24px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+                <div>
+                  <h3 style="font-size:15px;font-weight:700;color:#0f172a;margin:0 0 4px 0;display:flex;align-items:center;gap:8px;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                    <span>SMS Follow-Up to Contact</span>
+                  </h3>
+                  <div style="font-size:12px;color:#64748b;">Send an automated text confirmation or outcome notification.</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;">
+                  <span id="designerSmsStatusBadge" style="background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px;">Disabled</span>
+                  <label class="switch" style="position:relative;display:inline-block;width:38px;height:22px;margin:0;">
+                    <input type="checkbox" id="designerSmsEnabled" style="opacity:0;width:0;height:0;" onchange="app.toggleDesignerSmsOptions(this.checked)">
+                    <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#cbd5e1;transition:.3s;border-radius:22px;" id="designerSmsSlider"></span>
+                  </label>
+                </div>
+              </div>
+
+              <div id="designerSmsConfigPanel" style="display:none;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+                  <div>
+                    <label style="display:block;font-size:11.5px;font-weight:600;color:#475569;margin-bottom:5px;">Trigger Condition</label>
+                    <select id="designerSmsTrigger" class="des-clean-field" style="width:100%;font-size:12px;padding:7px 10px;" onchange="app.updateDesignerSmsPreview()">
+                      <option value="call_completed" selected>When call completes / answered</option>
+                      <option value="ivr_choice">When caller chooses an IVR option</option>
+                      <option value="all_calls">Always (all dialed calls)</option>
+                      <option value="unanswered">When call is unanswered / busy (Missed call)</option>
+                      <option value="manual_only">Agent manual dispatch only</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style="display:block;font-size:11.5px;font-weight:600;color:#475569;margin-bottom:5px;">Sender ID / Mask</label>
+                    <input type="text" id="designerSmsSenderId" class="des-clean-field" value="SkyConnect" style="width:100%;font-size:12px;padding:7px 10px;" placeholder="SkyConnect" oninput="app.updateDesignerSmsPreview()">
+                  </div>
+                </div>
+
+                <div style="margin-bottom:14px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+                    <label style="font-size:12px;font-weight:600;color:#475569;margin:0;">SMS Message Template</label>
+                    <span id="designerSmsCharCount" style="font-size:11px;color:#64748b;">0 / 160 chars</span>
+                  </div>
+                  <textarea id="designerSmsTemplate" class="des-clean-field" style="width:100%;min-height:76px;font-size:12.5px;padding:10px 12px;line-height:1.5;resize:vertical;font-family:inherit;" placeholder="e.g. Hello {name}, thank you for your call regarding {campaign}. We have recorded your selection." oninput="app.updateSmsCharCount(this, 'designerSmsCharCount'); app.updateDesignerSmsPreview();"></textarea>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{name}')">+{name}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{campaign}')">+{campaign}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{phone}')">+{phone}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{outcome}')">+{outcome}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{key}')">+{key}</button>
+                  </div>
+                </div>
+
+                <!-- Live Customer SMS Preview -->
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:12px;">
+                  <div style="font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Live Recipient Preview</div>
+                  <div style="background:#e0f2fe;border-radius:12px 12px 12px 2px;padding:10px 14px;color:#0369a1;font-size:12px;line-height:1.5;max-width:92%;" id="designerSmsLivePreviewBubble">
+                    Hello Abebe Bikila, thank you for taking our call regarding Appointment Reminder. We have recorded your response.
+                  </div>
+                  <div style="font-size:10px;color:#94a3b8;margin-top:4px;margin-left:4px;">Delivered from <strong id="previewSenderIdText">SkyConnect</strong></div>
+                </div>
+
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <button type="button" class="btn-clean-white" style="font-size:11.5px;padding:5px 12px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;cursor:pointer;" onclick="app.sendTestSmsFromDesigner()">
+                    Send Test SMS
+                  </button>
+                  <span style="font-size:11px;color:#059669;font-weight:600;">Dual-Mode: Simulator active (Live on key entry)</span>
                 </div>
               </div>
             </div>
@@ -892,11 +1009,26 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                 <option value="Next Week">Next Week</option>
               </select>
 
-              <textarea id="agentCallNotesInput" class="dial-input-box" placeholder="Notes (optional)..." style="min-height:54px;resize:vertical;margin-bottom:16px;"></textarea>
+              <textarea id="agentCallNotesInput" class="dial-input-box" placeholder="Notes (optional)..." style="min-height:54px;resize:vertical;margin-bottom:12px;"></textarea>
+
+              <!-- Agent SMS Follow-up toggle and instant trigger -->
+              <div id="agentSmsActionRow" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding:8px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;">
+                <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;color:#166534;margin:0;cursor:pointer;">
+                  <input type="checkbox" id="agentSendSmsOnSave" checked style="accent-color:#00A651;width:15px;height:15px;cursor:pointer;">
+                  <span>Send SMS on Save</span>
+                </label>
+                <button type="button" onclick="app.openAgentSmsModal()" style="background:none;border:none;color:#0284c7;font-size:11.5px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                  Customize SMS
+                </button>
+              </div>
 
               <div style="display:flex;gap:10px;margin-bottom:10px;">
                 <button type="button" class="dial-btn-outline" onclick="app.handleAgentSkipClick()">Skip</button>
                 <button type="button" class="dial-btn-outline primary" onclick="app.handleAgentSaveNextClick()" style="flex:1;text-align:center;">Save &amp; next</button>
+                <button type="button" class="dial-btn-outline" onclick="app.openAgentSmsModal()" style="border-color:#0284c7;color:#0284c7;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;" title="Send SMS Now">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                </button>
               </div>
 
               <button type="button" class="dial-btn-dial" id="btnAgentDial" onclick="app.handleAgentDialClick()">Dial</button>
@@ -1902,6 +2034,79 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
           </div>
         </div>
 
+        <!-- SMS Gateway & API Key Configuration -->
+        <div class="sc-panel" style="grid-column: 1 / -1; padding: 22px; margin-top: 4px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+            <div style="display:flex;align-items:center;gap:12px;">
+              <div style="width:36px;height:36px;border-radius:8px;background:#e0f2fe;color:#0284c7;display:flex;align-items:center;justify-content:center;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+              </div>
+              <div>
+                <div style="font-size:16px;font-weight:700;color:#0f172a;">SMS Gateway &amp; API Key Configuration</div>
+                <div style="font-size:12px;color:#64748b;">Configure external SMS provider API credentials for live messaging dispatch</div>
+              </div>
+            </div>
+            <div id="smsGatewayStatusBadge" style="background:#fef3c7;color:#92400e;font-size:11.5px;font-weight:700;padding:4px 12px;border-radius:12px;border:1px solid #fde68a;">
+              Simulator Mode (Pending API Key)
+            </div>
+          </div>
+
+          <form id="formSmsSettings" onsubmit="app.handleSaveSmsSettingsSubmit(event);">
+            <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:14px;margin-bottom:14px;">
+              <div class="form-group">
+                <label class="form-label" style="font-size:11.5px;font-weight:600;">SMS Gateway Provider</label>
+                <select id="smsSettingProvider" class="form-control" style="font-size:12.5px;">
+                  <option value="generic_api" selected>Generic REST / HTTP API</option>
+                  <option value="twilio">Twilio Programmable SMS</option>
+                  <option value="africastalking">Africa's Talking SMS</option>
+                  <option value="infobip">Infobip</option>
+                  <option value="custom_webhook">Custom Webhook</option>
+                </select>
+              </div>
+              <div class="form-group" style="grid-column: span 2;">
+                <label class="form-label" style="font-size:11.5px;font-weight:600;">Gateway API URL / Endpoint</label>
+                <input type="url" id="smsSettingApiUrl" class="form-control" placeholder="https://api.provider.com/v1/sms/send" style="font-size:12.5px;">
+              </div>
+              <div class="form-group">
+                <label class="form-label" style="font-size:11.5px;font-weight:600;">Default Sender ID</label>
+                <input type="text" id="smsSettingSenderId" class="form-control" value="SkyConnect" placeholder="SkyConnect" style="font-size:12.5px;">
+              </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:14px;">
+              <div class="form-group">
+                <label class="form-label" style="font-size:11.5px;font-weight:600;">SMS API Key / Bearer Token</label>
+                <div style="position:relative;">
+                  <input type="password" id="smsSettingApiKey" class="form-control" placeholder="Paste your SMS provider API key here..." style="font-size:12.5px;padding-right:45px;">
+                  <button type="button" onclick="app.toggleApiKeyVisibility('smsSettingApiKey')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:#64748b;cursor:pointer;font-size:11.5px;font-weight:600;">Show</button>
+                </div>
+                <div style="font-size:11px;color:#64748b;margin-top:4px;">
+                  Enter the API key when ready. While empty, the system runs safely in simulator mode.
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" style="font-size:11.5px;font-weight:600;">Operating Mode</label>
+                <select id="smsSettingMockMode" class="form-control" style="font-size:12.5px;">
+                  <option value="1">Simulator / Mock Mode (Test &amp; Log)</option>
+                  <option value="0">Live Gateway (Dispatch real SMS)</option>
+                </select>
+              </div>
+            </div>
+
+            <div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px solid #f1f5f9;">
+              <button type="button" class="btn btn-outline-secondary btn-sm" onclick="app.sendTestSmsFromSettings()">
+                Test SMS Dispatch
+              </button>
+              <button type="submit" class="btn btn-primary btn-sm" style="font-weight:700;">
+                Save SMS Settings
+              </button>
+            </div>
+          </form>
+        </div>
+
       </div>
     </div>
 
@@ -1914,6 +2119,70 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
     <div id="tabCallHistory" style="display:none;"></div>
 
   </div> <!-- /sc-main-content -->
+
+  <!-- ========================================================
+       MODAL: QUICK SMS DISPATCH (Agent Manual or Test SMS)
+       ======================================================== -->
+  <div id="modalAgentQuickSms" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:32px;height:32px;border-radius:8px;background:#e0f2fe;color:#0284c7;display:flex;align-items:center;justify-content:center;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+          </div>
+          <div>
+            <h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">Send SMS to Contact</h3>
+            <div style="font-size:11.5px;color:#64748b;">Instant SMS text message dispatch</div>
+          </div>
+        </div>
+        <button type="button" class="btn-close" onclick="app.closeModal('modalAgentQuickSms')">&times;</button>
+      </div>
+      <form id="formAgentQuickSms" onsubmit="app.handleAgentQuickSmsSubmit(event)">
+        <div class="modal-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+            <div class="form-group">
+              <label class="form-label" style="font-size:11.5px;font-weight:600;">Recipient Name</label>
+              <input type="text" id="quickSmsCustomerName" class="form-control" readonly style="background:#f8fafc;font-size:12.5px;">
+            </div>
+            <div class="form-group">
+              <label class="form-label" style="font-size:11.5px;font-weight:600;">Recipient Phone</label>
+              <input type="tel" id="quickSmsPhoneNumber" class="form-control" placeholder="+251911..." required style="font-size:12.5px;">
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:14px;">
+            <label class="form-label" style="font-size:11.5px;font-weight:600;">Sender ID</label>
+            <input type="text" id="quickSmsSenderId" class="form-control" value="SkyConnect" style="font-size:12.5px;">
+          </div>
+
+          <div class="form-group" style="margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <label class="form-label" style="font-size:11.5px;font-weight:600;margin:0;">Message Text</label>
+              <span id="quickSmsCharCount" style="font-size:11px;color:#64748b;">0 / 160</span>
+            </div>
+            <textarea id="quickSmsMessageText" class="form-control" rows="3" required style="font-size:12.5px;line-height:1.5;resize:vertical;" oninput="app.updateSmsCharCount(this, 'quickSmsCharCount')"></textarea>
+          </div>
+
+          <!-- Gateway Mode Banner -->
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:10px;">
+            <span style="font-size:16px;">💬</span>
+            <div style="font-size:11.5px;color:#166534;line-height:1.4;">
+              <strong>Delivery Mode:</strong> <span id="quickSmsModeLabel">Simulator Active (Logged &amp; Verified)</span>
+            </div>
+          </div>
+
+          <input type="hidden" id="quickSmsLeadId" value="">
+          <input type="hidden" id="quickSmsCampaignId" value="">
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:10px;">
+          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="app.closeModal('modalAgentQuickSms')">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm" id="btnSubmitQuickSms" style="background:#0284c7;border-color:#0284c7;font-weight:700;">Send SMS Now</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <!-- ========================================================
        MODAL: SEND TEST CALL (Automated Voice Test)
@@ -2645,7 +2914,10 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
         if (tabId === 'tabIvrResponses' && app.loadIvrResponsesReport) app.loadIvrResponsesReport();
         if (tabId === 'tabCompliance' && app.loadDncList) app.loadDncList();
         if (tabId === 'tabReports' && app.loadReportsAndLogs) app.loadReportsAndLogs();
-        if (tabId === 'tabSettings' && app.loadSettingsAndData) app.loadSettingsAndData();
+        if (tabId === 'tabSettings') {
+          if (app.loadSettingsAndData) app.loadSettingsAndData();
+          if (app.loadSmsSettings) app.loadSmsSettings();
+        }
       } catch (err) {
         console.warn('Navigation hook error:', err);
       }

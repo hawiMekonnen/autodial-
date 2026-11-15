@@ -150,6 +150,47 @@ class DialerDB {
                         );
                     ");
                 }
+
+                // SMS Notification Schema Migration for Postgres
+                $checkSms = $this->pdo->query("SELECT to_regclass('public.sms_messages')")->fetchColumn();
+                if (empty($checkSms)) {
+                    $this->pdo->exec("
+                        ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sms_enabled SMALLINT DEFAULT 0;
+                        ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sms_trigger VARCHAR(50) DEFAULT 'call_completed';
+                        ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sms_template TEXT DEFAULT '';
+                        ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sms_sender_id VARCHAR(50) DEFAULT 'SkyConnect';
+
+                        CREATE TABLE IF NOT EXISTS sms_messages (
+                            id SERIAL PRIMARY KEY,
+                            campaign_id INT REFERENCES campaigns(id) ON DELETE SET NULL,
+                            lead_id INT REFERENCES leads(id) ON DELETE SET NULL,
+                            phone_number VARCHAR(50) NOT NULL,
+                            customer_name VARCHAR(150) DEFAULT '',
+                            message TEXT NOT NULL,
+                            sender_id VARCHAR(50) DEFAULT 'SkyConnect',
+                            trigger_event VARCHAR(50) DEFAULT 'call_completed',
+                            status VARCHAR(50) DEFAULT 'simulated',
+                            provider VARCHAR(50) DEFAULT 'generic_api',
+                            provider_response TEXT DEFAULT '',
+                            error_message TEXT DEFAULT '',
+                            sent_by VARCHAR(100) DEFAULT 'system',
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            sent_at TIMESTAMP WITH TIME ZONE
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_sms_campaign ON sms_messages (campaign_id);
+                        CREATE INDEX IF NOT EXISTS idx_sms_phone ON sms_messages (phone_number);
+                    ");
+                }
+
+                // Ensure SMS columns exist in campaigns
+                try {
+                    $this->pdo->exec("
+                        ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sms_enabled SMALLINT DEFAULT 0;
+                        ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sms_trigger VARCHAR(50) DEFAULT 'call_completed';
+                        ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sms_template TEXT DEFAULT '';
+                        ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS sms_sender_id VARCHAR(50) DEFAULT 'SkyConnect';
+                    ");
+                } catch (Exception $e) {}
             }
         } catch (Exception $e) {
             error_log("[SkyKin Dialer] Postgres init schema error: " . $e->getMessage());
@@ -332,6 +373,25 @@ class DialerDB {
                 reason TEXT DEFAULT 'Contact opt-out',
                 added_by TEXT DEFAULT 'admin',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+
+            // SMS Messages table
+            "CREATE TABLE IF NOT EXISTS sms_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER,
+                lead_id INTEGER,
+                phone_number TEXT NOT NULL,
+                customer_name TEXT DEFAULT '',
+                message TEXT NOT NULL,
+                sender_id TEXT DEFAULT 'SkyConnect',
+                trigger_event TEXT DEFAULT 'call_completed',
+                status TEXT DEFAULT 'simulated',
+                provider TEXT DEFAULT 'generic_api',
+                provider_response TEXT DEFAULT '',
+                error_message TEXT DEFAULT '',
+                sent_by TEXT DEFAULT 'system',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                sent_at DATETIME
             )"
         ];
 
@@ -347,6 +407,22 @@ class DialerDB {
             $this->pdo->exec("CREATE INDEX IF NOT EXISTS idx_logs_campaign ON call_logs (campaign_id)");
             $this->pdo->exec("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON call_logs (timestamp)");
             $this->pdo->exec("CREATE INDEX IF NOT EXISTS idx_api_logs_batch ON api_lead_logs (batch_id)");
+            $this->pdo->exec("CREATE INDEX IF NOT EXISTS idx_sms_campaign ON sms_messages (campaign_id)");
+            $this->pdo->exec("CREATE INDEX IF NOT EXISTS idx_sms_phone ON sms_messages (phone_number)");
+        } catch (Exception $e) {}
+
+        // Add SMS columns to campaigns if missing
+        try {
+            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN sms_enabled INTEGER DEFAULT 0");
+        } catch (Exception $e) {}
+        try {
+            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN sms_trigger TEXT DEFAULT 'call_completed'");
+        } catch (Exception $e) {}
+        try {
+            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN sms_template TEXT DEFAULT ''");
+        } catch (Exception $e) {}
+        try {
+            $this->pdo->exec("ALTER TABLE campaigns ADD COLUMN sms_sender_id TEXT DEFAULT 'SkyConnect'");
         } catch (Exception $e) {}
 
         // Add call_time column if older table exists

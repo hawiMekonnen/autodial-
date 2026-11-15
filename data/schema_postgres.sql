@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS campaigns (
     schedule_batch_size INT DEFAULT 5,
     schedule_start_time VARCHAR(50) DEFAULT 'now',
     smart_schedule_plan TEXT DEFAULT '',
+    sms_enabled SMALLINT DEFAULT 0,
+    sms_trigger VARCHAR(50) DEFAULT 'call_completed',
+    sms_template TEXT DEFAULT '',
+    sms_sender_id VARCHAR(50) DEFAULT 'SkyConnect',
     created_by VARCHAR(100) DEFAULT 'admin',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -178,6 +182,25 @@ CREATE TABLE IF NOT EXISTS dnc_numbers (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 12. SMS Notifications & Message Dispatch Logs
+CREATE TABLE IF NOT EXISTS sms_messages (
+    id SERIAL PRIMARY KEY,
+    campaign_id INT REFERENCES campaigns(id) ON DELETE SET NULL,
+    lead_id INT REFERENCES leads(id) ON DELETE SET NULL,
+    phone_number VARCHAR(50) NOT NULL,
+    customer_name VARCHAR(150) DEFAULT '',
+    message TEXT NOT NULL,
+    sender_id VARCHAR(50) DEFAULT 'SkyConnect',
+    trigger_event VARCHAR(50) DEFAULT 'call_completed',
+    status VARCHAR(50) DEFAULT 'simulated',
+    provider VARCHAR(50) DEFAULT 'generic_api',
+    provider_response TEXT DEFAULT '',
+    error_message TEXT DEFAULT '',
+    sent_by VARCHAR(100) DEFAULT 'system',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP WITH TIME ZONE
+);
+
 -- ====================================================================
 -- Performance Indexes
 -- ====================================================================
@@ -187,6 +210,8 @@ CREATE INDEX IF NOT EXISTS idx_leads_call_time ON leads (call_time);
 CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON call_logs (timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_campaign ON call_logs (campaign_id);
 CREATE INDEX IF NOT EXISTS idx_api_logs_batch ON api_lead_logs (batch_id);
+CREATE INDEX IF NOT EXISTS idx_sms_campaign ON sms_messages (campaign_id);
+CREATE INDEX IF NOT EXISTS idx_sms_phone ON sms_messages (phone_number);
 
 -- ====================================================================
 -- Initial Clean Reference Data Only
@@ -212,5 +237,11 @@ VALUES
 ('default_window_start', '09:00'),
 ('default_window_end', '17:00'),
 ('max_retries', '2'),
-('retry_delay_min', '15')
+('retry_delay_min', '15'),
+('sms_enabled', '1'),
+('sms_provider', 'generic_api'),
+('sms_api_url', ''),
+('sms_api_key', ''),
+('sms_sender_id', 'SkyConnect'),
+('sms_mock_mode', '1')
 ON CONFLICT (key) DO NOTHING;
