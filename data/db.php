@@ -110,6 +110,46 @@ class DialerDB {
                     $sql = file_get_contents($schemaFile);
                     $this->pdo->exec($sql);
                 }
+            } else {
+                $checkClients = $this->pdo->query("SELECT to_regclass('public.api_clients')")->fetchColumn();
+                if (empty($checkClients)) {
+                    $this->pdo->exec("
+                        CREATE TABLE IF NOT EXISTS api_clients (
+                            id SERIAL PRIMARY KEY,
+                            client_name VARCHAR(150) NOT NULL,
+                            api_key VARCHAR(100) UNIQUE NOT NULL,
+                            is_active SMALLINT DEFAULT 1,
+                            rate_limit_per_min INT DEFAULT 60,
+                            max_batch_size INT DEFAULT 500,
+                            allowed_campaign_id INT DEFAULT NULL,
+                            allowed_ips TEXT DEFAULT '',
+                            total_requests BIGINT DEFAULT 0,
+                            total_leads_injected BIGINT DEFAULT 0,
+                            last_used_at TIMESTAMP WITH TIME ZONE,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        );
+                        CREATE TABLE IF NOT EXISTS api_rate_limits (
+                            key_hash VARCHAR(64) NOT NULL,
+                            window_time BIGINT NOT NULL,
+                            request_count INT DEFAULT 1,
+                            PRIMARY KEY (key_hash, window_time)
+                        );
+                        CREATE TABLE IF NOT EXISTS api_lead_logs (
+                            id SERIAL PRIMARY KEY,
+                            batch_id VARCHAR(100) NOT NULL,
+                            client_id INT DEFAULT NULL,
+                            ip_address VARCHAR(50),
+                            total_received INT DEFAULT 0,
+                            imported_count INT DEFAULT 0,
+                            duplicates_count INT DEFAULT 0,
+                            dnc_count INT DEFAULT 0,
+                            invalid_count INT DEFAULT 0,
+                            status VARCHAR(50) DEFAULT 'success',
+                            payload_sample TEXT DEFAULT '',
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        );
+                    ");
+                }
             }
         } catch (Exception $e) {
             error_log("[SkyKin Dialer] Postgres init schema error: " . $e->getMessage());
@@ -234,14 +274,38 @@ class DialerDB {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
 
-            // Inbound API Lead Injection Audit Logs
+            // Inbound API Lead Injection Audit Logs & Client Authentication
+            "CREATE TABLE IF NOT EXISTS api_clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_name TEXT NOT NULL,
+                api_key TEXT UNIQUE NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                rate_limit_per_min INTEGER DEFAULT 60,
+                max_batch_size INTEGER DEFAULT 500,
+                allowed_campaign_id INTEGER DEFAULT NULL,
+                allowed_ips TEXT DEFAULT '',
+                total_requests INTEGER DEFAULT 0,
+                total_leads_injected INTEGER DEFAULT 0,
+                last_used_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+
+            "CREATE TABLE IF NOT EXISTS api_rate_limits (
+                key_hash TEXT NOT NULL,
+                window_time INTEGER NOT NULL,
+                request_count INTEGER DEFAULT 1,
+                PRIMARY KEY (key_hash, window_time)
+            )",
+
             "CREATE TABLE IF NOT EXISTS api_lead_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 batch_id TEXT,
+                client_id INTEGER,
                 ip_address TEXT,
                 total_received INTEGER DEFAULT 0,
                 imported_count INTEGER DEFAULT 0,
                 duplicates_count INTEGER DEFAULT 0,
+                dnc_count INTEGER DEFAULT 0,
                 invalid_count INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'success',
                 payload_sample TEXT,

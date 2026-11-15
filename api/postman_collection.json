@@ -1,0 +1,305 @@
+{
+	"info": {
+		"_postman_id": "skyconnect-auto-dialer-ingestion-api",
+		"name": "SkyConnect Automatic Dialer - Customer Ingestion API",
+		"description": "Production Customer API Collection for SkyConnect Automatic Outbound Voice Dialer.\n\nFeatures:\n- Multi-tenant API Key Authentication (X-API-KEY / Bearer)\n- Frequency Rate Limiting (60 requests/minute)\n- Batch Size Limits (up to 500 contacts per request)\n- DNC (Do Not Call) Compliance Scrubbing\n- Deduplication & Anti-Flooding Cooldown\n- Intelligent Auto-Scheduling",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "1. Authentication & System",
+			"item": [
+				{
+					"name": "Verify API Key & Account Limits",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-KEY",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/leads.php?action=verify",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"leads.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "verify",
+									"description": "Verifies API Key, returns tenant identity, rate limits, and batch capacity"
+								}
+							]
+						},
+						"description": "Verifies that the provided API key is valid and active. Returns client name, rate limit (req/min), max batch size, and remaining window quota."
+					},
+					"response": []
+				},
+				{
+					"name": "Check Rate Limits & Quota",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-KEY",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/leads.php?action=limits",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"leads.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "limits",
+									"description": "Returns current minute rate limit usage and countdown"
+								}
+							]
+						},
+						"description": "Checks the current 1-minute rate limit window usage, remaining allowed requests, and seconds until reset."
+					},
+					"response": []
+				},
+				{
+					"name": "Public API Specification (Health Check)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/leads.php",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"leads.php"
+							]
+						},
+						"description": "Public unauthenticated endpoint returning service status, OpenAPI-compatible documentation, and integration instructions."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "2. Send Numbers (Contact Ingestion)",
+			"item": [
+				{
+					"name": "Queue Single Contact",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"if (jsonData.batch_id) {",
+									"    pm.collectionVariables.set('batch_id', jsonData.batch_id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-API-KEY",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Helen Tesfaye\",\n    \"phone\": \"+251911223344\",\n    \"schedule_interval_mins\": 5\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/leads.php",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"leads.php"
+							]
+						},
+						"description": "Queues a single customer contact into the automatic dialer queue. The system normalizes the phone number into E.164 and auto-schedules the outbound call."
+					},
+					"response": []
+				},
+				{
+					"name": "Queue Batch Contacts (Array of Numbers)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"if (jsonData.batch_id) {",
+									"    pm.collectionVariables.set('batch_id', jsonData.batch_id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-API-KEY",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "[\n    {\n        \"name\": \"Abebe Kebede\",\n        \"phone\": \"+251911334455\"\n    },\n    {\n        \"name\": \"Almaz Tadesse\",\n        \"phone\": \"0922445566\"\n    },\n    {\n        \"name\": \"Dawit Mekonnen\",\n        \"phone\": \"+251933556677\"\n    },\n    {\n        \"name\": \"Selam Haile\",\n        \"phone\": \"0944667788\"\n    }\n]"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/leads.php",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"leads.php"
+							]
+						},
+						"description": "Submits a batch of contacts (up to 500 contacts per request). Automatically staggers call slots starting immediately and continuing across the configured pacing interval."
+					},
+					"response": []
+				},
+				{
+					"name": "Queue Batch with Custom Campaign & Interval",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"if (jsonData.batch_id) {",
+									"    pm.collectionVariables.set('batch_id', jsonData.batch_id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "X-API-KEY",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"campaign_id\": 1,\n    \"schedule_interval_mins\": 3,\n    \"contacts\": [\n        {\n            \"name\": \"Kidus Alemu\",\n            \"phone\": \"+251911778899\",\n            \"call_time\": \"Today, 02:30 PM\"\n        },\n        {\n            \"name\": \"Tigist Assefa\",\n            \"phone\": \"+251922889900\",\n            \"call_time\": \"auto\"\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/leads.php",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"leads.php"
+							]
+						},
+						"description": "Queues contacts with target campaign routing, custom call interval spacing, and optional exact scheduled call times."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "3. Query Batch Status",
+			"item": [
+				{
+					"name": "Check Ingestion Batch Status",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-KEY",
+								"value": "{{api_key}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/leads.php?action=status&batch_id={{batch_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"leads.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "status"
+								},
+								{
+									"key": "batch_id",
+									"value": "{{batch_id}}",
+									"description": "Unique Batch identifier returned when submitting contacts"
+								}
+							]
+						},
+						"description": "Returns real-time execution status of all contacts submitted in a specific batch (pending, answered, completed, callback requested, busy, no answer, failed)."
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://127.0.0.1:8080",
+			"type": "string"
+		},
+		{
+			"key": "api_key",
+			"value": "sk_live_skykin_dialer_2026",
+			"type": "string"
+		},
+		{
+			"key": "batch_id",
+			"value": "SK-20261115-AB83FE",
+			"type": "string"
+		}
+	]
+}
