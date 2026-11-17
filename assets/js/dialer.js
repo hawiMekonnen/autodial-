@@ -10327,6 +10327,20 @@ class SkyKinDialerApp {
     }
   }
 
+  handleSmsProviderChange(prov) {
+    const urlEl = document.getElementById('smsSettingApiUrl');
+    if (!urlEl) return;
+    if (prov === 'afromessage') {
+      urlEl.value = 'https://api.afromessage.com/api/send';
+    } else if (prov === 'twilio') {
+      urlEl.value = 'https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages.json';
+    } else if (prov === 'africastalking') {
+      urlEl.value = 'https://api.africastalking.com/version1/messaging';
+    } else if (prov === 'infobip') {
+      urlEl.value = 'https://api.infobip.com/sms/2/text/advanced';
+    }
+  }
+
   toggleApiKeyVisibility(inputId) {
     const el = document.getElementById(inputId);
     if (!el) return;

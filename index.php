@@ -2718,8 +2718,9 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:14px;margin-bottom:14px;">
               <div class="form-group">
                 <label class="form-label" style="font-size:11.5px;font-weight:600;">SMS Gateway Provider</label>
-                <select id="smsSettingProvider" class="form-control" style="font-size:12.5px;">
-                  <option value="generic_api" selected>Generic REST / HTTP API</option>
+                <select id="smsSettingProvider" class="form-control" style="font-size:12.5px;" onchange="app.handleSmsProviderChange(this.value);">
+                  <option value="afromessage" selected>AfroMessage (Ethiopia SMS Gateway)</option>
+                  <option value="generic_api">Generic REST / HTTP API</option>
                   <option value="twilio">Twilio Programmable SMS</option>
                   <option value="africastalking">Africa's Talking SMS</option>
                   <option value="infobip">Infobip</option>

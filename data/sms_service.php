@@ -60,15 +60,23 @@ class SmsService {
             }
         }
 
-        $apiKey = $env['SMS_API_KEY'] ?? $dbSettings['sms_api_key'] ?? '';
-        $apiUrl = $env['SMS_API_URL'] ?? $dbSettings['sms_api_url'] ?? '';
+        $apiKey = !empty($env['SMS_TOKEN'])
+            ? $env['SMS_TOKEN']
+            : (!empty($env['SMS_API_KEY'])
+                ? $env['SMS_API_KEY']
+                : ($dbSettings['sms_api_key'] ?? ''));
+
+        $apiUrl = $env['SMS_API_URL'] ?? $dbSettings['sms_api_url'] ?? 'https://api.afromessage.com/api/send';
         $senderId = $env['SMS_SENDER_ID'] ?? $dbSettings['sms_sender_id'] ?? 'SkyConnect';
-        $provider = $env['SMS_PROVIDER'] ?? $dbSettings['sms_provider'] ?? 'generic_api';
-        $mockMode = isset($env['SMS_MOCK_MODE']) ? (int)$env['SMS_MOCK_MODE'] : (isset($dbSettings['sms_mock_mode']) ? (int)$dbSettings['sms_mock_mode'] : (empty($apiKey) ? 1 : 0));
+        $provider = $env['SMS_PROVIDER'] ?? $dbSettings['sms_provider'] ?? 'afromessage';
+        $mockMode = isset($env['SMS_MOCK_MODE'])
+            ? (int)$env['SMS_MOCK_MODE']
+            : (isset($dbSettings['sms_mock_mode']) ? (int)$dbSettings['sms_mock_mode'] : (empty($apiKey) ? 1 : 0));
 
         $this->config = [
             'enabled' => (int)($dbSettings['sms_enabled'] ?? 1),
             'api_key' => $apiKey,
+            'token' => $apiKey,
             'api_url' => $apiUrl,
             'sender_id' => $senderId,
             'provider' => $provider,
@@ -90,8 +98,14 @@ class SmsService {
         $cleaned = preg_replace('/[^\d+]/', '', trim($phone));
         if (str_starts_with($cleaned, '09') && strlen($cleaned) === 10) {
             $cleaned = '+251' . substr($cleaned, 1);
+        } elseif (str_starts_with($cleaned, '07') && strlen($cleaned) === 10) {
+            $cleaned = '+251' . substr($cleaned, 1);
         } elseif (str_starts_with($cleaned, '9') && strlen($cleaned) === 9) {
             $cleaned = '+251' . $cleaned;
+        } elseif (str_starts_with($cleaned, '7') && strlen($cleaned) === 9) {
+            $cleaned = '+251' . $cleaned;
+        } elseif (str_starts_with($cleaned, '251') && strlen($cleaned) === 12) {
+            $cleaned = '+' . $cleaned;
         } elseif (str_starts_with($cleaned, '00')) {
             $cleaned = '+' . substr($cleaned, 2);
         }
@@ -253,6 +267,7 @@ class SmsService {
     private function dispatchLiveGateway(string $phone, string $message, string $senderId): array {
         $apiUrl = $this->config['api_url'];
         $apiKey = $this->config['api_key'];
+        $provider = strtolower($this->config['provider'] ?? 'afromessage');
 
         if (empty($apiUrl)) {
             return [
@@ -262,27 +277,56 @@ class SmsService {
             ];
         }
 
-        $payload = [
-            'to' => $phone,
-            'from' => $senderId,
-            'message' => $message,
-            'api_key' => $apiKey
-        ];
+        if (empty($apiKey)) {
+            return [
+                'success' => false,
+                'error' => 'SMS API token is missing. Please add your AfroMessage token in the .env file.',
+                'response' => []
+            ];
+        }
 
-        $headers = [
-            'Content-Type: application/json',
-            'Accept: application/json',
-            'Authorization: Bearer ' . $apiKey,
-            'X-API-KEY: ' . $apiKey
-        ];
+        $isAfro = ($provider === 'afromessage' || strpos($apiUrl, 'afromessage.com') !== false);
+
+        if ($isAfro) {
+            // AfroMessage Ethiopia specification
+            $payload = [
+                'to' => $phone,
+                'message' => $message
+            ];
+            if (!empty($senderId) && strtolower($senderId) !== 'default') {
+                $payload['sender'] = $senderId;
+            }
+
+            $headers = [
+                'Content-Type: application/json; charset=utf-8',
+                'Accept: application/json',
+                'Authorization: Bearer ' . $apiKey
+            ];
+        } else {
+            // Generic JSON gateway
+            $payload = [
+                'to' => $phone,
+                'from' => $senderId,
+                'message' => $message,
+                'api_key' => $apiKey
+            ];
+
+            $headers = [
+                'Content-Type: application/json; charset=utf-8',
+                'Accept: application/json',
+                'Authorization: Bearer ' . $apiKey,
+                'X-API-KEY: ' . $apiKey
+            ];
+        }
 
         $ch = curl_init($apiUrl);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 12);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 6);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 
         $result = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -300,10 +344,32 @@ class SmsService {
         $parsed = json_decode($result, true) ?: ['raw' => $result];
         $isOk = ($httpCode >= 200 && $httpCode < 300);
 
+        if ($isAfro) {
+            $ack = strtolower((string)($parsed['acknowledge'] ?? ''));
+            if ($ack === 'success') {
+                $isOk = true;
+            } elseif ($ack === 'error') {
+                $isOk = false;
+            }
+        }
+
+        $errorMessage = '';
+        if (!$isOk) {
+            if (!empty($parsed['response']['errors']) && is_array($parsed['response']['errors'])) {
+                $errorMessage = implode('; ', $parsed['response']['errors']);
+            } elseif (!empty($parsed['message'])) {
+                $errorMessage = (string)$parsed['message'];
+            } elseif (!empty($parsed['error'])) {
+                $errorMessage = (string)$parsed['error'];
+            } else {
+                $errorMessage = 'HTTP ' . $httpCode . ' response from SMS provider';
+            }
+        }
+
         return [
             'success' => $isOk,
             'http_code' => $httpCode,
-            'error' => $isOk ? '' : 'HTTP ' . $httpCode . ' response from SMS provider',
+            'error' => $errorMessage,
             'response' => $parsed
         ];
     }
