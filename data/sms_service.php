@@ -60,18 +60,44 @@ class SmsService {
             }
         }
 
-        $apiKey = !empty($env['SMS_TOKEN'])
-            ? $env['SMS_TOKEN']
-            : (!empty($env['SMS_API_KEY'])
-                ? $env['SMS_API_KEY']
-                : ($dbSettings['sms_api_key'] ?? ''));
+        $apiKey = !empty($env['AFROMESSAGE_TOKEN'])
+            ? $env['AFROMESSAGE_TOKEN']
+            : (!empty($env['SMS_TOKEN'])
+                ? $env['SMS_TOKEN']
+                : (!empty($env['SMS_API_KEY'])
+                    ? $env['SMS_API_KEY']
+                    : (!empty($dbSettings['sms_api_key']) ? $dbSettings['sms_api_key'] : '')));
 
-        $apiUrl = $env['SMS_API_URL'] ?? $dbSettings['sms_api_url'] ?? 'https://api.afromessage.com/api/send';
-        $senderId = $env['SMS_SENDER_ID'] ?? $dbSettings['sms_sender_id'] ?? 'SkyConnect';
-        $provider = $env['SMS_PROVIDER'] ?? $dbSettings['sms_provider'] ?? 'afromessage';
-        $mockMode = isset($env['SMS_MOCK_MODE'])
-            ? (int)$env['SMS_MOCK_MODE']
-            : (isset($dbSettings['sms_mock_mode']) ? (int)$dbSettings['sms_mock_mode'] : (empty($apiKey) ? 1 : 0));
+        $apiUrl = !empty($env['SMS_API_URL'])
+            ? $env['SMS_API_URL']
+            : (!empty($dbSettings['sms_api_url'])
+                ? $dbSettings['sms_api_url']
+                : 'https://api.afromessage.com/api/send');
+
+        $senderId = !empty($env['AFROMESSAGE_SENDER_NAME'])
+            ? $env['AFROMESSAGE_SENDER_NAME']
+            : (!empty($env['SMS_SENDER_ID'])
+                ? $env['SMS_SENDER_ID']
+                : (!empty($dbSettings['sms_sender_id']) ? $dbSettings['sms_sender_id'] : 'SkyConnect'));
+
+        $shortCodeId = !empty($env['AFROMESSAGE_IDENTIFIER_ID'])
+            ? $env['AFROMESSAGE_IDENTIFIER_ID']
+            : (!empty($dbSettings['sms_identifier_id']) ? $dbSettings['sms_identifier_id'] : '');
+
+        $provider = !empty($env['SMS_PROVIDER'])
+            ? $env['SMS_PROVIDER']
+            : (!empty($dbSettings['sms_provider']) ? $dbSettings['sms_provider'] : 'afromessage');
+
+        $hasKey = !empty($apiKey);
+        if (isset($env['SMS_MOCK_MODE'])) {
+            $mockMode = (int)$env['SMS_MOCK_MODE'];
+        } elseif ($hasKey) {
+            $mockMode = 0;
+        } elseif (isset($dbSettings['sms_mock_mode'])) {
+            $mockMode = (int)$dbSettings['sms_mock_mode'];
+        } else {
+            $mockMode = 1;
+        }
 
         $this->config = [
             'enabled' => (int)($dbSettings['sms_enabled'] ?? 1),
@@ -79,9 +105,10 @@ class SmsService {
             'token' => $apiKey,
             'api_url' => $apiUrl,
             'sender_id' => $senderId,
+            'identifier_id' => $shortCodeId,
             'provider' => $provider,
             'mock_mode' => $mockMode,
-            'has_api_key' => !empty($apiKey)
+            'has_api_key' => $hasKey
         ];
 
         return $this->config;
@@ -248,7 +275,7 @@ class SmsService {
         }
 
         return [
-            'success' => ($status === 'sent' || $status === 'simulated'),
+            'success' => ($status === 'sent'),
             'status' => $status,
             'message_id' => $msgId,
             'phone' => $normalizedPhone,
@@ -257,7 +284,8 @@ class SmsService {
             'message_preview' => mb_substr($message, 0, 80) . (mb_strlen($message) > 80 ? '...' : ''),
             'character_count' => mb_strlen($message),
             'mode' => $isMock ? 'simulated' : 'live',
-            'note' => $isMock ? 'SMS captured in simulator mode. Configure SMS API key to enable live delivery.' : 'SMS sent via live gateway.'
+            'error' => $errorMessage,
+            'note' => $isMock ? 'SMS captured in simulator mode. Configure SMS API key to enable live delivery.' : ($status === 'sent' ? 'SMS sent via live AfroMessage gateway.' : ('SMS delivery failed: ' . $errorMessage))
         ];
     }
 
@@ -293,8 +321,13 @@ class SmsService {
                 'to' => $phone,
                 'message' => $message
             ];
-            if (!empty($senderId) && strtolower($senderId) !== 'default') {
-                $payload['sender'] = $senderId;
+            // Only add sender if explicitly customized and approved (avoid unapproved SkyConnect causing error)
+            $customSender = trim($this->config['sender_id'] ?? $senderId);
+            if (!empty($customSender) && strtolower($customSender) !== 'skyconnect' && strtolower($customSender) !== 'default') {
+                $payload['sender'] = $customSender;
+            }
+            if (!empty($this->config['identifier_id'])) {
+                $payload['from'] = $this->config['identifier_id'];
             }
 
             $headers = [
@@ -324,14 +357,15 @@ class SmsService {
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 12);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 6);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
 
         $result = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curlErr = curl_error($ch);
-        curl_close($ch);
+        @curl_close($ch);
 
         if ($curlErr) {
             return [

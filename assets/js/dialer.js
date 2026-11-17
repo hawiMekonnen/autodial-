@@ -3324,9 +3324,10 @@ class SkyKinDialerApp {
       const isDue = this.isLeadDueForCall(lead);
       const color = isDue ? '#166534' : '#0284c7';
       const badge = isDue ? '<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;">Ready Now</span>' : '';
+      const schedDisplay = schedInfo.displayTime || schedInfo.formatted || schedInfo.badgeText || (lead.call_time && !this.isImmediateCallTime(lead.call_time) ? lead.call_time : 'Immediate');
       timeEl.innerHTML = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-        <span style="color:${color};">${this.escapeHtml(schedInfo.formatted || schedInfo.displayTime || 'Immediate')}</span>
+        <span style="color:${color};">${this.escapeHtml(schedDisplay)}</span>
         ${badge}
       `;
     }
@@ -3424,7 +3425,7 @@ class SkyKinDialerApp {
 
       const schedInfo = this.getLeadScheduleInfo(l);
       const isDue = this.isLeadDueForCall(l);
-      const schedDisplay = schedInfo.formatted || schedInfo.displayTime || 'Immediate';
+      const schedDisplay = schedInfo.displayTime || schedInfo.formatted || schedInfo.badgeText || (l.call_time && !this.isImmediateCallTime(l.call_time) ? l.call_time : 'Immediate');
       const schedColor = isDue ? '#166534' : '#475569';
 
       const cName = l.customer_name || 'Customer';
@@ -6510,6 +6511,8 @@ class SkyKinDialerApp {
         badgeClass: 'des-badge-immediate',
         badgeText: 'Immediate',
         fullLabel: 'Immediate',
+        displayTime: 'Immediate',
+        formatted: 'Immediate',
         isDue: true,
         isFuture: false,
         isPast: false
@@ -6527,6 +6530,8 @@ class SkyKinDialerApp {
         badgeClass: 'des-badge-immediate',
         badgeText: 'Immediate',
         fullLabel: 'Immediate',
+        displayTime: 'Immediate',
+        formatted: 'Immediate',
         isDue: true,
         isFuture: false,
         isPast: false
@@ -6546,6 +6551,8 @@ class SkyKinDialerApp {
         badgeClass: 'des-badge-scheduled',
         badgeText: displayTime,
         fullLabel: `${displayTime} · Scheduled`,
+        displayTime: displayTime,
+        formatted: displayTime,
         isDue: false,
         isFuture: true,
         isPast: false
@@ -6560,6 +6567,8 @@ class SkyKinDialerApp {
         badgeClass: 'des-badge-ready',
         badgeText: displayTime,
         fullLabel: `${displayTime} · Ready`,
+        displayTime: displayTime,
+        formatted: displayTime,
         isDue: true,
         isFuture: false,
         isPast: false
@@ -6574,6 +6583,8 @@ class SkyKinDialerApp {
         badgeClass: 'des-badge-pastdue',
         badgeText: displayTime,
         fullLabel: `${displayTime} · Past due`,
+        displayTime: displayTime,
+        formatted: displayTime,
         isDue: false,
         isFuture: false,
         isPast: true
@@ -6586,6 +6597,8 @@ class SkyKinDialerApp {
       badgeClass: 'des-badge-immediate',
       badgeText: displayTime,
       fullLabel: displayTime,
+      displayTime: displayTime,
+      formatted: displayTime,
       isDue: true,
       isFuture: false,
       isPast: false
