@@ -1384,8 +1384,12 @@ class SkyKinDialerApp {
         });
         const data = await res.json();
         if (data && data.success && data.metrics) {
-          this.updateTelephonyKpiCards(data.metrics);
+          this._lastTelephonyMetrics = data.metrics;
+          if (this.campaignViewMode !== 'sms') {
+            this.updateTelephonyKpiCards(data.metrics);
+          }
         }
+        this.checkAndDispatchDueSms();
       } catch (err) {
         // silent heartbeat catch
       }
@@ -1413,7 +1417,13 @@ class SkyKinDialerApp {
       if (!data.success) return;
       this.allCampaigns = data.campaigns || [];
       if (data.telephony_metrics) {
-        this.updateTelephonyKpiCards(data.telephony_metrics);
+        this._lastTelephonyMetrics = data.telephony_metrics;
+        if (this.campaignViewMode !== 'sms') {
+          this.updateTelephonyKpiCards(data.telephony_metrics);
+        }
+      }
+      if (this.campaignViewMode === 'sms') {
+        this.updateSmsKpiCards();
       }
       this.filterCampaignsTable();
       this.populateCampaignSelectDropdowns();
@@ -1431,7 +1441,16 @@ class SkyKinDialerApp {
     const statusVal = (document.getElementById('campaignStatusFilter')?.value || '').toLowerCase();
     const typeVal   = (document.getElementById('campaignTypeFilter')?.value || '').toLowerCase();
 
+    const isSmsPage = (this.campaignViewMode === 'sms');
+
     const filtered = (this.allCampaigns || []).filter(c => {
+      const isSms = (c.type === 'sms_only');
+
+      // On SMS page, ONLY show campaigns where type is sms_only
+      if (isSmsPage && !isSms) return false;
+      // On Voice page, only show voice campaigns (exclude sms_only)
+      if (!isSmsPage && isSms) return false;
+
       // Search: match name, caller ID, or type
       if (searchVal) {
         const haystack = [c.name, c.caller_id_number, c.caller_id_name, c.type].join(' ').toLowerCase();
@@ -1478,7 +1497,8 @@ class SkyKinDialerApp {
     if (!tbody) return;
 
     const LIMIT = 5;
-    const totalAll = (this.allCampaigns || []).length;
+    const isSmsPage = (this.campaignViewMode === 'sms');
+    const totalAll = (this.allCampaigns || []).filter(c => isSmsPage ? (c.type === 'sms_only') : (c.type !== 'sms_only')).length;
     const shownFiltered = (campaigns || []).length;
 
     if (badge) {
@@ -1487,17 +1507,30 @@ class SkyKinDialerApp {
 
     if (!campaigns || campaigns.length === 0) {
       if (totalAll === 0) {
-        tbody.innerHTML = `
-          <tr class="camp-table-row">
-            <td colspan="5" style="padding:40px 20px;text-align:center;">
-              <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:6px;">No campaigns yet</div>
-              <div style="font-size:13px;color:#64748b;margin-bottom:16px;">Create your first automated outbound campaign to start dialing.</div>
-              <button type="button" class="btn btn-primary" onclick="document.getElementById('newCampaignNameInput')?.focus(); document.getElementById('newCampaignNameInput')?.scrollIntoView({behavior:'smooth'});">Create campaign</button>
-            </td>
-          </tr>
-        `;
+        if (isSmsPage) {
+          tbody.innerHTML = `
+            <tr class="camp-table-row">
+              <td colspan="5" style="padding:40px 20px;text-align:center;">
+                <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:6px;">No SMS campaigns yet</div>
+                <div style="font-size:13px;color:#64748b;margin-bottom:16px;">Create your first automated SMS messaging campaign to start dispatching.</div>
+                <button type="button" class="btn btn-primary" onclick="document.getElementById('newCampaignNameInput')?.focus(); document.getElementById('newCampaignNameInput')?.scrollIntoView({behavior:'smooth'});">Create SMS campaign</button>
+              </td>
+            </tr>
+          `;
+        } else {
+          tbody.innerHTML = `
+            <tr class="camp-table-row">
+              <td colspan="5" style="padding:40px 20px;text-align:center;">
+                <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:6px;">No campaigns yet</div>
+                <div style="font-size:13px;color:#64748b;margin-bottom:16px;">Create your first automated outbound campaign to start dialing.</div>
+                <button type="button" class="btn btn-primary" onclick="document.getElementById('newCampaignNameInput')?.focus(); document.getElementById('newCampaignNameInput')?.scrollIntoView({behavior:'smooth'});">Create campaign</button>
+              </td>
+            </tr>
+          `;
+        }
       } else {
-        tbody.innerHTML = `<tr class="camp-table-row"><td colspan="5" style="padding:28px;text-align:center;color:#64748b;font-size:13px;">No campaigns match your search or filters.</td></tr>`;
+        const noMatch = isSmsPage ? 'No SMS campaigns match your search or filters.' : 'No campaigns match your search or filters.';
+        tbody.innerHTML = `<tr class="camp-table-row"><td colspan="5" style="padding:28px;text-align:center;color:#64748b;font-size:13px;">${noMatch}</td></tr>`;
       }
       return;
     }
@@ -1793,10 +1826,112 @@ class SkyKinDialerApp {
     const notice = document.getElementById('newCampSmsFileNotice');
     if (campInp) campInp.value = file.name;
     this.pendingCampaignFile = file;
-    if (notice) {
-      notice.style.display = 'block';
-      notice.textContent = `Selected: ${file.name} (${Math.round(file.size / 1024)} KB). File will be uploaded automatically upon campaign creation.`;
+
+    const strat = document.getElementById('newCampSmsScheduleStrategy')?.value || 'smart';
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (ext === 'csv' || ext === 'txt' || ext === 'tsv') {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const text = e.target?.result || '';
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+        const contactCount = Math.max(1, lines.length > 1 ? lines.length - 1 : lines.length);
+        if (notice) {
+          notice.style.display = 'block';
+          notice.textContent = `Selected: ${file.name} (${contactCount} contacts detected).`;
+        }
+        if (strat === 'smart') {
+          this.renderSmartSmsScheduleOffer(file.name, contactCount);
+        }
+      };
+      reader.readAsText(file);
+    } else {
+      const estimatedCount = Math.max(10, Math.min(250, Math.round(file.size / 140)));
+      if (notice) {
+        notice.style.display = 'block';
+        notice.textContent = `Selected: ${file.name} (~${estimatedCount} contacts estimated).`;
+      }
+      if (strat === 'smart') {
+        this.renderSmartSmsScheduleOffer(file.name, estimatedCount);
+      }
     }
+  }
+
+  renderSmartSmsScheduleOffer(fileName, count) {
+    const offerEl = document.getElementById('newCampSmsSmartOffer');
+    if (!offerEl) return;
+
+    const intv = 2;
+    const totalMinutes = Math.max(2, Math.ceil(count * intv));
+    const totalH = Math.floor(totalMinutes / 60);
+    const totalM = totalMinutes % 60;
+    const timeText = totalH > 0 ? `~${totalH}h ${totalM}m` : `~${totalM}m`;
+
+    const badge = document.getElementById('smartSmsOfferBadge');
+    if (badge) badge.textContent = `${count} contacts`;
+
+    const summary = document.getElementById('smartSmsOfferSummary');
+    if (summary) {
+      summary.innerHTML = `System will stagger ${count} contacts smoothly across an optimal timetable (staggered every ${intv} minutes over ${timeText}) to maximize deliverability and avoid carrier rate throttling.`;
+    }
+
+    const actions = document.getElementById('smartSmsOfferActions');
+    if (actions) actions.style.display = 'flex';
+    const approved = document.getElementById('smartSmsOfferApproved');
+    if (approved) approved.style.display = 'none';
+
+    offerEl.style.display = 'block';
+    this.smartSmsScheduleApproved = true;
+  }
+
+  approveSmartSmsScheduleSuggestion() {
+    this.smartSmsScheduleApproved = true;
+    const strat = document.getElementById('newCampSmsScheduleStrategy');
+    if (strat) strat.value = 'smart';
+    const actions = document.getElementById('smartSmsOfferActions');
+    if (actions) actions.style.display = 'none';
+    const approved = document.getElementById('smartSmsOfferApproved');
+    if (approved) approved.style.display = 'block';
+    this.showToast('Smart SMS schedule approved!', 'success');
+  }
+
+  rejectSmartSmsScheduleSuggestion() {
+    this.smartSmsScheduleApproved = false;
+    const strat = document.getElementById('newCampSmsScheduleStrategy');
+    if (strat) strat.value = 'interval';
+    this.handleSmsScheduleStrategyChange('interval');
+    const offerEl = document.getElementById('newCampSmsSmartOffer');
+    if (offerEl) offerEl.style.display = 'none';
+    this.showToast('Switched to standard interval staggering', 'info');
+  }
+
+  handleSmsSchedulingMethodChange(val) {
+    const optBox = document.getElementById('newCampSmsAutoScheduleOptions');
+    if (optBox) {
+      optBox.style.display = (val === 'auto_schedule') ? 'block' : 'none';
+    }
+  }
+
+  handleSmsScheduleStrategyChange(val) {
+    const rowIntv = document.getElementById('rowSmsScheduleInterval');
+    const rowWin = document.getElementById('rowSmsScheduleWindow');
+    if (rowIntv) rowIntv.style.display = (val === 'interval' || val === 'smart') ? 'block' : 'none';
+    if (rowWin) rowWin.style.display = (val === 'window') ? 'block' : 'none';
+  }
+
+  handleSmsDesignerMethodChange(val) {
+    const badge = document.getElementById('smsDesignerScheduleStatusBadge');
+    if (badge) {
+      badge.textContent = (val === 'auto_schedule') ? 'Active (Auto)' : 'Manual';
+      badge.style.background = (val === 'auto_schedule') ? '#dcfce7' : '#f1f5f9';
+      badge.style.color = (val === 'auto_schedule') ? '#166534' : '#475569';
+    }
+  }
+
+  handleSmsDesignerStrategyChange(val) {
+    const rowIntv = document.getElementById('smsDesignerIntervalRow');
+    const rowWin = document.getElementById('smsDesignerWindowRow');
+    if (rowIntv) rowIntv.style.display = (val === 'interval' || val === 'smart') ? 'block' : 'none';
+    if (rowWin) rowWin.style.display = (val === 'window') ? 'block' : 'none';
   }
 
   async handleNewCampaignWizardSubmit(e) {
@@ -1809,11 +1944,11 @@ class SkyKinDialerApp {
     const callerIdName = callerIdSelect?.selectedOptions?.[0]?.dataset?.name || 'SkyConnect';
     const lang = document.getElementById('newCampaignLanguageSelect')?.value || 'en';
 
-    const callingMethod = document.getElementById('newCampaignCallingMethodSelect')?.value || 'auto_schedule';
-    const scheduleStrategy = document.getElementById('newCampaignScheduleStrategy')?.value || (this.smartScheduleApproved ? 'smart' : 'interval');
-    const scheduleInterval = document.getElementById('newCampaignScheduleInterval')?.value || '5';
-    const windowStart = document.getElementById('newCampaignWindowStart')?.value || '09:00';
-    const windowEnd = document.getElementById('newCampaignWindowEnd')?.value || '17:00';
+    let callingMethod = 'auto_schedule';
+    let scheduleStrategy = 'interval';
+    let scheduleInterval = '5';
+    let windowStart = '09:00';
+    let windowEnd = '17:00';
 
     let smsEnabled = 0;
     let smsTrigger = 'call_completed';
@@ -1821,11 +1956,23 @@ class SkyKinDialerApp {
     let smsSenderId = 'SkyConnect';
 
     if (mode === 'sms_only') {
+      callingMethod = document.getElementById('newCampSmsSchedulingMethodSelect')?.value || 'auto_schedule';
+      scheduleStrategy = document.getElementById('newCampSmsScheduleStrategy')?.value || (this.smartSmsScheduleApproved ? 'smart' : 'interval');
+      scheduleInterval = document.getElementById('newCampSmsScheduleInterval')?.value || '5';
+      windowStart = document.getElementById('newCampSmsWindowStart')?.value || '09:00';
+      windowEnd = document.getElementById('newCampSmsWindowEnd')?.value || '17:00';
+
       smsEnabled = 1;
       smsTrigger = 'sms_blast';
       smsTemplate = document.getElementById('newCampSmsOnlyTemplate')?.value.trim() || 'Hello {name}, this is an important message regarding {campaign}.';
       smsSenderId = document.getElementById('newCampSmsOnlySenderId')?.value.trim() || 'SkyConnect';
     } else {
+      callingMethod = document.getElementById('newCampaignCallingMethodSelect')?.value || 'auto_schedule';
+      scheduleStrategy = document.getElementById('newCampaignScheduleStrategy')?.value || (this.smartScheduleApproved ? 'smart' : 'interval');
+      scheduleInterval = document.getElementById('newCampaignScheduleInterval')?.value || '5';
+      windowStart = document.getElementById('newCampaignWindowStart')?.value || '09:00';
+      windowEnd = document.getElementById('newCampaignWindowEnd')?.value || '17:00';
+
       smsEnabled = document.getElementById('newCampaignSmsEnabled')?.checked ? 1 : 0;
       smsTrigger = document.getElementById('newCampaignSmsTrigger')?.value || 'call_completed';
       smsTemplate = document.getElementById('newCampaignSmsTemplate')?.value || '';
@@ -1876,6 +2023,8 @@ class SkyKinDialerApp {
           upData.append('schedule_interval_mins', scheduleInterval);
           upData.append('schedule_window_start', windowStart);
           upData.append('schedule_window_end', windowEnd);
+          upData.append('client_time', Math.floor(Date.now() / 1000));
+          upData.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
           try {
             const upRes = await fetch('api.php?action=upload_leads', { method: 'POST', body: upData });
             const upJson = await upRes.json();
@@ -2219,7 +2368,7 @@ class SkyKinDialerApp {
       if (voiceTopActs) voiceTopActs.style.display = 'none';
       if (smsTopActs) smsTopActs.style.display = 'flex';
       if (btnContactDispatch) btnContactDispatch.style.display = 'inline-block';
-      if (schedFilter) schedFilter.style.display = 'none';
+      if (schedFilter) schedFilter.style.display = 'inline-block';
       if (contactsTitle) contactsTitle.textContent = 'SMS Campaign Contacts';
 
       // Populate SMS Designer fields
@@ -2231,6 +2380,21 @@ class SkyKinDialerApp {
         this.updateSmsCharCount(smsTpl, 'smsDesignerCharCount');
       }
       this.updateSmsDesignerLivePreview();
+
+      // Populate SMS Schedule fields
+      const smsMethod = document.getElementById('smsDesignerCallingMethod');
+      const smsStrat = document.getElementById('smsDesignerScheduleStrategy');
+      const smsIntv = document.getElementById('smsDesignerScheduleInterval');
+      const smsWinStart = document.getElementById('smsDesignerWindowStart');
+      const smsWinEnd = document.getElementById('smsDesignerWindowEnd');
+
+      if (smsMethod) smsMethod.value = this.campaign.calling_method || 'auto_schedule';
+      if (smsStrat) smsStrat.value = this.campaign.schedule_strategy || 'interval';
+      if (smsIntv) smsIntv.value = String(this.campaign.schedule_interval_mins || 5);
+      if (smsWinStart) smsWinStart.value = this.campaign.schedule_window_start || '09:00';
+      if (smsWinEnd) smsWinEnd.value = this.campaign.schedule_window_end || '17:00';
+      this.handleSmsDesignerStrategyChange(smsStrat?.value || 'interval');
+      this.handleSmsDesignerMethodChange(smsMethod?.value || 'auto_schedule');
 
       // SMS Stats calculation
       const campLeads = (this.leads || []).filter(l => Number(l.campaign_id) === Number(this.campaign.id));
@@ -2413,6 +2577,7 @@ class SkyKinDialerApp {
           <tr>
             <th>CUSTOMER</th>
             <th>PHONE</th>
+            <th>SCHEDULED</th>
             <th>SMS STATUS</th>
             <th>MESSAGE PREVIEW</th>
             <th style="text-align:right;">ACTIONS</th>
@@ -2453,8 +2618,8 @@ class SkyKinDialerApp {
         if ((statusVal === 'no_answer' || statusVal === 'failed') && !['no_answer', 'failed'].includes(s)) return false;
       }
 
-      // 3. Schedule Filter (for voice only)
-      if (!isSms && schedVal) {
+      // 3. Schedule Filter
+      if (schedVal) {
         const sched = this.getLeadScheduleInfo(l);
         if (schedVal === 'upcoming' && sched.type !== 'upcoming') return false;
         if (schedVal === 'today' && sched.type !== 'today') return false;
@@ -2487,7 +2652,7 @@ class SkyKinDialerApp {
       const emptyMsg = rawList.length === 0
         ? (isSms ? 'No contacts uploaded for this SMS campaign yet. Click "Add numbers" above to import your contact list.' : 'No contacts uploaded for this campaign yet. Click "Add numbers" above to import your contact list.')
         : 'No contacts match the current filters.';
-      tbody.innerHTML = `<tr><td colspan="${isSms ? 5 : 6}" style="text-align:center;color:#64748b;padding:36px 20px;font-size:13px;">${emptyMsg}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#64748b;padding:36px 20px;font-size:13px;">${emptyMsg}</td></tr>`;
       return;
     }
 
@@ -2505,6 +2670,7 @@ class SkyKinDialerApp {
       const rawStatus = (l.status || 'pending').toLowerCase();
 
       if (isSms) {
+        const sched = this.getLeadScheduleInfo(l);
         let statusClass = 'des-badge-pending';
         let statusLabel = 'Pending';
         if (['completed', 'answered'].includes(rawStatus)) {
@@ -2525,6 +2691,7 @@ class SkyKinDialerApp {
           <tr>
             <td style="font-weight:600;color:#0f172a;">${this.escapeHtml(l.customer_name || 'Contact')}</td>
             <td style="color:#334155;font-weight:500;">${this.escapeHtml(l.phone_number)}</td>
+            <td><span class="${sched.badgeClass}">${this.escapeHtml(sched.fullLabel)}</span></td>
             <td><span class="${statusClass}">${this.escapeHtml(statusLabel)}</span></td>
             <td style="color:#64748b;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${this.escapeHtml(previewMsg)}">${this.escapeHtml(shortPreview)}</td>
             <td style="text-align:right;white-space:nowrap;">
@@ -2568,7 +2735,7 @@ class SkyKinDialerApp {
 
     // Expand / Show More Row
     if (filtered.length > LIMIT) {
-      const colSpan = isSms ? 5 : 6;
+      const colSpan = 6;
       if (!isExpanded) {
         rowsHtml += `
           <tr>
@@ -2626,12 +2793,22 @@ class SkyKinDialerApp {
 
     const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || '';
     const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || 'SkyConnect';
+    const method = document.getElementById('smsDesignerCallingMethod')?.value || 'auto_schedule';
+    const strat = document.getElementById('smsDesignerScheduleStrategy')?.value || 'interval';
+    const intv = document.getElementById('smsDesignerScheduleInterval')?.value || '5';
+    const winStart = document.getElementById('smsDesignerWindowStart')?.value || '09:00';
+    const winEnd = document.getElementById('smsDesignerWindowEnd')?.value || '17:00';
 
     const fd = new FormData();
     fd.append('campaign_id', campId);
     fd.append('sms_template', tpl);
     fd.append('sms_sender_id', sender);
     fd.append('sms_enabled', '1');
+    fd.append('calling_method', method);
+    fd.append('schedule_strategy', strat);
+    fd.append('schedule_interval_mins', intv);
+    fd.append('schedule_window_start', winStart);
+    fd.append('schedule_window_end', winEnd);
 
     try {
       const res = await fetch('api.php?action=save_campaign_designer', { method: 'POST', body: fd });
@@ -2640,6 +2817,11 @@ class SkyKinDialerApp {
         if (this.campaign) {
           this.campaign.sms_template = tpl;
           this.campaign.sms_sender_id = sender;
+          this.campaign.calling_method = method;
+          this.campaign.schedule_strategy = strat;
+          this.campaign.schedule_interval_mins = intv;
+          this.campaign.schedule_window_start = winStart;
+          this.campaign.schedule_window_end = winEnd;
         }
         this.showToast('SMS campaign settings saved!', 'success');
       } else {
@@ -2838,24 +3020,233 @@ class SkyKinDialerApp {
   }
 
   showSmsCampaignsView() {
-    if (typeof window.switchNav === 'function') {
-      window.switchNav('tabCampaigns', 'campaigns');
+    this.campaignViewMode = 'sms';
+
+    // Sidebar active pill
+    document.querySelectorAll('.sc-nav-item').forEach(b => b.classList.remove('active'));
+    document.getElementById('sbSmsCampaigns')?.classList.add('active');
+
+    // Show tabCampaigns panel
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('tabCampaigns')?.classList.add('active');
+
+    if (typeof window.switchCampaignSubView === 'function') {
+      window.switchCampaignSubView('list');
     }
-    const smsCamp = (this.allCampaigns || []).find(c => c.type === 'sms_only');
-    if (smsCamp) {
-      this.selectCampaignForDesigner(smsCamp.id);
-      this.showToast(`Opened SMS Campaign: "${smsCamp.name}"`, 'info');
+
+    // Update section titles and breadcrumb
+    const headerTitle = document.getElementById('headerSectionTitle');
+    if (headerTitle) headerTitle.textContent = 'SMS Campaign Management';
+    const topUrl = document.getElementById('topUrlText');
+    if (topUrl) topUrl.textContent = 'skyconnect.local/sms-campaigns';
+
+    this.updateCampaignOverviewHeader(true);
+    this.selectCampaignMode('sms_only');
+    this.filterCampaignsTable();
+    this.updateSmsKpiCards();
+    this.showToast('Viewing SMS Campaigns', 'info');
+  }
+
+  showVoiceCampaignsView() {
+    this.campaignViewMode = 'voice';
+
+    // Sidebar active pill
+    document.querySelectorAll('.sc-nav-item').forEach(b => b.classList.remove('active'));
+    document.getElementById('sbCampaigns')?.classList.add('active');
+
+    // Show tabCampaigns panel
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById('tabCampaigns')?.classList.add('active');
+
+    if (typeof window.switchCampaignSubView === 'function') {
+      window.switchCampaignSubView('list');
+    }
+
+    // Update section titles and breadcrumb
+    const headerTitle = document.getElementById('headerSectionTitle');
+    if (headerTitle) headerTitle.textContent = 'Campaign Management';
+    const topUrl = document.getElementById('topUrlText');
+    if (topUrl) topUrl.textContent = 'skyconnect.local/campaigns';
+
+    this.updateCampaignOverviewHeader(false);
+    this.selectCampaignMode('automated_ivr');
+    this.filterCampaignsTable();
+    this.updateVoiceKpiCards();
+  }
+
+  updateCampaignOverviewHeader(isSms) {
+    const mainTitle = document.getElementById('campMainTitle');
+    if (mainTitle) mainTitle.textContent = isSms ? 'SMS Campaigns' : 'Campaigns';
+
+    const mainSub = document.getElementById('campMainSubtitle');
+    if (mainSub) mainSub.textContent = isSms
+      ? 'Create, monitor and dispatch automated SMS messaging campaigns.'
+      : 'Create, monitor and control automated outbound voice campaigns.';
+
+    const panelHeading = document.getElementById('campPanelHeading');
+    if (panelHeading) panelHeading.textContent = isSms ? 'SMS campaigns' : 'All campaigns';
+
+    const wizardHeading = document.getElementById('campWizardHeading');
+    if (wizardHeading) wizardHeading.textContent = isSms ? 'New SMS campaign' : 'New campaign';
+  }
+
+  updateSmsKpiCards() {
+    if (this.campaignViewMode !== 'sms') return;
+
+    const lbl1 = document.getElementById('kpiCard1Lbl');
+    const val1 = document.getElementById('kpiActiveCalls');
+    const lbl2 = document.getElementById('kpiCard2Lbl');
+    const val2 = document.getElementById('kpiAvailableLines');
+    const lbl3 = document.getElementById('kpiAnsweredRateLbl');
+    const val3 = document.getElementById('kpiAnsweredRate');
+    const lbl4 = document.getElementById('kpiCard4Lbl');
+    const val4 = document.getElementById('kpiAvgDuration');
+
+    const smsCamps = (this.allCampaigns || []).filter(c => c.type === 'sms_only');
+
+    let totalSent = 0;
+    let totalPending = 0;
+    let totalFailed = 0;
+
+    smsCamps.forEach(c => {
+      const cTotal = Number(c.total_leads || c.total_leads_count || 0);
+      const cSent = Number(c.completed_leads || c.completed_leads_count || 0);
+      totalSent += cSent;
+      totalPending += Math.max(0, cTotal - cSent);
+    });
+
+    const totalProcessed = totalSent + totalFailed;
+    const rateStr = totalProcessed > 0 ? ((totalSent / totalProcessed) * 100).toFixed(1) + '%' : '100%';
+
+    if (lbl1) lbl1.textContent = 'Active SMS Campaigns';
+    if (val1) val1.textContent = smsCamps.length;
+    if (lbl2) lbl2.textContent = 'Total SMS Sent';
+    if (val2) val2.textContent = totalSent;
+    if (lbl3) lbl3.textContent = 'Pending SMS';
+    if (val3) val3.textContent = totalPending;
+    if (lbl4) lbl4.textContent = 'Delivery Rate';
+    if (val4) val4.textContent = rateStr;
+  }
+
+  updateVoiceKpiCards() {
+    if (this.campaignViewMode === 'sms') return;
+
+    const lbl1 = document.getElementById('kpiCard1Lbl');
+    const lbl2 = document.getElementById('kpiCard2Lbl');
+    const lbl3 = document.getElementById('kpiAnsweredRateLbl');
+    const lbl4 = document.getElementById('kpiCard4Lbl');
+
+    if (lbl1) lbl1.textContent = 'Active calls now';
+    if (lbl2) lbl2.textContent = 'Available lines';
+    if (lbl3) lbl3.textContent = 'Answered rate';
+    if (lbl4) lbl4.textContent = 'Average call duration';
+
+    if (this._lastTelephonyMetrics) {
+      this.updateTelephonyKpiCards(this._lastTelephonyMetrics);
+    }
+  }
+
+  async reapplySmsAutoSchedule() {
+    const campId = Number(this.activeCampaignId || this.campaign?.id);
+    if (!campId) return;
+
+    const strat = document.getElementById('smsDesignerScheduleStrategy')?.value || 'interval';
+    const intv = document.getElementById('smsDesignerScheduleInterval')?.value || '5';
+    const winStart = document.getElementById('smsDesignerWindowStart')?.value || '09:00';
+    const winEnd = document.getElementById('smsDesignerWindowEnd')?.value || '17:00';
+
+    const fd = new FormData();
+    fd.append('campaign_id', campId);
+    fd.append('schedule_strategy', strat);
+    fd.append('schedule_interval_mins', intv);
+    fd.append('schedule_window_start', winStart);
+    fd.append('schedule_window_end', winEnd);
+    fd.append('client_time', Math.floor(Date.now() / 1000));
+    fd.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
+
+    this.showToast('Re-calculating schedule times for pending contacts...', 'info');
+    try {
+      const res = await fetch('api.php?action=reschedule_campaign_pending_leads', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data && data.success) {
+        this.showToast(data.message || 'Contacts rescheduled successfully!', 'success');
+        await this.loadCampaignData(campId);
+        this.updateDesignerUI();
+        this.renderDesignerContactsTable();
+      } else {
+        this.showToast(data?.error || 'Failed to reschedule contacts', 'error');
+      }
+    } catch (e) {
+      this.showToast('Network error while rescheduling', 'error');
+    }
+  }
+
+  async checkAndDispatchDueSms() {
+    if (this._isDispatchingDueSms) return;
+    if (this._smsAutoSenderDisabled) return;
+
+    const campId = Number(this.activeCampaignId || this.campaign?.id);
+    if (!campId || this.campaign?.type !== 'sms_only') return;
+
+    const campLeads = (this.leads || []).filter(l => Number(l.campaign_id) === campId && (l.status || '').toLowerCase() === 'pending');
+    if (campLeads.length === 0) return;
+
+    const dueLeads = campLeads.filter(l => this.isLeadDueForCall(l));
+    if (dueLeads.length === 0) return;
+
+    this._isDispatchingDueSms = true;
+    try {
+      const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || this.campaign?.sms_template || '';
+      const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || this.campaign?.sms_sender_id || 'SkyConnect';
+
+      const fd = new FormData();
+      fd.append('campaign_id', campId);
+      fd.append('only_due', '1');
+      fd.append('template', tpl);
+      fd.append('sender_id', sender);
+
+      const res = await fetch('api.php?action=dispatch_sms_campaign', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data && data.success && data.sent_count > 0) {
+        this.showToast(`Auto-dispatched ${data.sent_count} scheduled SMS message${data.sent_count === 1 ? '' : 's'}`, 'info');
+        await this.loadCampaignData(campId);
+        this.updateDesignerUI();
+        this.renderDesignerContactsTable();
+      }
+    } catch (e) {
+      // silent background dispatch catch
+    } finally {
+      this._isDispatchingDueSms = false;
+    }
+  }
+
+  toggleSmsAutoSender() {
+    this._smsAutoSenderDisabled = !this._smsAutoSenderDisabled;
+    const btn = document.getElementById('btnToggleSmsAutoSender');
+    const badge = document.getElementById('smsDesignerScheduleStatusBadge');
+    if (this._smsAutoSenderDisabled) {
+      if (btn) {
+        btn.textContent = 'Auto-Sender Paused';
+        btn.style.background = '#64748b';
+      }
+      if (badge) {
+        badge.textContent = 'Paused';
+        badge.style.background = '#fef3c7';
+        badge.style.color = '#b45309';
+      }
+      this.showToast('SMS Auto-Sender paused', 'warning');
     } else {
-      if (typeof window.switchCampaignSubView === 'function') {
-        window.switchCampaignSubView('list');
+      if (btn) {
+        btn.textContent = 'Auto-Sender Active';
+        btn.style.background = '#00A651';
       }
-      this.selectCampaignMode('sms_only');
-      const nameInp = document.getElementById('newCampaignNameInput');
-      if (nameInp) {
-        nameInp.focus();
-        nameInp.scrollIntoView({ behavior: 'smooth' });
+      if (badge) {
+        badge.textContent = 'Active';
+        badge.style.background = '#dcfce7';
+        badge.style.color = '#166534';
       }
-      this.showToast('Set campaign mode to SMS Only. Enter campaign name to create.', 'info');
+      this.showToast('SMS Auto-Sender activated: messages will send at scheduled times', 'success');
+      this.checkAndDispatchDueSms();
     }
   }
 

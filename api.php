@@ -3610,10 +3610,38 @@ if ($action === 'dispatch_sms_campaign') {
     }
 
     $batchLimit = min(200, max(1, (int)($_POST['batch_size'] ?? 50)));
+    $isDueOnly = (!empty($_POST['only_due']) || !empty($_POST['scheduled_only']));
 
-    $stmt = $db->prepare("SELECT * FROM leads WHERE campaign_id = ? AND status = 'pending' ORDER BY id ASC LIMIT ?");
-    $stmt->execute([$campaignId, $batchLimit]);
-    $pendingLeads = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $pendingLeads = [];
+    $tz = function_exists('getDialerTimezone') ? getDialerTimezone() : 'Africa/Addis_Ababa';
+    @date_default_timezone_set($tz);
+    $now = time();
+
+    if ($isDueOnly) {
+        $stmt = $db->prepare("SELECT * FROM leads WHERE campaign_id = ? AND status = 'pending' ORDER BY id ASC LIMIT 500");
+        $stmt->execute([$campaignId]);
+        $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($candidates as $cand) {
+            $rawTime = trim($cand['call_time'] ?? '');
+            $isImmediate = (empty($rawTime) || strcasecmp($rawTime, 'immediate') === 0 || strcasecmp($rawTime, 'now') === 0);
+            if ($isImmediate) {
+                $pendingLeads[] = $cand;
+            } else {
+                $ts = function_exists('parseAnyDateTime') ? parseAnyDateTime($rawTime, $tz) : strtotime($rawTime);
+                if ($ts !== null && $ts <= ($now + 30)) {
+                    $pendingLeads[] = $cand;
+                }
+            }
+            if (count($pendingLeads) >= $batchLimit) {
+                break;
+            }
+        }
+    } else {
+        $stmt = $db->prepare("SELECT * FROM leads WHERE campaign_id = ? AND status = 'pending' ORDER BY id ASC LIMIT ?");
+        $stmt->execute([$campaignId, $batchLimit]);
+        $pendingLeads = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
 
     $sentCount = 0;
     $failedCount = 0;
@@ -3632,7 +3660,7 @@ if ($action === 'dispatch_sms_campaign') {
             'lead_id' => $l['id'],
             'customer_name' => $l['customer_name'] ?? 'Contact',
             'sender_id' => $senderId,
-            'trigger_event' => 'sms_blast',
+            'trigger_event' => $isDueOnly ? 'scheduled_dispatch' : 'sms_blast',
             'sent_by' => $_SESSION['username'] ?? 'admin'
         ]);
 
@@ -3655,7 +3683,121 @@ if ($action === 'dispatch_sms_campaign') {
         'sent_count' => $sentCount,
         'failed_count' => $failedCount,
         'remaining_pending' => $remaining,
+        'only_due_mode' => $isDueOnly,
         'mode' => $smsSvc->getConfig()['mock_mode'] ? 'simulated' : 'live'
+    ]);
+}
+
+// Reschedule Pending Contacts for a Campaign (System Auto-Schedule / Staggered)
+if ($action === 'reschedule_campaign_pending_leads') {
+    $campaignId = (int)($_POST['campaign_id'] ?? 0);
+    if ($campaignId <= 0) {
+        jsonOut(['success' => false, 'error' => 'Campaign ID is required.'], 400);
+    }
+
+    $campStmt = $db->prepare("SELECT * FROM campaigns WHERE id = ?");
+    $campStmt->execute([$campaignId]);
+    $camp = $campStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$camp) {
+        jsonOut(['success' => false, 'error' => 'Campaign not found.'], 404);
+    }
+
+    $overrideOptions = [];
+    if (!empty($_POST['schedule_strategy'])) $overrideOptions['schedule_strategy'] = trim($_POST['schedule_strategy']);
+    if (!empty($_POST['schedule_interval_mins'])) $overrideOptions['schedule_interval_mins'] = (int)$_POST['schedule_interval_mins'];
+    if (!empty($_POST['schedule_window_start'])) $overrideOptions['schedule_window_start'] = trim($_POST['schedule_window_start']);
+    if (!empty($_POST['schedule_window_end'])) $overrideOptions['schedule_window_end'] = trim($_POST['schedule_window_end']);
+    if (!empty($_POST['client_time'])) $overrideOptions['client_time'] = (int)$_POST['client_time'];
+    if (!empty($_POST['client_timezone'])) $overrideOptions['client_timezone'] = trim($_POST['client_timezone']);
+
+    $pendingIds = $db->query("SELECT id FROM leads WHERE campaign_id = {$campaignId} AND status = 'pending' ORDER BY id ASC")->fetchAll(PDO::FETCH_COLUMN);
+    $totalPending = count($pendingIds);
+
+    if ($totalPending === 0) {
+        jsonOut(['success' => true, 'updated' => 0, 'message' => 'No pending contacts found to reschedule.']);
+    }
+
+    $schedules = calculateSystemAutoSchedules($db, $campaignId, $totalPending, $overrideOptions);
+    $upStmt = $db->prepare("UPDATE leads SET call_time = ? WHERE id = ?");
+    for ($i = 0; $i < $totalPending; $i++) {
+        $upStmt->execute([$schedules[$i] ?? 'Immediate', $pendingIds[$i]]);
+    }
+
+    jsonOut([
+        'success' => true,
+        'updated' => $totalPending,
+        'message' => "Successfully rescheduled {$totalPending} pending contacts!"
+    ]);
+}
+
+// Global Due SMS Dispatcher across SMS Campaigns
+if ($action === 'dispatch_due_sms') {
+    $campaignId = (int)($_POST['campaign_id'] ?? $_GET['campaign_id'] ?? 0);
+    $limit = min(100, max(1, (int)($_POST['limit'] ?? $_GET['limit'] ?? 30)));
+
+    $campFilter = ($campaignId > 0) ? "AND c.id = {$campaignId}" : "AND c.type = 'sms_only'";
+    $camps = $db->query("SELECT c.* FROM campaigns c WHERE 1=1 {$campFilter}")->fetchAll(PDO::FETCH_ASSOC);
+
+    $totalDispatched = 0;
+    $smsSvc = SmsService::getInstance();
+    $tz = function_exists('getDialerTimezone') ? getDialerTimezone() : 'Africa/Addis_Ababa';
+    @date_default_timezone_set($tz);
+    $now = time();
+
+    foreach ($camps as $c) {
+        $cId = (int)$c['id'];
+        $template = !empty($c['sms_template']) ? $c['sms_template'] : 'Hello {name}, thank you for choosing {campaign}.';
+        $senderId = !empty($c['sms_sender_id']) ? $c['sms_sender_id'] : 'SkyConnect';
+
+        $leads = $db->query("SELECT * FROM leads WHERE campaign_id = {$cId} AND status = 'pending' ORDER BY id ASC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($leads as $l) {
+            $rawTime = trim($l['call_time'] ?? '');
+            $isImmediate = (empty($rawTime) || strcasecmp($rawTime, 'immediate') === 0 || strcasecmp($rawTime, 'now') === 0);
+            $isDue = false;
+
+            if ($isImmediate) {
+                $isDue = true;
+            } else {
+                $ts = function_exists('parseAnyDateTime') ? parseAnyDateTime($rawTime, $tz) : strtotime($rawTime);
+                if ($ts !== null && $ts <= ($now + 30)) {
+                    $isDue = true;
+                }
+            }
+
+            if ($isDue) {
+                $msg = $smsSvc->renderTemplate($template, [
+                    'name' => $l['customer_name'] ?? 'Contact',
+                    'phone' => $l['phone_number'],
+                    'campaign' => $c['name'],
+                    'outcome' => 'Delivered'
+                ]);
+
+                $res = $smsSvc->send($l['phone_number'], $msg, [
+                    'campaign_id' => $cId,
+                    'lead_id' => $l['id'],
+                    'customer_name' => $l['customer_name'] ?? 'Contact',
+                    'sender_id' => $senderId,
+                    'trigger_event' => 'scheduled_dispatch',
+                    'sent_by' => 'system_scheduler'
+                ]);
+
+                if ($res['success']) {
+                    $db->prepare("UPDATE leads SET status = 'completed', last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?")->execute([$l['id']]);
+                    $totalDispatched++;
+                } else {
+                    $db->prepare("UPDATE leads SET status = 'failed', error_message = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?")->execute([$res['error'] ?? 'SMS dispatch failed', $l['id']]);
+                }
+
+                if ($totalDispatched >= $limit) break 2;
+            }
+        }
+
+        $db->prepare("UPDATE campaigns SET completed_leads = (SELECT COUNT(*) FROM leads WHERE campaign_id = ? AND status = 'completed'), total_leads = (SELECT COUNT(*) FROM leads WHERE campaign_id = ?) WHERE id = ?")->execute([$cId, $cId, $cId]);
+    }
+
+    jsonOut([
+        'success' => true,
+        'dispatched_count' => $totalDispatched
     ]);
 }
 

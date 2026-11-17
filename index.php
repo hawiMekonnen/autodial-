@@ -93,7 +93,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
       <!-- OPERATE Group -->
       <div class="sc-sidebar-section-title">OPERATE</div>
 
-      <button class="sc-nav-item active" id="sbCampaigns" onclick="switchNav('tabCampaigns', 'campaigns')">
+      <button class="sc-nav-item active" id="sbCampaigns" onclick="app.showVoiceCampaignsView()">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
           <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
@@ -186,8 +186,8 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
         <!-- Top Header: Title, Subtitle and Action buttons -->
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:22px;flex-wrap:wrap;gap:10px;">
           <div>
-            <h1 style="font-size:26px;font-weight:700;color:#0f172a;margin:0 0 5px 0;letter-spacing:-0.3px;">Campaigns</h1>
-            <div style="font-size:13.5px;color:#64748b;">Create, monitor and control automated outbound voice campaigns.</div>
+            <h1 id="campMainTitle" style="font-size:26px;font-weight:700;color:#0f172a;margin:0 0 5px 0;letter-spacing:-0.3px;">Campaigns</h1>
+            <div id="campMainSubtitle" style="font-size:13.5px;color:#64748b;">Create, monitor and control automated outbound voice campaigns.</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <button type="button" class="btn-refresh-pill" onclick="app.loadCampaignsOverview()">Refresh</button>
@@ -197,11 +197,11 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
         <!-- 4 Automated Dialer Real KPI Metric Cards -->
         <div class="camp-metric-row">
           <div class="camp-metric-card">
-            <div class="camp-metric-lbl">Active calls now</div>
+            <div class="camp-metric-lbl" id="kpiCard1Lbl">Active calls now</div>
             <div class="camp-metric-val" id="kpiActiveCalls">0</div>
           </div>
           <div class="camp-metric-card">
-            <div class="camp-metric-lbl">Available lines</div>
+            <div class="camp-metric-lbl" id="kpiCard2Lbl">Available lines</div>
             <div class="camp-metric-val" id="kpiAvailableLines">0</div>
           </div>
           <div class="camp-metric-card">
@@ -209,7 +209,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <div class="camp-metric-val green" id="kpiAnsweredRate">0.0%</div>
           </div>
           <div class="camp-metric-card">
-            <div class="camp-metric-lbl">Average call duration</div>
+            <div class="camp-metric-lbl" id="kpiCard4Lbl">Average call duration</div>
             <div class="camp-metric-val" id="kpiAvgDuration">00:00</div>
           </div>
         </div>
@@ -222,7 +222,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <!-- Header row: title + count badge -->
             <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
               <div style="display:flex;align-items:center;gap:10px;">
-                <div class="camp-panel-heading" style="margin:0;">All campaigns</div>
+                <div class="camp-panel-heading" id="campPanelHeading" style="margin:0;">All campaigns</div>
                 <span id="campaignsCountBadge" style="background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;border:1px solid #e2e8f0;">0</span>
               </div>
             </div>
@@ -277,7 +277,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
           <!-- RIGHT: New campaign Wizard Panel (40%) -->
           <div class="camp-panel-box">
-            <div class="camp-panel-heading">New campaign</div>
+            <div class="camp-panel-heading" id="campWizardHeading">New campaign</div>
 
             <!-- Stepper Header -->
             <div class="camp-stepper">
@@ -517,6 +517,56 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                   </div>
                 </div>
 
+                <!-- SMS Dispatch & Scheduling Method -->
+                <div class="form-group" style="margin-bottom:14px;">
+                  <label class="camp-input-label">SMS Dispatch &amp; Scheduling Method</label>
+                  <select id="newCampSmsSchedulingMethodSelect" class="camp-input-field" onchange="app.handleSmsSchedulingMethodChange(this.value)">
+                    <option value="auto_schedule" selected>System Auto-Schedule (Upload Name &amp; Phone only)</option>
+                    <option value="manual">Manual Scheduling (Upload exact times or Immediate)</option>
+                  </select>
+                  <div style="font-size:11px;color:#64748b;margin-top:4px;">
+                    In System Auto-Schedule mode, the system automatically schedules staggered dispatch times for each contact.
+                  </div>
+                </div>
+
+                <!-- Configurable SMS Auto-Scheduling Options -->
+                <div id="newCampSmsAutoScheduleOptions" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;margin-bottom:14px;">
+                  <div style="font-size:11.5px;font-weight:700;color:#166534;margin-bottom:8px;display:flex;align-items:center;gap:6px;">
+                    <span>How do you want the system to schedule SMS messages?</span>
+                  </div>
+
+                  <div style="margin-bottom:10px;">
+                    <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Scheduling Strategy</label>
+                    <select id="newCampSmsScheduleStrategy" class="camp-input-field" style="background:#fff;font-size:12px;padding:6px 10px;" onchange="app.handleSmsScheduleStrategyChange(this.value)">
+                      <option value="smart" selected>Smart Optimized Schedule (Fastest: Consumes least time)</option>
+                      <option value="interval">Interval Staggering (Spread SMS every X minutes)</option>
+                      <option value="window">Business Hours Window (Distribute SMS within hours)</option>
+                    </select>
+                  </div>
+
+                  <div id="rowSmsScheduleInterval" style="display:none;margin-bottom:8px;">
+                    <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Stagger Interval (Time between messages)</label>
+                    <select id="newCampSmsScheduleInterval" class="camp-input-field" style="background:#fff;font-size:12px;padding:6px 10px;">
+                      <option value="1">Every 1 minute</option>
+                      <option value="2">Every 2 minutes</option>
+                      <option value="5" selected>Every 5 minutes (Recommended)</option>
+                      <option value="10">Every 10 minutes</option>
+                      <option value="15">Every 15 minutes</option>
+                      <option value="30">Every 30 minutes</option>
+                    </select>
+                  </div>
+
+                  <div id="rowSmsScheduleWindow" style="display:none;margin-bottom:8px;">
+                    <label style="font-size:11px;font-weight:600;color:#374151;display:block;margin-bottom:3px;">Business Hours Window</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                      <input type="time" id="newCampSmsWindowStart" value="09:00" class="camp-input-field" style="background:#fff;font-size:12px;padding:5px 8px;flex:1;">
+                      <span style="font-size:11.5px;color:#64748b;">to</span>
+                      <input type="time" id="newCampSmsWindowEnd" value="17:00" class="camp-input-field" style="background:#fff;font-size:12px;padding:5px 8px;flex:1;">
+                    </div>
+                    <div style="font-size:10.5px;color:#64748b;margin-top:3px;">Uploaded contacts will be distributed evenly between these hours.</div>
+                  </div>
+                </div>
+
                 <!-- Initial Contacts File Upload for SMS -->
                 <div class="form-group" style="margin-bottom:18px;">
                   <label class="camp-input-label">Initial contacts (CSV, XLSX, TXT)</label>
@@ -525,7 +575,30 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                     <input type="file" id="newCampaignSmsFileInput" accept=".xlsx,.csv,.xls,.txt,.tsv" style="display:none;" onchange="app.handleNewCampaignSmsFileSelect(this)">
                     <button type="button" class="camp-browse-btn" onclick="document.getElementById('newCampaignSmsFileInput').click()">Browse</button>
                   </div>
+                  <div style="font-size:11px;color:#64748b;margin-top:4px;">
+                    Supports Excel (<strong>.xlsx</strong>) and CSV (<strong>.csv</strong>) with columns: <strong>Name, Phone Number, Time</strong> (e.g. <code>Helen, 0911223344, 14:30</code> or <code>Immediate</code>).
+                  </div>
                   <div id="newCampSmsFileNotice" style="display:none;font-size:11.5px;color:#166534;margin-top:6px;font-weight:600;"></div>
+
+                  <!-- Smart Schedule Suggestion Offer for SMS -->
+                  <div id="newCampSmsSmartOffer" style="display:none;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:12px 14px;margin-top:10px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                      <div style="font-size:12px;font-weight:700;color:#15803d;">Smart Time-Saving Schedule</div>
+                      <span id="smartSmsOfferBadge" style="font-size:11px;font-weight:700;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;">0 contacts</span>
+                    </div>
+                    <div id="smartSmsOfferSummary" style="font-size:11.5px;color:#334155;line-height:1.5;margin-bottom:10px;"></div>
+                    <div id="smartSmsOfferActions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                      <button type="button" class="btn btn-sm btn-primary" onclick="app.approveSmartSmsScheduleSuggestion()" style="font-size:11.5px;padding:5px 14px;background:#00A651;border:none;border-radius:6px;font-weight:700;color:#fff;cursor:pointer;">
+                        Approve suggested schedule
+                      </button>
+                      <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.rejectSmartSmsScheduleSuggestion()" style="font-size:11.5px;padding:5px 12px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;color:#475569;cursor:pointer;">
+                        Use standard interval
+                      </button>
+                    </div>
+                    <div id="smartSmsOfferApproved" style="display:none;font-size:11.5px;font-weight:600;color:#166534;">
+                      <span>Suggested schedule approved. Contacts will be dispatched on the optimized timetable.</span>
+                    </div>
+                  </div>
                 </div>
 
                 <!-- Recipient Preview -->
@@ -1026,6 +1099,68 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                   </div>
                 </div>
 
+              </div>
+
+              <!-- CARD 3: SMS Schedule & Staggering -->
+              <div class="des-panel" style="padding: 22px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                  <div>
+                    <h3 style="font-size:14.5px;font-weight:700;color:#0f172a;margin:0 0 3px 0;">SMS Schedule &amp; Staggering</h3>
+                    <div style="font-size:12px;color:#64748b;">Configure scheduled auto-dispatch for this campaign.</div>
+                  </div>
+                  <span id="smsDesignerScheduleStatusBadge" style="background:#dcfce7;color:#166534;font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;">Active</span>
+                </div>
+
+                <div style="margin-bottom:12px;">
+                  <label style="display:block;font-size:11.5px;color:#475569;font-weight:600;margin-bottom:5px;">Dispatch Method</label>
+                  <select id="smsDesignerCallingMethod" class="des-clean-field" style="width:100%;font-size:12.5px;padding:7px 10px;" onchange="app.handleSmsDesignerMethodChange(this.value)">
+                    <option value="auto_schedule" selected>System Auto-Schedule (Timed / Staggered)</option>
+                    <option value="manual">Manual Scheduling (Exact Uploaded Times or Immediate)</option>
+                  </select>
+                </div>
+
+                <div style="margin-bottom:12px;">
+                  <label style="display:block;font-size:11.5px;color:#475569;font-weight:600;margin-bottom:5px;">Scheduling Strategy</label>
+                  <select id="smsDesignerScheduleStrategy" class="des-clean-field" style="width:100%;font-size:12.5px;padding:7px 10px;" onchange="app.handleSmsDesignerStrategyChange(this.value)">
+                    <option value="interval" selected>Interval Staggering</option>
+                    <option value="smart">Smart Optimized Schedule</option>
+                    <option value="window">Business Hours Window</option>
+                  </select>
+                </div>
+
+                <div id="smsDesignerIntervalRow" style="margin-bottom:14px;">
+                  <label style="display:block;font-size:11.5px;color:#475569;font-weight:600;margin-bottom:5px;">Stagger Interval</label>
+                  <select id="smsDesignerScheduleInterval" class="des-clean-field" style="width:100%;font-size:12.5px;padding:7px 10px;">
+                    <option value="1">Every 1 min</option>
+                    <option value="2">Every 2 min</option>
+                    <option value="5" selected>Every 5 min</option>
+                    <option value="10">Every 10 min</option>
+                    <option value="15">Every 15 min</option>
+                    <option value="30">Every 30 min</option>
+                  </select>
+                </div>
+
+                <div id="smsDesignerWindowRow" style="display:none;margin-bottom:14px;">
+                  <label style="display:block;font-size:11.5px;color:#475569;font-weight:600;margin-bottom:5px;">Business Hours Window</label>
+                  <div style="display:flex;gap:8px;align-items:center;">
+                    <input type="time" id="smsDesignerWindowStart" value="09:00" class="des-clean-field" style="flex:1;font-size:12px;padding:6px 8px;">
+                    <span style="font-size:11.5px;color:#64748b;">to</span>
+                    <input type="time" id="smsDesignerWindowEnd" value="17:00" class="des-clean-field" style="flex:1;font-size:12px;padding:6px 8px;">
+                  </div>
+                </div>
+
+                <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:9px 12px;font-size:11px;color:#166534;line-height:1.45;margin-bottom:14px;">
+                  <span>The system automatically dispatches SMS messages when each contact's scheduled time arrives. Or click <strong>Dispatch All Pending</strong> to blast all immediately.</span>
+                </div>
+
+                <div style="display:flex;gap:8px;">
+                  <button type="button" id="btnToggleSmsAutoSender" class="btn btn-sm" onclick="app.toggleSmsAutoSender()" style="flex:1;padding:7px 12px;font-size:12px;font-weight:700;border:none;border-radius:6px;background:#00A651;color:#fff;cursor:pointer;">
+                    Auto-Sender Active
+                  </button>
+                  <button type="button" class="btn-clean-white" onclick="app.reapplySmsAutoSchedule()" style="padding:7px 12px;font-size:11.5px;font-weight:600;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;" title="Re-calculate and stagger pending contact times">
+                    Re-schedule Pending
+                  </button>
+                </div>
               </div>
 
             </div>
