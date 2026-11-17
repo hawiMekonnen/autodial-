@@ -1863,7 +1863,10 @@ if ($action === 'get_campaign_data') {
                c.ivr_message_text, 
                c.caller_id_number,
                c.caller_id_name,
-               c.ivr_language
+               c.ivr_language,
+               c.sms_template,
+               c.sms_sender_id,
+               c.type AS campaign_type
         FROM leads l
         JOIN campaigns c ON c.id = l.campaign_id
         WHERE l.campaign_id IN ($inPlaceholders)

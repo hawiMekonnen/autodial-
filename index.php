@@ -1782,6 +1782,251 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
     </div>
 
     <!-- ========================================================
+         VIEW: SMS CAMPAIGNS MESSENGER & SCHEDULED QUEUE
+         Dedicated SMS operations workspace matching Dialer layout
+         ======================================================== -->
+    <div class="tab-panel" id="tabSmsCampaigns">
+
+      <!-- SMS KPI Strip (Screenshot Match) -->
+      <div class="camp-metric-row" style="margin-bottom:18px;">
+        <div class="camp-metric-card" style="padding:14px 18px;">
+          <div class="camp-metric-lbl">Active SMS Campaigns</div>
+          <div class="camp-metric-val" id="smsKpiActiveCamps">0</div>
+        </div>
+        <div class="camp-metric-card" style="padding:14px 18px;">
+          <div class="camp-metric-lbl">Total SMS Sent</div>
+          <div class="camp-metric-val" id="smsKpiTotalSent">0</div>
+        </div>
+        <div class="camp-metric-card" style="padding:14px 18px;">
+          <div class="camp-metric-lbl">Pending SMS</div>
+          <div class="camp-metric-val" style="color:#0284c7;" id="smsKpiPending">0</div>
+        </div>
+        <div class="camp-metric-card" style="padding:14px 18px;">
+          <div class="camp-metric-lbl">Delivery Rate</div>
+          <div class="camp-metric-val green" id="smsKpiDeliveryRate">100.0%</div>
+        </div>
+      </div>
+
+      <!-- TOP CONTROLS CARD: Modes, Status, Actions & Campaign Chooser -->
+      <div class="dial-top-card">
+        <!-- Row 1: Left: Dispatch Mode & Status | Right: Auto-Dispatch, Stagger & Actions -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <div class="dial-segmented">
+              <button type="button" class="dial-seg-btn active-green" id="btnSmsModeScheduled" onclick="app.setSmsDispatchMode('scheduled')">On Schedule</button>
+              <button type="button" class="dial-seg-btn" id="btnSmsModeManual" onclick="app.setSmsDispatchMode('manual')">Manual Blast</button>
+            </div>
+
+            <div class="dial-status-pill">
+              <span class="dot"></span>
+              <span id="smsQueueStatusText">Ready &middot; 0 messages in queue</span>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <!-- Auto-Dispatch Toggle Button -->
+            <button type="button" id="btnSmsAutoSenderToggle" class="btn btn-sm btn-outline-secondary" onclick="app.toggleSmsAutoSender()" style="font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
+              <span id="smsAutoSenderDot" style="width:7px;height:7px;border-radius:50%;background:#64748b;display:inline-block;"></span>
+              <span id="smsAutoSenderBtnLabel">Auto-Dispatch: OFF</span>
+            </button>
+
+            <!-- Auto-Schedule Stagger Button -->
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.reapplySmsAutoSchedule()" style="font-size:12px;font-weight:600;" title="Re-calculate staggered send times for pending contacts">
+              Auto-Schedule (Stagger)
+            </button>
+
+            <!-- Dispatch All Pending Button -->
+            <button type="button" class="btn btn-sm btn-success" onclick="app.dispatchSmsCampaignPrompt()" style="font-size:12px;font-weight:700;background:#00A651;border:none;">
+              Dispatch All Pending
+            </button>
+
+            <!-- New SMS Campaign Modal Button -->
+            <button type="button" class="btn btn-sm btn-primary" onclick="app.openNewSmsCampaignModal()" style="font-size:12px;font-weight:700;background:#0284c7;border:none;display:inline-flex;align-items:center;gap:4px;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              <span>+ New SMS Campaign</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Row 2: Campaign Selector (at the top, exactly like Dialer!) -->
+        <div class="dial-campaign-row">
+          <div style="display:flex;align-items:center;gap:14px;flex:1;max-width:640px;">
+            <label style="font-size:13.5px;font-weight:700;color:#0f172a;white-space:nowrap;margin:0;">SMS Campaign</label>
+            <select id="smsDispatcherCampaignDropdown" class="dial-campaign-select" onchange="app.handleSmsDispatcherCampaignChange(this.value)">
+              <option value="" selected>Select SMS Campaign</option>
+            </select>
+          </div>
+
+          <!-- Campaign Info Strip -->
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12.5px;color:#475569;">
+            <span>Sender ID: <strong id="smsCampSenderIdBadge" style="color:#0f172a;">SkyConnect</strong></span>
+            <span>&bull;</span>
+            <span>Strategy: <strong id="smsCampStrategyBadge" style="color:#15803d;">Auto-Schedule (5m)</strong></span>
+            <span>&bull;</span>
+            <button type="button" onclick="app.openEditSmsTemplateModal()" style="background:none;border:none;color:#0284c7;font-weight:700;font-size:12.5px;cursor:pointer;text-decoration:underline;padding:0;">Edit Template</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ACTIVE / NEXT MESSAGE CONSOLE (3 Columns Match to Agent Screen) -->
+      <div class="dial-grid-cols" style="margin-bottom:20px;">
+
+        <!-- COL 1: Customer Information & Scheduled Send Time -->
+        <div class="dial-col-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+            <div>
+              <div class="dial-cust-name" id="smsNextCustName">-</div>
+              <div class="dial-cust-phone" id="smsNextPhoneText" style="margin-bottom:8px;">-</div>
+            </div>
+            <span id="smsNextStatusBadge" class="dial-badge-gray">Idle</span>
+          </div>
+
+          <div style="margin-top:10px;display:flex;flex-direction:column;gap:10px;">
+            <div>
+              <div class="dial-info-lbl">Scheduled Send Time</div>
+              <div class="dial-info-val" id="smsNextScheduledTimeText" style="color:#15803d;font-weight:700;display:flex;align-items:center;gap:6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <span>-</span>
+              </div>
+            </div>
+
+            <div>
+              <div class="dial-info-lbl">Contact Reference</div>
+              <div class="dial-info-val" id="smsNextAccountText">-</div>
+            </div>
+
+            <div>
+              <div class="dial-info-lbl">SMS Campaign</div>
+              <div class="dial-info-val" id="smsNextCampaignText">-</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:auto;padding-top:14px;">
+            <span id="smsNextTierTag" class="dial-badge-mint">Standard Priority</span>
+          </div>
+        </div>
+
+        <!-- COL 2: Message Template & Live Rendered Preview -->
+        <div class="dial-col-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <h3 style="font-size:16px;font-weight:700;color:#0f172a;margin:0;">SMS Message Preview</h3>
+            <span style="font-size:11.5px;color:#00A651;font-weight:600;">Personalized Live</span>
+          </div>
+
+          <!-- Dynamic SMS speech bubble -->
+          <div id="smsNextMessageBubble" class="dial-script-bubble" style="background:#f8fafc;border-left:3px solid #00A651;padding:14px;border-radius:8px;font-size:13px;line-height:1.5;color:#1e293b;min-height:92px;">
+            Select an SMS campaign to preview personalized message.
+          </div>
+
+          <!-- Counter & Segment Info -->
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;font-size:11.5px;color:#64748b;">
+            <span id="smsNextCharCount">0 / 160 characters (1 SMS segment)</span>
+            <button type="button" onclick="app.openEditSmsTemplateModal()" style="background:none;border:none;color:#0284c7;font-weight:600;font-size:11.5px;cursor:pointer;">Customize</button>
+          </div>
+
+          <!-- Variable Pills -->
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed #e2e8f0;align-items:center;">
+            <span style="font-size:11px;color:#64748b;font-weight:600;">Available Tags:</span>
+            <span style="font-size:11px;background:#f1f5f9;color:#0f172a;padding:2px 7px;border-radius:4px;font-family:monospace;">{name}</span>
+            <span style="font-size:11px;background:#f1f5f9;color:#0f172a;padding:2px 7px;border-radius:4px;font-family:monospace;">{phone}</span>
+            <span style="font-size:11px;background:#f1f5f9;color:#0f172a;padding:2px 7px;border-radius:4px;font-family:monospace;">{campaign}</span>
+            <span style="font-size:11px;background:#f1f5f9;color:#0f172a;padding:2px 7px;border-radius:4px;font-family:monospace;">{account}</span>
+          </div>
+        </div>
+
+        <!-- COL 3: Dispatch & Action Controls -->
+        <div class="dial-col-card">
+          <h3 style="font-size:16px;font-weight:700;color:#0f172a;margin:0 0 14px 0;">Message Actions</h3>
+
+          <div style="font-size:12px;color:#64748b;margin-bottom:12px;line-height:1.5;">
+            Dispatch this message directly via the SMS gateway, or advance to the next contact in queue.
+          </div>
+
+          <div style="margin-top:auto;">
+            <div style="display:flex;gap:10px;margin-bottom:10px;">
+              <button type="button" class="dial-btn-outline" onclick="app.handleSmsSkipClick()" style="flex:1;">Skip</button>
+              <button type="button" class="dial-btn-outline primary" onclick="app.handleSmsSaveNextClick()" style="flex:1;">Next Contact</button>
+            </div>
+
+            <!-- Primary Action Button (Matches Dial button) -->
+            <button type="button" class="dial-btn-dial" id="btnSmsSendNext" onclick="app.handleSmsSendCurrentContact()" style="background:#00A651;color:#fff;display:inline-flex;align-items:center;justify-content:center;gap:8px;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+              <span>Send SMS Now</span>
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- SMS CAMPAIGN CONTACTS & SCHEDULED QUEUE TABLE (Matches Picture 2) -->
+      <div class="sc-panel" style="padding:22px 24px;border:1px solid #e2e8f0;border-radius:10px;background:#fff;">
+        <!-- Header Controls Row -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div style="font-size:16px;font-weight:700;color:#0f172a;display:flex;align-items:center;gap:8px;">
+              <span>SMS Campaign Contacts</span>
+              <span id="smsQueueTableCountBadge" style="font-size:12px;font-weight:600;color:#64748b;">0 contacts (0 sent, 0 pending)</span>
+            </div>
+            <div style="font-size:12px;color:#64748b;margin-top:2px;">
+              View scheduled delivery times, personalized messages, and live delivery status.
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <input type="text" id="smsLeadSearch" placeholder="Search contacts..." style="font-size:12.5px;padding:7px 12px;border:1px solid #cbd5e1;border-radius:6px;width:190px;" oninput="app.filterSmsQueueTable(this.value)">
+
+            <select id="smsLeadStatusFilter" style="font-size:12.5px;padding:7px 12px;border:1px solid #cbd5e1;border-radius:6px;" onchange="app.filterSmsQueueStatus(this.value)">
+              <option value="all">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="completed">Sent / Delivered</option>
+              <option value="failed">Failed</option>
+            </select>
+
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.exportSmsQueueCsv()" style="font-size:12px;padding:6px 14px;font-weight:600;">
+              Export CSV
+            </button>
+
+            <button type="button" class="btn btn-sm btn-success" onclick="app.dispatchSmsCampaignPrompt()" style="font-size:12px;padding:6px 14px;font-weight:700;background:#00A651;border:none;">
+              Dispatch All Pending
+            </button>
+
+            <button type="button" class="btn btn-sm btn-success" onclick="app.openAddSmsContactsModal()" style="font-size:12px;padding:6px 14px;font-weight:700;background:#00A651;border:none;">
+              Add numbers
+            </button>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div style="overflow-x:auto;">
+          <table class="des-contact-table" style="width:100%;">
+            <thead>
+              <tr>
+                <th style="width:40px;">#</th>
+                <th>CUSTOMER</th>
+                <th>PHONE</th>
+                <th>SCHEDULED</th>
+                <th>SMS STATUS</th>
+                <th>MESSAGE PREVIEW</th>
+                <th style="text-align:right;">ACTIONS</th>
+              </tr>
+            </thead>
+            <tbody id="smsQueueTableBody">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Show more button -->
+        <div id="smsQueueShowMoreWrap" style="text-align:center;margin-top:14px;display:none;">
+          <button type="button" id="btnSmsQueueShowMore" class="btn btn-sm btn-outline-secondary" onclick="app.showMoreSmsContacts()" style="font-size:12px;padding:7px 24px;font-weight:600;">
+            Show more contacts
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ========================================================
          VIEW 3: CALLBACKS (Unanswered / Scheduled Callbacks)
          ======================================================== -->
 
@@ -2601,6 +2846,205 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
   </div>
 
   <!-- ========================================================
+       MODAL: CREATE NEW SMS CAMPAIGN
+       ======================================================== -->
+  <div id="modalNewSmsCampaign" class="modal-backdrop">
+    <div class="modal-dialog" style="max-width:560px;">
+      <div class="modal-header">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:34px;height:34px;border-radius:8px;background:#e0f2fe;color:#0284c7;display:flex;align-items:center;justify-content:center;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+          </div>
+          <div>
+            <h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">New SMS Campaign</h3>
+            <div style="font-size:11.5px;color:#64748b;">Direct text messaging and scheduled broadcast</div>
+          </div>
+        </div>
+        <button type="button" class="btn-close" onclick="app.closeModal('modalNewSmsCampaign')">&times;</button>
+      </div>
+      <form id="formNewSmsCampaign" onsubmit="app.handleNewSmsCampaignSubmit(event)">
+        <div class="modal-body">
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Campaign Name *</label>
+            <input type="text" id="newSmsModalCampName" class="form-control" placeholder="e.g. Appointment Reminder SMS" required style="font-size:13px;">
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+            <div class="form-group">
+              <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Sender ID</label>
+              <input type="text" id="newSmsModalSenderId" class="form-control" value="SkyConnect" maxlength="11" placeholder="e.g. SkyConnect" style="font-size:13px;">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Scheduling Strategy</label>
+              <select id="newSmsModalScheduleStrategy" class="form-control" style="font-size:13px;" onchange="app.handleNewSmsStrategyChange(this.value)">
+                <option value="auto_schedule" selected>Auto-Schedule (Staggered)</option>
+                <option value="immediate">Immediate (Blast All)</option>
+                <option value="scheduled_date">Specific Date and Time</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Stagger Interval Row -->
+          <div id="newSmsModalIntervalRow" class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Interval Between Messages</label>
+            <select id="newSmsModalIntervalMins" class="form-control" style="font-size:13px;">
+              <option value="2">Every 2 minutes</option>
+              <option value="5" selected>Every 5 minutes (Recommended)</option>
+              <option value="10">Every 10 minutes</option>
+              <option value="15">Every 15 minutes</option>
+            </select>
+          </div>
+
+          <!-- Specific Start Date & Time Row -->
+          <div id="newSmsModalDateTimeRow" style="display:none;margin-bottom:12px;background:#f8fafc;padding:10px;border-radius:8px;border:1px solid #cbd5e1;">
+            <div style="font-size:11.5px;font-weight:600;color:#475569;margin-bottom:6px;">Scheduled Start Time:</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <input type="date" id="newSmsModalStartDate" class="form-control" style="font-size:12.5px;">
+              <input type="time" id="newSmsModalStartTime" class="form-control" style="font-size:12.5px;">
+            </div>
+          </div>
+
+          <!-- SMS Message Template -->
+          <div class="form-group" style="margin-bottom:12px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;margin:0;">SMS Message Template *</label>
+              <span id="newSmsModalCharCount" style="font-size:11px;color:#64748b;">0 / 160 (1 SMS)</span>
+            </div>
+            <textarea id="newSmsModalTemplate" class="form-control" rows="3" required style="font-size:13px;resize:vertical;" oninput="app.updateNewSmsCharCount(this.value)" placeholder="Hello {name}, this is an important message regarding your {campaign} update.">Hello {name}, this is an important message regarding your {campaign} update.</textarea>
+
+            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;">
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{name}')" style="font-size:11px;padding:2px 7px;">+{name}</button>
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{phone}')" style="font-size:11px;padding:2px 7px;">+{phone}</button>
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{campaign}')" style="font-size:11px;padding:2px 7px;">+{campaign}</button>
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{account}')" style="font-size:11px;padding:2px 7px;">+{account}</button>
+            </div>
+          </div>
+
+          <!-- Upload Initial Contacts (CSV or Paste) -->
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Initial Contacts (Optional CSV or Text)</label>
+            <input type="file" id="newSmsModalFileInput" class="form-control" accept=".csv,.txt" style="font-size:12px;padding:6px;">
+            <div style="font-size:11px;color:#64748b;margin-top:4px;">You can also add numbers after creating the campaign.</div>
+          </div>
+        </div>
+        <div class="modal-footer" style="padding:12px 18px;display:flex;justify-content:flex-end;gap:10px;">
+          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="app.closeModal('modalNewSmsCampaign')">Cancel</button>
+          <button type="submit" class="btn btn-success btn-sm" id="btnSubmitNewSmsCamp" style="background:#00A651;border:none;font-weight:700;">Create SMS Campaign</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ========================================================
+       MODAL: ADD NUMBERS TO SMS CAMPAIGN
+       ======================================================== -->
+  <div id="modalAddSmsContacts" class="modal-backdrop">
+    <div class="modal-dialog" style="max-width:500px;">
+      <div class="modal-header">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:34px;height:34px;border-radius:8px;background:#e8f8ee;color:#00A651;display:flex;align-items:center;justify-content:center;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </div>
+          <div>
+            <h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">Add Numbers to SMS Campaign</h3>
+            <div style="font-size:11.5px;color:#64748b;" id="modalAddSmsCampSubtitle">Active Campaign</div>
+          </div>
+        </div>
+        <button type="button" class="btn-close" onclick="app.closeModal('modalAddSmsContacts')">&times;</button>
+      </div>
+      <form id="formAddSmsContacts" onsubmit="app.handleAddSmsContactsSubmit(event)">
+        <div class="modal-body">
+          <!-- Method Toggle -->
+          <div style="display:flex;gap:10px;margin-bottom:14px;">
+            <button type="button" id="btnAddSmsMethodFile" class="btn btn-sm btn-primary" onclick="app.switchAddSmsMethod('file')" style="flex:1;font-size:12px;font-weight:600;">Upload CSV File</button>
+            <button type="button" id="btnAddSmsMethodManual" class="btn btn-sm btn-outline-secondary" onclick="app.switchAddSmsMethod('manual')" style="flex:1;font-size:12px;font-weight:600;">Paste Numbers</button>
+          </div>
+
+          <!-- File Upload Section -->
+          <div id="addSmsSectionFile">
+            <div class="form-group" style="margin-bottom:12px;">
+              <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Choose CSV or Text File</label>
+              <input type="file" id="addSmsFileInput" class="form-control" accept=".csv,.txt" style="font-size:12px;padding:6px;">
+              <div style="font-size:11px;color:#64748b;margin-top:4px;">Columns: Phone Number, Customer Name, Scheduled Time (optional)</div>
+            </div>
+          </div>
+
+          <!-- Manual Section -->
+          <div id="addSmsSectionManual" style="display:none;">
+            <div class="form-group" style="margin-bottom:12px;">
+              <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Phone Numbers (one per line)</label>
+              <textarea id="addSmsManualText" class="form-control" rows="4" placeholder="0911223344, Abebe Kebede&#10;0922334455, Almaz Tadesse" style="font-size:12.5px;"></textarea>
+            </div>
+          </div>
+
+          <!-- Scheduling Behavior -->
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Scheduling for New Contacts</label>
+            <select id="addSmsSchedulingSelect" class="form-control" style="font-size:12.5px;">
+              <option value="auto_stagger" selected>Auto-Schedule (Stagger by campaign interval)</option>
+              <option value="immediate">Immediate (Ready for blast)</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer" style="padding:12px 18px;display:flex;justify-content:flex-end;gap:10px;">
+          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="app.closeModal('modalAddSmsContacts')">Cancel</button>
+          <button type="submit" class="btn btn-success btn-sm" id="btnSubmitAddSms" style="background:#00A651;border:none;font-weight:700;">Import Numbers</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ========================================================
+       MODAL: EDIT SMS CAMPAIGN TEMPLATE
+       ======================================================== -->
+  <div id="modalEditSmsTemplate" class="modal-backdrop">
+    <div class="modal-dialog" style="max-width:520px;">
+      <div class="modal-header">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:34px;height:34px;border-radius:8px;background:#e0f2fe;color:#0284c7;display:flex;align-items:center;justify-content:center;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+          </div>
+          <div>
+            <h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">Edit SMS Template</h3>
+            <div style="font-size:11.5px;color:#64748b;" id="modalEditSmsSubtitle">Campaign Template</div>
+          </div>
+        </div>
+        <button type="button" class="btn-close" onclick="app.closeModal('modalEditSmsTemplate')">&times;</button>
+      </div>
+      <form id="formEditSmsTemplate" onsubmit="app.handleSaveSmsTemplate(event)">
+        <div class="modal-body">
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Sender ID</label>
+            <input type="text" id="editSmsSenderId" class="form-control" maxlength="11" style="font-size:13px;" required>
+          </div>
+
+          <div class="form-group" style="margin-bottom:6px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;margin:0;">SMS Message Template</label>
+              <span id="editSmsCharCount" style="font-size:11px;color:#64748b;">0 / 160 (1 SMS)</span>
+            </div>
+            <textarea id="editSmsTemplateText" class="form-control" rows="4" style="font-size:13px;resize:vertical;" oninput="app.updateEditSmsCharCount(this.value)" required></textarea>
+
+            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;">
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{name}')" style="font-size:11px;padding:2px 7px;">+{name}</button>
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{phone}')" style="font-size:11px;padding:2px 7px;">+{phone}</button>
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{campaign}')" style="font-size:11px;padding:2px 7px;">+{campaign}</button>
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{account}')" style="font-size:11px;padding:2px 7px;">+{account}</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer" style="padding:12px 18px;display:flex;justify-content:flex-end;gap:10px;">
+          <button type="button" class="btn btn-outline-secondary btn-sm" onclick="app.closeModal('modalEditSmsTemplate')">Cancel</button>
+          <button type="submit" class="btn btn-success btn-sm" id="btnSubmitEditSms" style="background:#00A651;border:none;font-weight:700;">Save Template</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ========================================================
        MODAL: SEND TEST CALL (Automated Voice Test)
        ======================================================== -->
   <div id="modalSendTestCall" class="modal-backdrop">
@@ -3288,6 +3732,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
   const NAV_SECTION_TITLES = {
     'tabCampaigns': 'Campaigns Management',
     'tabDialer': 'Agent Softphone & Live Queue',
+    'tabSmsCampaigns': 'SMS Campaign Messenger & Scheduled Queue',
     'tabCallbacks': 'Unanswered & Follow-up Calls',
     'tabIvrResponses': 'Interactive IVR Responses & Analytics',
     'tabReports': 'Analytics & Call Reports',
@@ -3326,6 +3771,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
       try {
         if (tabId === 'tabCampaigns' && app.loadCampaignsOverview) app.loadCampaignsOverview();
         if (tabId === 'tabDialer' && app.renderAgentScreen) app.renderAgentScreen();
+        if (tabId === 'tabSmsCampaigns' && app.loadSmsDispatcherScreen) app.loadSmsDispatcherScreen();
         if (tabId === 'tabCallbacks' && app.loadCallbacksList) app.loadCallbacksList();
         if (tabId === 'tabIvrResponses' && app.loadIvrResponsesReport) app.loadIvrResponsesReport();
         if (tabId === 'tabCompliance' && app.loadDncList) app.loadDncList();
@@ -3346,6 +3792,8 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
       switchNav('tabDialer', 'dialer/agent');
     } else if (tabId === 'tabLeadManager' || tabId === 'tabContacts') {
       switchNav('tabCampaigns', 'campaigns');
+    } else if (tabId === 'tabSmsCampaigns') {
+      switchNav('tabSmsCampaigns', 'sms-campaigns');
     } else if (tabId === 'tabUnanswered') {
       switchNav('tabCallbacks', 'callbacks');
     } else if (tabId === 'tabIVRStudio') {

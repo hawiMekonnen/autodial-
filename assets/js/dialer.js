@@ -92,6 +92,16 @@ class SkyKinDialerApp {
     this.unansRowsPerPage = 25;
     this.selectedUnansweredIds = new Set();
 
+    // SMS Dispatcher and Live Messenger state
+    this.activeSmsCampaignId = null;
+    this.activeSmsCampaign = null;
+    this.activeSmsLead = null;
+    this.smsLeads = [];
+    this._smsSearchFilter = '';
+    this._smsStatusFilter = 'all';
+    this._smsPageLimit = 20;
+    this.smsDispatchMode = 'scheduled';
+
     this.initElements();
     this.initEventListeners();
     try {
@@ -1571,9 +1581,9 @@ class SkyKinDialerApp {
         : `Caller ID ${this.escapeHtml(callerId)}`;
 
       return `
-        <tr class="camp-table-row" style="cursor:pointer;" onclick="selectCampaignForDesigner(${c.id})">
+        <tr class="camp-table-row" style="cursor:pointer;" onclick="${isSmsOnly ? `app.showSmsCampaignsView(${c.id})` : `selectCampaignForDesigner(${c.id})`}">
           <td style="padding:14px 12px;vertical-align:middle;">
-            <div style="font-weight:700;color:#0f172a;font-size:13.5px;line-height:1.3;cursor:pointer;" onclick="selectCampaignForDesigner(${c.id})">${this.escapeHtml(c.name)}</div>
+            <div style="font-weight:700;color:#0f172a;font-size:13.5px;line-height:1.3;cursor:pointer;" onclick="${isSmsOnly ? `app.showSmsCampaignsView(${c.id})` : `selectCampaignForDesigner(${c.id})`}">${this.escapeHtml(c.name)}</div>
             <div style="font-size:11.5px;color:#64748b;margin-top:2px;">${subInfo}</div>
           </td>
           <td style="padding:14px 12px;vertical-align:middle;color:#334155;font-size:13px;font-weight:500;">
@@ -1601,10 +1611,10 @@ class SkyKinDialerApp {
           </td>
           <td style="padding:14px 12px;vertical-align:middle;text-align:right;white-space:nowrap;" onclick="event.stopPropagation()">
             ${isSmsOnly
-              ? `<button type="button" class="btn btn-sm btn-success" style="padding:4px 10px;font-size:12px;font-weight:700;margin-right:4px;background:#00A651;border:none;" onclick="selectCampaignForDesigner(${c.id})" title="Open SMS Campaign Designer">Send SMS</button>`
+              ? `<button type="button" class="btn btn-sm btn-success" style="padding:4px 10px;font-size:12px;font-weight:700;margin-right:4px;background:#00A651;border:none;" onclick="app.showSmsCampaignsView(${c.id})" title="Open SMS Campaign Messenger">Send SMS</button>`
               : `<button type="button" class="btn btn-sm btn-success" style="padding:4px 10px;font-size:12px;font-weight:700;margin-right:4px;" onclick="app.openCampaignInQueue(${c.id})" title="Launch Outbound Dialer for this Campaign">Dial</button>`
             }
-            <button type="button" class="camp-btn-design" onclick="selectCampaignForDesigner(${c.id})" title="Configure Campaign Message">Design</button>
+            <button type="button" class="camp-btn-design" onclick="${isSmsOnly ? `app.showSmsCampaignsView(${c.id})` : `selectCampaignForDesigner(${c.id})`}" title="Configure Campaign">${isSmsOnly ? 'Open' : 'Design'}</button>
             <button type="button" class="camp-btn-more" onclick="app.openCampaignActionMenu(${c.id}, event)" title="More options">More</button>
           </td>
         </tr>
@@ -3019,31 +3029,25 @@ class SkyKinDialerApp {
     }
   }
 
-  showSmsCampaignsView() {
+  showSmsCampaignsView(campaignId = null) {
     this.campaignViewMode = 'sms';
 
     // Sidebar active pill
     document.querySelectorAll('.sc-nav-item').forEach(b => b.classList.remove('active'));
     document.getElementById('sbSmsCampaigns')?.classList.add('active');
 
-    // Show tabCampaigns panel
+    // Show tabSmsCampaigns panel
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    document.getElementById('tabCampaigns')?.classList.add('active');
-
-    if (typeof window.switchCampaignSubView === 'function') {
-      window.switchCampaignSubView('list');
-    }
+    document.getElementById('tabSmsCampaigns')?.classList.add('active');
 
     // Update section titles and breadcrumb
     const headerTitle = document.getElementById('headerSectionTitle');
-    if (headerTitle) headerTitle.textContent = 'SMS Campaign Management';
+    if (headerTitle) headerTitle.textContent = 'SMS Campaign Messenger & Scheduled Queue';
     const topUrl = document.getElementById('topUrlText');
     if (topUrl) topUrl.textContent = 'skyconnect.local/sms-campaigns';
 
-    this.updateCampaignOverviewHeader(true);
-    this.selectCampaignMode('sms_only');
-    this.filterCampaignsTable();
     this.updateSmsKpiCards();
+    this.loadSmsDispatcherScreen(campaignId);
     this.showToast('Viewing SMS Campaigns', 'info');
   }
 
@@ -3116,7 +3120,17 @@ class SkyKinDialerApp {
     });
 
     const totalProcessed = totalSent + totalFailed;
-    const rateStr = totalProcessed > 0 ? ((totalSent / totalProcessed) * 100).toFixed(1) + '%' : '100%';
+    const rateStr = totalProcessed > 0 ? ((totalSent / totalProcessed) * 100).toFixed(1) + '%' : '100.0%';
+
+    // Update dedicated SMS view KPI cards
+    const dActive = document.getElementById('smsKpiActiveCamps');
+    if (dActive) dActive.textContent = smsCamps.length;
+    const dSent = document.getElementById('smsKpiTotalSent');
+    if (dSent) dSent.textContent = totalSent;
+    const dPending = document.getElementById('smsKpiPending');
+    if (dPending) dPending.textContent = totalPending;
+    const dRate = document.getElementById('smsKpiDeliveryRate');
+    if (dRate) dRate.textContent = rateStr;
 
     if (lbl1) lbl1.textContent = 'Active SMS Campaigns';
     if (val1) val1.textContent = smsCamps.length;
@@ -3146,12 +3160,794 @@ class SkyKinDialerApp {
     }
   }
 
+  /* ─────────────────────────────────────────────────────────
+     SMS Messenger & Live Queue Workspace Engine
+     ───────────────────────────────────────────────────────── */
+  async loadSmsDispatcherScreen(preferredCampId = null) {
+    try {
+      if (!this.allCampaigns || this.allCampaigns.length === 0) {
+        await this.loadCampaignsOverview();
+      }
+
+      const smsCamps = (this.allCampaigns || []).filter(c => c.type === 'sms_only');
+      const dropdown = document.getElementById('smsDispatcherCampaignDropdown');
+
+      if (dropdown) {
+        if (smsCamps.length === 0) {
+          dropdown.innerHTML = '<option value="">No SMS campaigns found. Click "+ New SMS Campaign"</option>';
+        } else {
+          dropdown.innerHTML = smsCamps.map(c => {
+            const total = Number(c.total_leads || c.total_leads_count || 0);
+            const sent = Number(c.completed_leads || c.completed_leads_count || 0);
+            const pending = Math.max(0, total - sent);
+            return `<option value="${c.id}">${this.escapeHtml(c.name)} (${pending} pending / ${total} total)</option>`;
+          }).join('');
+        }
+      }
+
+      // Determine active SMS campaign
+      let targetId = preferredCampId ? Number(preferredCampId) : null;
+      if (!targetId && this.activeSmsCampaignId) {
+        if (smsCamps.some(c => Number(c.id) === Number(this.activeSmsCampaignId))) {
+          targetId = Number(this.activeSmsCampaignId);
+        }
+      }
+      if (!targetId && smsCamps.length > 0) {
+        targetId = Number(smsCamps[0].id);
+      }
+
+      this.activeSmsCampaignId = targetId;
+      if (dropdown && targetId) {
+        dropdown.value = String(targetId);
+      }
+
+      this.updateSmsKpiCards();
+
+      if (!targetId) {
+        this.renderSmsActiveMessageConsole(null);
+        this.renderSmsQueueTable();
+        return;
+      }
+
+      // Fetch campaign data and leads for this SMS campaign
+      const res = await fetch(`api.php?action=get_campaign_data&campaign_id=${targetId}`);
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Failed to load campaign data');
+
+      this.activeSmsCampaign = data.campaign;
+      this.smsLeads = data.leads || [];
+
+      // Update info badges in the top card
+      const senderBadge = document.getElementById('smsCampSenderIdBadge');
+      if (senderBadge) senderBadge.textContent = this.activeSmsCampaign?.sms_sender_id || 'SkyConnect';
+
+      const stratBadge = document.getElementById('smsCampStrategyBadge');
+      if (stratBadge) {
+        const strat = this.activeSmsCampaign?.schedule_strategy || 'auto_schedule';
+        const mins = this.activeSmsCampaign?.schedule_interval_mins || 5;
+        stratBadge.textContent = strat === 'immediate' ? 'Immediate Blast' : `Auto-Schedule (${mins}m)`;
+      }
+
+      this.renderSmsActiveMessageConsole();
+      this.renderSmsQueueTable();
+    } catch (err) {
+      console.warn('loadSmsDispatcherScreen error:', err);
+      this.showToast('Could not load SMS campaign data', 'error');
+    }
+  }
+
+  handleSmsDispatcherCampaignChange(campId) {
+    const id = Number(campId);
+    if (!id) return;
+    this.activeSmsCampaignId = id;
+    this.activeSmsLead = null;
+    this.loadSmsDispatcherScreen(id);
+    const camp = (this.allCampaigns || []).find(c => Number(c.id) === id);
+    if (camp) {
+      this.showToast(`Active SMS campaign set to: ${camp.name}`, 'info');
+    }
+  }
+
+  setSmsDispatchMode(mode) {
+    this.smsDispatchMode = mode;
+    const btnSched = document.getElementById('btnSmsModeScheduled');
+    const btnMan = document.getElementById('btnSmsModeManual');
+    if (mode === 'scheduled') {
+      btnSched?.classList.add('active-green');
+      btnMan?.classList.remove('active-green');
+      this.showToast('SMS Dispatch mode: On Schedule', 'info');
+    } else {
+      btnMan?.classList.add('active-green');
+      btnSched?.classList.remove('active-green');
+      this.showToast('SMS Dispatch mode: Manual Blast', 'info');
+    }
+  }
+
+  renderSmsActiveMessageConsole(overrideLead = undefined) {
+    const leads = this.smsLeads || [];
+    const pendingLeads = leads.filter(l => (l.status || '').toLowerCase() === 'pending');
+
+    if (overrideLead !== undefined) {
+      this.activeSmsLead = overrideLead;
+    } else if (!this.activeSmsLead || !leads.some(l => Number(l.id) === Number(this.activeSmsLead.id))) {
+      this.activeSmsLead = pendingLeads.length > 0 ? pendingLeads[0] : (leads.length > 0 ? leads[0] : null);
+    }
+
+    const nameEl = document.getElementById('smsNextCustName');
+    const phoneEl = document.getElementById('smsNextPhoneText');
+    const statusBadge = document.getElementById('smsNextStatusBadge');
+    const timeEl = document.getElementById('smsNextScheduledTimeText');
+    const acctEl = document.getElementById('smsNextAccountText');
+    const campEl = document.getElementById('smsNextCampaignText');
+    const tierTag = document.getElementById('smsNextTierTag');
+    const bubbleEl = document.getElementById('smsNextMessageBubble');
+    const countEl = document.getElementById('smsNextCharCount');
+    const queueStatusText = document.getElementById('smsQueueStatusText');
+
+    const totalCount = leads.length;
+    const sentCount = leads.filter(l => (l.status || '').toLowerCase() === 'completed').length;
+    const pendingCount = pendingLeads.length;
+
+    if (queueStatusText) {
+      queueStatusText.innerHTML = `Ready &middot; ${totalCount} contact${totalCount === 1 ? '' : 's'} in queue (${sentCount} sent, ${pendingCount} pending)`;
+    }
+
+    if (!this.activeSmsLead) {
+      if (nameEl) nameEl.textContent = 'Queue Empty';
+      if (phoneEl) phoneEl.textContent = '-';
+      if (statusBadge) { statusBadge.textContent = 'All Completed'; statusBadge.className = 'dial-badge-gray'; }
+      if (timeEl) timeEl.innerHTML = '<span>-</span>';
+      if (acctEl) acctEl.textContent = '-';
+      if (campEl) campEl.textContent = this.activeSmsCampaign?.name || '-';
+      if (bubbleEl) bubbleEl.innerHTML = 'All scheduled messages for this campaign have been dispatched. Upload new numbers or select another campaign to continue.';
+      if (countEl) countEl.textContent = '0 / 160 characters (0 SMS)';
+      const btnSend = document.getElementById('btnSmsSendNext');
+      if (btnSend) btnSend.disabled = true;
+      return;
+    }
+
+    const lead = this.activeSmsLead;
+    const btnSend = document.getElementById('btnSmsSendNext');
+    if (btnSend) btnSend.disabled = false;
+
+    if (nameEl) nameEl.textContent = lead.customer_name || 'Contact';
+    if (phoneEl) phoneEl.textContent = lead.phone_number || '-';
+
+    const isPending = (lead.status || '').toLowerCase() === 'pending';
+    if (statusBadge) {
+      statusBadge.textContent = isPending ? 'Scheduled' : (lead.status === 'completed' ? 'Delivered' : lead.status);
+      statusBadge.className = isPending ? 'dial-badge-mint' : 'dial-badge-gray';
+    }
+
+    const schedInfo = this.getLeadScheduleInfo(lead);
+    if (timeEl) {
+      const isDue = this.isLeadDueForCall(lead);
+      const color = isDue ? '#166534' : '#0284c7';
+      const badge = isDue ? '<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;">Ready Now</span>' : '';
+      timeEl.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+        <span style="color:${color};">${this.escapeHtml(schedInfo.formatted || schedInfo.displayTime || 'Immediate')}</span>
+        ${badge}
+      `;
+    }
+
+    const refNum = lead.account_number || (lead.id ? `REF-${lead.id}` : '-');
+    if (acctEl) acctEl.textContent = refNum;
+    const campName = this.activeSmsCampaign?.name || lead.campaign_name || 'Campaign';
+    if (campEl) campEl.textContent = campName;
+    if (tierTag) tierTag.textContent = lead.priority || 'Standard Priority';
+
+    // Live personalized message template preview
+    const rawTemplate = (this.activeSmsCampaign?.sms_template || 'Hello {name}, this is an important message regarding your {campaign} update.').trim();
+    const cName = lead.customer_name || 'Customer';
+    const cPhone = lead.phone_number || '';
+
+    const rendered = rawTemplate
+      .replace(/\{name\}|\{customer_name\}/gi, cName)
+      .replace(/\{phone\}|\{phone_number\}/gi, cPhone)
+      .replace(/\{campaign\}|\{campaign_name\}/gi, campName)
+      .replace(/\{account\}|\{account_number\}/gi, refNum);
+
+    if (bubbleEl) {
+      let highlighted = this.escapeHtml(rawTemplate)
+        .replace(/\{name\}|\{customer_name\}/gi, `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(cName)}</strong>`)
+        .replace(/\{phone\}|\{phone_number\}/gi, `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(cPhone)}</strong>`)
+        .replace(/\{campaign\}|\{campaign_name\}/gi, `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(campName)}</strong>`)
+        .replace(/\{account\}|\{account_number\}/gi, `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(refNum)}</strong>`);
+      bubbleEl.innerHTML = `&ldquo;${highlighted.replace(/\n/g, '<br>')}&rdquo;`;
+    }
+
+    if (countEl) {
+      const len = rendered.length;
+      const segments = Math.ceil(len / 160) || 1;
+      countEl.textContent = `${len} / 160 characters (${segments} SMS segment${segments > 1 ? 's' : ''})`;
+    }
+  }
+
+  renderSmsQueueTable() {
+    const tbody = document.getElementById('smsQueueTableBody');
+    const badge = document.getElementById('smsQueueTableCountBadge');
+    const showMoreWrap = document.getElementById('smsQueueShowMoreWrap');
+    if (!tbody) return;
+
+    let leads = this.smsLeads || [];
+    const totalCount = leads.length;
+    const sentCount = leads.filter(l => (l.status || '').toLowerCase() === 'completed').length;
+    const pendingCount = leads.filter(l => (l.status || '').toLowerCase() === 'pending').length;
+
+    if (badge) {
+      badge.textContent = `${totalCount} contacts (${sentCount} sent, ${pendingCount} pending)`;
+    }
+
+    // Apply Search Filter
+    if (this._smsSearchFilter) {
+      const q = this._smsSearchFilter.toLowerCase();
+      leads = leads.filter(l =>
+        (l.customer_name || '').toLowerCase().includes(q) ||
+        (l.phone_number || '').includes(q) ||
+        (l.account_number || '').toLowerCase().includes(q)
+      );
+    }
+
+    // Apply Status Filter
+    if (this._smsStatusFilter && this._smsStatusFilter !== 'all') {
+      leads = leads.filter(l => (l.status || '').toLowerCase() === this._smsStatusFilter);
+    }
+
+    if (leads.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="7" style="text-align:center;padding:24px;color:#94a3b8;font-size:13px;">
+            No contacts match the filter. Add contacts or adjust search.
+          </td>
+        </tr>
+      `;
+      if (showMoreWrap) showMoreWrap.style.display = 'none';
+      return;
+    }
+
+    const limit = this._smsPageLimit || 20;
+    const visibleLeads = leads.slice(0, limit);
+
+    const rawTemplate = (this.activeSmsCampaign?.sms_template || 'Hello {name}, this is an important message regarding your {campaign} update.').trim();
+    const campName = this.activeSmsCampaign?.name || 'Campaign';
+
+    tbody.innerHTML = visibleLeads.map((l, idx) => {
+      const isPending = (l.status || '').toLowerCase() === 'pending';
+      const isCompleted = (l.status || '').toLowerCase() === 'completed';
+
+      const statusBadge = isCompleted
+        ? '<span style="background:#e8f8ee;color:#00A651;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Sent</span>'
+        : (isPending
+          ? '<span style="background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Pending</span>'
+          : '<span style="background:#fee2e2;color:#ef4444;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Failed</span>');
+
+      const schedInfo = this.getLeadScheduleInfo(l);
+      const isDue = this.isLeadDueForCall(l);
+      const schedDisplay = schedInfo.formatted || schedInfo.displayTime || 'Immediate';
+      const schedColor = isDue ? '#166534' : '#475569';
+
+      const cName = l.customer_name || 'Customer';
+      const cPhone = l.phone_number || '';
+      const refNum = l.account_number || ('REF-' + l.id);
+
+      const msgPreview = rawTemplate
+        .replace(/\{name\}|\{customer_name\}/gi, cName)
+        .replace(/\{phone\}|\{phone_number\}/gi, cPhone)
+        .replace(/\{campaign\}|\{campaign_name\}/gi, campName)
+        .replace(/\{account\}|\{account_number\}/gi, refNum);
+
+      const isCurrentActive = this.activeSmsLead && Number(this.activeSmsLead.id) === Number(l.id);
+      const rowBg = isCurrentActive ? 'background:#f0fdf4;' : '';
+
+      return `
+        <tr style="${rowBg}transition:background 0.15s;cursor:pointer;" onclick="app.previewSmsLead(${l.id})">
+          <td style="color:#94a3b8;font-size:12px;vertical-align:middle;">${idx + 1}</td>
+          <td style="font-weight:700;color:#0f172a;font-size:13.5px;vertical-align:middle;">${this.escapeHtml(cName)}</td>
+          <td style="color:#00A651;font-weight:600;font-size:13px;vertical-align:middle;">${this.escapeHtml(cPhone)}</td>
+          <td style="vertical-align:middle;">
+            <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:${schedColor};">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+              <span>${this.escapeHtml(schedDisplay)}</span>
+              ${isDue && isPending ? '<span style="background:#dcfce7;color:#166534;font-size:9.5px;padding:1px 5px;border-radius:4px;font-weight:700;">Ready</span>' : ''}
+            </div>
+          </td>
+          <td style="vertical-align:middle;">${statusBadge}</td>
+          <td style="color:#64748b;font-size:12px;vertical-align:middle;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${this.escapeHtml(msgPreview)}">
+            ${this.escapeHtml(msgPreview)}
+          </td>
+          <td style="text-align:right;vertical-align:middle;white-space:nowrap;">
+            ${isPending ? `<button type="button" class="btn btn-xs btn-success" style="padding:4px 10px;font-size:11.5px;font-weight:700;background:#00A651;border:none;margin-right:6px;" onclick="event.stopPropagation(); app.sendSingleSmsLead(${l.id})">Send SMS</button>` : ''}
+            <button type="button" class="btn btn-xs btn-outline-danger" style="padding:4px 8px;font-size:11px;" onclick="event.stopPropagation(); app.deleteLead(${l.id})" title="Delete Contact">Delete</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    if (showMoreWrap) {
+      if (leads.length > limit) {
+        showMoreWrap.style.display = 'block';
+        const remaining = leads.length - limit;
+        const btnMore = document.getElementById('btnSmsQueueShowMore');
+        if (btnMore) btnMore.textContent = `Show ${remaining} more contacts`;
+      } else {
+        showMoreWrap.style.display = 'none';
+      }
+    }
+  }
+
+  previewSmsLead(leadId) {
+    const lead = (this.smsLeads || []).find(l => Number(l.id) === Number(leadId));
+    if (!lead) return;
+    this.activeSmsLead = lead;
+    this.renderSmsActiveMessageConsole(lead);
+    this.renderSmsQueueTable();
+  }
+
+  async handleSmsSendCurrentContact() {
+    if (!this.activeSmsLead) {
+      this.showToast('No active contact selected to send SMS', 'warning');
+      return;
+    }
+
+    const lead = this.activeSmsLead;
+    const btn = document.getElementById('btnSmsSendNext');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span>Sending...</span>';
+    }
+
+    try {
+      const rawTemplate = (this.activeSmsCampaign?.sms_template || 'Hello {name}, thank you for choosing {campaign}.').trim();
+      const campName = this.activeSmsCampaign?.name || 'Campaign';
+      const cName = lead.customer_name || 'Customer';
+      const cPhone = lead.phone_number || '';
+      const refNum = lead.account_number || ('REF-' + lead.id);
+
+      const msg = rawTemplate
+        .replace(/\{name\}|\{customer_name\}/gi, cName)
+        .replace(/\{phone\}|\{phone_number\}/gi, cPhone)
+        .replace(/\{campaign\}|\{campaign_name\}/gi, campName)
+        .replace(/\{account\}|\{account_number\}/gi, refNum);
+
+      const fd = new FormData();
+      fd.append('phone_number', cPhone);
+      fd.append('message', msg);
+      fd.append('lead_id', lead.id);
+      fd.append('campaign_id', this.activeSmsCampaignId || lead.campaign_id);
+      fd.append('customer_name', cName);
+      fd.append('sender_id', this.activeSmsCampaign?.sms_sender_id || 'SkyConnect');
+
+      const res = await fetch('api.php?action=send_sms', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (data && data.success) {
+        this.showToast(`SMS sent successfully to ${cName} (${cPhone})`, 'success');
+        lead.status = 'completed';
+        if (this.activeSmsCampaign) {
+          this.activeSmsCampaign.completed_leads = Number(this.activeSmsCampaign.completed_leads || 0) + 1;
+        }
+
+        // Advance to next pending lead
+        const nextPending = (this.smsLeads || []).find(l => Number(l.id) !== Number(lead.id) && (l.status || '').toLowerCase() === 'pending');
+        this.activeSmsLead = nextPending || null;
+
+        this.renderSmsActiveMessageConsole();
+        this.renderSmsQueueTable();
+        this.updateSmsKpiCards();
+      } else {
+        this.showToast(data?.error || 'Failed to deliver SMS', 'error');
+      }
+    } catch (e) {
+      this.showToast('Network error while dispatching SMS', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          <span>Send SMS Now</span>
+        `;
+      }
+    }
+  }
+
+  async sendSingleSmsLead(leadId) {
+    const lead = (this.smsLeads || []).find(l => Number(l.id) === Number(leadId));
+    if (!lead) return;
+    this.previewSmsLead(leadId);
+    await this.handleSmsSendCurrentContact();
+  }
+
+  handleSmsSkipClick() {
+    const leads = this.smsLeads || [];
+    if (leads.length === 0) return;
+    const curIdx = this.activeSmsLead ? leads.findIndex(l => Number(l.id) === Number(this.activeSmsLead.id)) : -1;
+    const nextIdx = (curIdx + 1) % leads.length;
+    this.activeSmsLead = leads[nextIdx];
+    this.renderSmsActiveMessageConsole(this.activeSmsLead);
+    this.renderSmsQueueTable();
+    this.showToast(`Previewing: ${this.activeSmsLead.customer_name}`, 'info');
+  }
+
+  handleSmsSaveNextClick() {
+    const leads = this.smsLeads || [];
+    const pendingLeads = leads.filter(l => (l.status || '').toLowerCase() === 'pending');
+    if (pendingLeads.length === 0) {
+      this.showToast('No more pending contacts in queue', 'info');
+      return;
+    }
+    const curIdx = this.activeSmsLead ? pendingLeads.findIndex(l => Number(l.id) === Number(this.activeSmsLead.id)) : -1;
+    const nextIdx = (curIdx + 1) % pendingLeads.length;
+    this.activeSmsLead = pendingLeads[nextIdx];
+    this.renderSmsActiveMessageConsole(this.activeSmsLead);
+    this.renderSmsQueueTable();
+  }
+
+  filterSmsQueueTable(query) {
+    this._smsSearchFilter = query;
+    this.renderSmsQueueTable();
+  }
+
+  filterSmsQueueStatus(status) {
+    this._smsStatusFilter = status;
+    this.renderSmsQueueTable();
+  }
+
+  showMoreSmsContacts() {
+    this._smsPageLimit = (this._smsPageLimit || 20) + 30;
+    this.renderSmsQueueTable();
+  }
+
+  exportSmsQueueCsv() {
+    const leads = this.smsLeads || [];
+    if (leads.length === 0) {
+      this.showToast('No contacts to export', 'warning');
+      return;
+    }
+
+    const campName = this.activeSmsCampaign?.name || 'SMS_Campaign';
+    const rawTemplate = (this.activeSmsCampaign?.sms_template || '').trim();
+
+    let csv = 'ID,Customer Name,Phone Number,Scheduled Time,Status,Message\n';
+    leads.forEach(l => {
+      const cName = (l.customer_name || '').replace(/"/g, '""');
+      const cPhone = l.phone_number || '';
+      const cTime = (l.call_time || 'Immediate').replace(/"/g, '""');
+      const cStatus = l.status || 'pending';
+      const refNum = l.account_number || ('REF-' + l.id);
+      const msg = rawTemplate
+        .replace(/\{name\}|\{customer_name\}/gi, l.customer_name || 'Customer')
+        .replace(/\{phone\}|\{phone_number\}/gi, cPhone)
+        .replace(/\{campaign\}|\{campaign_name\}/gi, campName)
+        .replace(/\{account\}|\{account_number\}/gi, refNum)
+        .replace(/"/g, '""');
+
+      csv += `"${l.id}","${cName}","${cPhone}","${cTime}","${cStatus}","${msg}"\n`;
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${campName.replace(/[^a-zA-Z0-9_-]/g, '_')}_contacts.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    this.showToast('SMS contacts exported successfully!', 'success');
+  }
+
+  async dispatchSmsCampaignPrompt() {
+    const targetId = Number(this.activeSmsCampaignId || this.activeCampaignId || this.campaign?.id);
+    if (!targetId) {
+      this.showToast('Please select an SMS campaign first', 'warning');
+      return;
+    }
+    const camp = (this.allCampaigns || []).find(c => Number(c.id) === targetId);
+    const campName = camp?.name || 'this campaign';
+    if (!confirm(`Are you sure you want to dispatch all pending SMS messages for "${campName}"?`)) {
+      return;
+    }
+    await this.dispatchSmsCampaign(targetId);
+    await this.loadSmsDispatcherScreen(targetId);
+  }
+
+  /* ─────────────────────────────────────────────────────────
+     SMS Modals: Create, Add Contacts, Edit Template
+     ───────────────────────────────────────────────────────── */
+  openNewSmsCampaignModal() {
+    const form = document.getElementById('formNewSmsCampaign');
+    if (form) form.reset();
+    const countEl = document.getElementById('newSmsModalCharCount');
+    if (countEl) countEl.textContent = '80 / 160 (1 SMS)';
+    this.openModal('modalNewSmsCampaign');
+  }
+
+  handleNewSmsStrategyChange(strat) {
+    const intvRow = document.getElementById('newSmsModalIntervalRow');
+    const dtRow = document.getElementById('newSmsModalDateTimeRow');
+    if (intvRow) intvRow.style.display = strat === 'auto_schedule' ? 'block' : 'none';
+    if (dtRow) dtRow.style.display = strat === 'scheduled_date' ? 'block' : 'none';
+  }
+
+  updateNewSmsCharCount(text) {
+    const countEl = document.getElementById('newSmsModalCharCount');
+    if (!countEl) return;
+    const len = (text || '').length;
+    const segs = Math.ceil(len / 160) || 1;
+    countEl.textContent = `${len} / 160 (${segs} SMS)`;
+  }
+
+  insertTagToNewSmsTemplate(tag) {
+    const ta = document.getElementById('newSmsModalTemplate');
+    if (!ta) return;
+    const start = ta.selectionStart || ta.value.length;
+    const end = ta.selectionEnd || ta.value.length;
+    ta.value = ta.value.substring(0, start) + tag + ta.value.substring(end);
+    ta.focus();
+    this.updateNewSmsCharCount(ta.value);
+  }
+
+  async handleNewSmsCampaignSubmit(e) {
+    if (e) e.preventDefault();
+    const name = document.getElementById('newSmsModalCampName')?.value.trim();
+    if (!name) {
+      this.showToast('Please enter a campaign name', 'error');
+      return;
+    }
+
+    const senderId = document.getElementById('newSmsModalSenderId')?.value.trim() || 'SkyConnect';
+    const strategy = document.getElementById('newSmsModalScheduleStrategy')?.value || 'auto_schedule';
+    const intervalMins = document.getElementById('newSmsModalIntervalMins')?.value || '5';
+    const startDate = document.getElementById('newSmsModalStartDate')?.value || '';
+    const startTime = document.getElementById('newSmsModalStartTime')?.value || '';
+    const template = document.getElementById('newSmsModalTemplate')?.value.trim() || 'Hello {name}, this is an important message regarding {campaign}.';
+    const fileInput = document.getElementById('newSmsModalFileInput');
+
+    const btn = document.getElementById('btnSubmitNewSmsCamp');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Creating Campaign...';
+    }
+
+    try {
+      const fd = new FormData();
+      fd.append('name', name);
+      fd.append('type', 'sms_only');
+      fd.append('sms_enabled', '1');
+      fd.append('sms_sender_id', senderId);
+      fd.append('sms_template', template);
+      fd.append('schedule_strategy', strategy);
+      fd.append('schedule_interval_mins', intervalMins);
+      if (startDate && startTime) {
+        fd.append('schedule_start_time', `${startDate} ${startTime}:00`);
+      }
+
+      const res = await fetch('api.php?action=create_campaign', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (!data || !data.success) {
+        this.showToast(data?.error || 'Failed to create SMS campaign', 'error');
+        return;
+      }
+
+      const newCampId = Number(data.campaign_id);
+
+      // If a CSV or text file was attached, upload leads immediately
+      if (fileInput && fileInput.files && fileInput.files[0]) {
+        const fileFd = new FormData();
+        fileFd.append('campaign_id', newCampId);
+        fileFd.append('lead_file', fileInput.files[0]);
+        await fetch('api.php?action=upload_leads_file', { method: 'POST', body: fileFd });
+      }
+
+      this.closeModal('modalNewSmsCampaign');
+      this.showToast(`SMS Campaign "${name}" created successfully!`, 'success');
+
+      await this.loadCampaignsOverview();
+      this.activeSmsCampaignId = newCampId;
+      await this.loadSmsDispatcherScreen(newCampId);
+    } catch (err) {
+      this.showToast('Network error creating SMS campaign', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Create SMS Campaign';
+      }
+    }
+  }
+
+  openAddSmsContactsModal() {
+    const subtitle = document.getElementById('modalAddSmsCampSubtitle');
+    if (subtitle) {
+      subtitle.textContent = `Campaign: ${this.activeSmsCampaign?.name || 'Active Campaign'}`;
+    }
+    const form = document.getElementById('formAddSmsContacts');
+    if (form) form.reset();
+    this.switchAddSmsMethod('file');
+    this.openModal('modalAddSmsContacts');
+  }
+
+  switchAddSmsMethod(method) {
+    const btnFile = document.getElementById('btnAddSmsMethodFile');
+    const btnMan = document.getElementById('btnAddSmsMethodManual');
+    const secFile = document.getElementById('addSmsSectionFile');
+    const secMan = document.getElementById('addSmsSectionManual');
+
+    if (method === 'file') {
+      btnFile?.classList.add('btn-primary');
+      btnFile?.classList.remove('btn-outline-secondary');
+      btnMan?.classList.remove('btn-primary');
+      btnMan?.classList.add('btn-outline-secondary');
+      if (secFile) secFile.style.display = 'block';
+      if (secMan) secMan.style.display = 'none';
+    } else {
+      btnMan?.classList.add('btn-primary');
+      btnMan?.classList.remove('btn-outline-secondary');
+      btnFile?.classList.remove('btn-primary');
+      btnFile?.classList.add('btn-outline-secondary');
+      if (secMan) secMan.style.display = 'block';
+      if (secFile) secFile.style.display = 'none';
+    }
+  }
+
+  async handleAddSmsContactsSubmit(e) {
+    if (e) e.preventDefault();
+    const campId = Number(this.activeSmsCampaignId || this.campaign?.id);
+    if (!campId) {
+      this.showToast('No active SMS campaign selected', 'error');
+      return;
+    }
+
+    const isFile = document.getElementById('addSmsSectionFile')?.style.display !== 'none';
+    const btn = document.getElementById('btnSubmitAddSms');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Importing...';
+    }
+
+    try {
+      if (isFile) {
+        const fileInput = document.getElementById('addSmsFileInput');
+        if (!fileInput || !fileInput.files || !fileInput.files[0]) {
+          this.showToast('Please select a file to import', 'warning');
+          return;
+        }
+        const fd = new FormData();
+        fd.append('campaign_id', campId);
+        fd.append('lead_file', fileInput.files[0]);
+        const res = await fetch('api.php?action=upload_leads_file', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data && data.success) {
+          this.showToast(`Imported ${data.imported || 0} contacts!`, 'success');
+        } else {
+          this.showToast(data?.error || 'Import failed', 'error');
+          return;
+        }
+      } else {
+        const text = document.getElementById('addSmsManualText')?.value.trim();
+        if (!text) {
+          this.showToast('Please enter at least one number', 'warning');
+          return;
+        }
+        const fd = new FormData();
+        fd.append('campaign_id', campId);
+        fd.append('leads_text', text);
+        const res = await fetch('api.php?action=save_manual_leads', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data && data.success) {
+          this.showToast(`Added contacts successfully!`, 'success');
+        } else {
+          this.showToast(data?.error || 'Failed to add contacts', 'error');
+          return;
+        }
+      }
+
+      this.closeModal('modalAddSmsContacts');
+      await this.loadCampaignsOverview();
+      await this.loadSmsDispatcherScreen(campId);
+    } catch (err) {
+      this.showToast('Error importing contacts', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Import Numbers';
+      }
+    }
+  }
+
+  openEditSmsTemplateModal() {
+    const subtitle = document.getElementById('modalEditSmsSubtitle');
+    if (subtitle) {
+      subtitle.textContent = `Campaign: ${this.activeSmsCampaign?.name || 'Active Campaign'}`;
+    }
+    const senderInp = document.getElementById('editSmsSenderId');
+    if (senderInp) senderInp.value = this.activeSmsCampaign?.sms_sender_id || 'SkyConnect';
+    const templateInp = document.getElementById('editSmsTemplateText');
+    if (templateInp) {
+      templateInp.value = this.activeSmsCampaign?.sms_template || 'Hello {name}, thank you for choosing {campaign}.';
+      this.updateEditSmsCharCount(templateInp.value);
+    }
+    this.openModal('modalEditSmsTemplate');
+  }
+
+  updateEditSmsCharCount(text) {
+    const countEl = document.getElementById('editSmsCharCount');
+    if (!countEl) return;
+    const len = (text || '').length;
+    const segs = Math.ceil(len / 160) || 1;
+    countEl.textContent = `${len} / 160 (${segs} SMS)`;
+  }
+
+  insertTagToEditSmsTemplate(tag) {
+    const ta = document.getElementById('editSmsTemplateText');
+    if (!ta) return;
+    const start = ta.selectionStart || ta.value.length;
+    const end = ta.selectionEnd || ta.value.length;
+    ta.value = ta.value.substring(0, start) + tag + ta.value.substring(end);
+    ta.focus();
+    this.updateEditSmsCharCount(ta.value);
+  }
+
+  async handleSaveSmsTemplate(e) {
+    if (e) e.preventDefault();
+    const campId = Number(this.activeSmsCampaignId || this.campaign?.id);
+    if (!campId) {
+      this.showToast('No active campaign selected', 'error');
+      return;
+    }
+
+    const sender = document.getElementById('editSmsSenderId')?.value.trim() || 'SkyConnect';
+    const template = document.getElementById('editSmsTemplateText')?.value.trim();
+    if (!template) {
+      this.showToast('Please enter an SMS template', 'warning');
+      return;
+    }
+
+    const btn = document.getElementById('btnSubmitEditSms');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+    }
+
+    try {
+      const fd = new FormData();
+      fd.append('campaign_id', campId);
+      fd.append('sms_sender_id', sender);
+      fd.append('sms_template', template);
+
+      const res = await fetch('api.php?action=update_campaign', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (data && data.success) {
+        this.showToast('SMS message template updated!', 'success');
+        if (this.activeSmsCampaign) {
+          this.activeSmsCampaign.sms_sender_id = sender;
+          this.activeSmsCampaign.sms_template = template;
+        }
+        const senderBadge = document.getElementById('smsCampSenderIdBadge');
+        if (senderBadge) senderBadge.textContent = sender;
+
+        this.closeModal('modalEditSmsTemplate');
+        this.renderSmsActiveMessageConsole();
+        this.renderSmsQueueTable();
+      } else {
+        this.showToast(data?.error || 'Failed to update template', 'error');
+      }
+    } catch (err) {
+      this.showToast('Network error updating template', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Save Template';
+      }
+    }
+  }
+
   async reapplySmsAutoSchedule() {
-    const campId = Number(this.activeCampaignId || this.campaign?.id);
+    const campId = Number(this.activeSmsCampaignId || this.activeCampaignId || this.campaign?.id);
     if (!campId) return;
 
-    const strat = document.getElementById('smsDesignerScheduleStrategy')?.value || 'interval';
-    const intv = document.getElementById('smsDesignerScheduleInterval')?.value || '5';
+    const strat = document.getElementById('smsDesignerScheduleStrategy')?.value || this.activeSmsCampaign?.schedule_strategy || 'interval';
+    const intv = document.getElementById('smsDesignerScheduleInterval')?.value || this.activeSmsCampaign?.schedule_interval_mins || '5';
     const winStart = document.getElementById('smsDesignerWindowStart')?.value || '09:00';
     const winEnd = document.getElementById('smsDesignerWindowEnd')?.value || '17:00';
 
@@ -3170,9 +3966,13 @@ class SkyKinDialerApp {
       const data = await res.json();
       if (data && data.success) {
         this.showToast(data.message || 'Contacts rescheduled successfully!', 'success');
-        await this.loadCampaignData(campId);
-        this.updateDesignerUI();
-        this.renderDesignerContactsTable();
+        if (this.campaignViewMode === 'sms') {
+          await this.loadSmsDispatcherScreen(campId);
+        } else {
+          await this.loadCampaignData(campId);
+          this.updateDesignerUI();
+          this.renderDesignerContactsTable();
+        }
       } else {
         this.showToast(data?.error || 'Failed to reschedule contacts', 'error');
       }
@@ -3185,10 +3985,13 @@ class SkyKinDialerApp {
     if (this._isDispatchingDueSms) return;
     if (this._smsAutoSenderDisabled) return;
 
-    const campId = Number(this.activeCampaignId || this.campaign?.id);
-    if (!campId || this.campaign?.type !== 'sms_only') return;
+    const campId = Number(this.activeSmsCampaignId || this.activeCampaignId || this.campaign?.id);
+    if (!campId) return;
 
-    const campLeads = (this.leads || []).filter(l => Number(l.campaign_id) === campId && (l.status || '').toLowerCase() === 'pending');
+    const campLeads = (this.smsLeads && this.smsLeads.length > 0)
+      ? this.smsLeads.filter(l => (l.status || '').toLowerCase() === 'pending')
+      : (this.leads || []).filter(l => Number(l.campaign_id) === campId && (l.status || '').toLowerCase() === 'pending');
+
     if (campLeads.length === 0) return;
 
     const dueLeads = campLeads.filter(l => this.isLeadDueForCall(l));
@@ -3196,8 +3999,8 @@ class SkyKinDialerApp {
 
     this._isDispatchingDueSms = true;
     try {
-      const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || this.campaign?.sms_template || '';
-      const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || this.campaign?.sms_sender_id || 'SkyConnect';
+      const tpl = this.activeSmsCampaign?.sms_template || document.getElementById('smsDesignerTemplate')?.value.trim() || this.campaign?.sms_template || '';
+      const sender = this.activeSmsCampaign?.sms_sender_id || document.getElementById('smsDesignerSenderId')?.value.trim() || this.campaign?.sms_sender_id || 'SkyConnect';
 
       const fd = new FormData();
       fd.append('campaign_id', campId);
@@ -3209,12 +4012,16 @@ class SkyKinDialerApp {
       const data = await res.json();
       if (data && data.success && data.sent_count > 0) {
         this.showToast(`Auto-dispatched ${data.sent_count} scheduled SMS message${data.sent_count === 1 ? '' : 's'}`, 'info');
-        await this.loadCampaignData(campId);
-        this.updateDesignerUI();
-        this.renderDesignerContactsTable();
+        if (this.campaignViewMode === 'sms') {
+          await this.loadSmsDispatcherScreen(campId);
+        } else {
+          await this.loadCampaignData(campId);
+          this.updateDesignerUI();
+          this.renderDesignerContactsTable();
+        }
       }
     } catch (e) {
-      // silent background dispatch catch
+      // silent background catch
     } finally {
       this._isDispatchingDueSms = false;
     }
@@ -3224,11 +4031,16 @@ class SkyKinDialerApp {
     this._smsAutoSenderDisabled = !this._smsAutoSenderDisabled;
     const btn = document.getElementById('btnToggleSmsAutoSender');
     const badge = document.getElementById('smsDesignerScheduleStatusBadge');
+    const dispDot = document.getElementById('smsAutoSenderDot');
+    const dispLabel = document.getElementById('smsAutoSenderBtnLabel');
+
     if (this._smsAutoSenderDisabled) {
       if (btn) {
         btn.textContent = 'Auto-Sender Paused';
         btn.style.background = '#64748b';
       }
+      if (dispDot) dispDot.style.background = '#64748b';
+      if (dispLabel) dispLabel.textContent = 'Auto-Dispatch: OFF';
       if (badge) {
         badge.textContent = 'Paused';
         badge.style.background = '#fef3c7';
@@ -3240,6 +4052,8 @@ class SkyKinDialerApp {
         btn.textContent = 'Auto-Sender Active';
         btn.style.background = '#00A651';
       }
+      if (dispDot) dispDot.style.background = '#00A651';
+      if (dispLabel) dispLabel.textContent = 'Auto-Dispatch: ON';
       if (badge) {
         badge.textContent = 'Active';
         badge.style.background = '#dcfce7';
