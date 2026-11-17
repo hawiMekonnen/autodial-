@@ -252,6 +252,14 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                 <option value="completed">Completed</option>
                 <option value="paused">Paused</option>
               </select>
+
+              <!-- Channel / Type Filter -->
+              <select id="campaignTypeFilter" onchange="app.filterCampaignsTable()" style="padding:7px 10px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:12.5px;color:#334155;background:#fff;outline:none;cursor:pointer;min-width:120px;font-weight:500;">
+                <option value="">All Channels</option>
+                <option value="automated_ivr">Interactive IVR</option>
+                <option value="broadcast">Play & Hang Up</option>
+                <option value="sms_only">SMS Only</option>
+              </select>
             </div>
 
             <div style="overflow-x:auto;">

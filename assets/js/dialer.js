@@ -1456,14 +1456,13 @@ class SkyKinDialerApp {
     const filtered = (this.allCampaigns || []).filter(c => {
       const isSms = (c.type === 'sms_only');
 
-      // On SMS page, ONLY show campaigns where type is sms_only
+      // On dedicated SMS page, ONLY show campaigns where type is sms_only
       if (isSmsPage && !isSms) return false;
-      // On Voice page, only show voice campaigns (exclude sms_only)
-      if (!isSmsPage && isSms) return false;
+      // On main Campaigns page, show ALL campaigns (Voice + SMS included)
 
-      // Search: match name, caller ID, or type
+      // Search: match name, caller ID, sender ID, or type
       if (searchVal) {
-        const haystack = [c.name, c.caller_id_number, c.caller_id_name, c.type].join(' ').toLowerCase();
+        const haystack = [c.name, c.caller_id_number, c.caller_id_name, c.sms_sender_id, c.type].join(' ').toLowerCase();
         if (!haystack.includes(searchVal)) return false;
       }
 
@@ -1479,10 +1478,10 @@ class SkyKinDialerApp {
         if (!matchedStatus) return false;
       }
 
-      // Type filter: match the stored type value
-      if (typeVal) {
+      // Type / Channel filter: match the stored type value
+      if (typeVal && typeVal !== 'all') {
         const ct = (c.type || '').toLowerCase();
-        if (ct !== typeVal && typeVal !== 'all') return false;
+        if (ct !== typeVal) return false;
       }
 
       return true;
@@ -1508,7 +1507,7 @@ class SkyKinDialerApp {
 
     const LIMIT = 5;
     const isSmsPage = (this.campaignViewMode === 'sms');
-    const totalAll = (this.allCampaigns || []).filter(c => isSmsPage ? (c.type === 'sms_only') : (c.type !== 'sms_only')).length;
+    const totalAll = (this.allCampaigns || []).filter(c => isSmsPage ? (c.type === 'sms_only') : true).length;
     const shownFiltered = (campaigns || []).length;
 
     if (badge) {
