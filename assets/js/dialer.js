@@ -4253,8 +4253,9 @@ class SkyKinDialerApp {
       fd.append('campaign_id', campId);
       fd.append('sms_sender_id', sender);
       fd.append('sms_template', template);
+      fd.append('sms_enabled', '1');
 
-      const res = await fetch('api.php?action=update_campaign', { method: 'POST', body: fd });
+      const res = await fetch('api.php?action=save_campaign_designer', { method: 'POST', body: fd });
       const data = await res.json();
 
       if (data && data.success) {
@@ -4263,8 +4264,23 @@ class SkyKinDialerApp {
           this.activeSmsCampaign.sms_sender_id = sender;
           this.activeSmsCampaign.sms_template = template;
         }
+        const camp = (this.allCampaigns || []).find(c => Number(c.id) === campId);
+        if (camp) {
+          camp.sms_sender_id = sender;
+          camp.sms_template = template;
+        }
+        if (this.campaign && Number(this.campaign.id) === campId) {
+          this.campaign.sms_sender_id = sender;
+          this.campaign.sms_template = template;
+        }
         const senderBadge = document.getElementById('smsCampSenderIdBadge');
         if (senderBadge) senderBadge.textContent = sender;
+
+        const desTpl = document.getElementById('smsDesignerTemplate');
+        if (desTpl && Number(this.campaign?.id) === campId) {
+          desTpl.value = template;
+          this.updateSmsDesignerLivePreview();
+        }
 
         this.closeModal('modalEditSmsTemplate');
         this.renderSmsActiveMessageConsole();

@@ -672,8 +672,8 @@ if ($action === 'delete_caller_id') {
     jsonOut(['success' => true]);
 }
 
-// Save Message Designer & IVR Settings
-if ($action === 'save_campaign_designer') {
+// Save Message Designer & IVR Settings / Update Campaign
+if ($action === 'save_campaign_designer' || $action === 'update_campaign') {
     $campaignId = (int)($_POST['campaign_id'] ?? 0);
     if ($campaignId <= 0) {
         $firstId = $db->query("SELECT id FROM campaigns ORDER BY id DESC LIMIT 1")->fetchColumn();
