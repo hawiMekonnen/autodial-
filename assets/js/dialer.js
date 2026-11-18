@@ -100,7 +100,9 @@ class SkyKinDialerApp {
     this._smsSearchFilter = '';
     this._smsStatusFilter = 'all';
     this._smsPageLimit = 20;
-    this.smsDispatchMode = 'scheduled';
+    this.isSmsDispatcherRunning = false;
+    this.isSmsDispatcherPaused = false;
+    this._smsCountdownTimer = null;
 
     this.initElements();
     this.initEventListeners();
@@ -3047,11 +3049,16 @@ class SkyKinDialerApp {
 
     this.updateSmsKpiCards();
     this.loadSmsDispatcherScreen(campaignId);
+    this.startSmsCountdownTick();
     this.showToast('Viewing SMS Campaigns', 'info');
   }
 
   showVoiceCampaignsView() {
     this.campaignViewMode = 'voice';
+    if (this._smsCountdownTimer) {
+      clearInterval(this._smsCountdownTimer);
+      this._smsCountdownTimer = null;
+    }
 
     // Sidebar active pill
     document.querySelectorAll('.sc-nav-item').forEach(b => b.classList.remove('active'));
@@ -3205,6 +3212,8 @@ class SkyKinDialerApp {
       if (!targetId) {
         this.renderSmsActiveMessageConsole(null);
         this.renderSmsQueueTable();
+        this.syncSmsControlButtons();
+        this.updateSmsNextScheduledTimer();
         return;
       }
 
@@ -3229,6 +3238,8 @@ class SkyKinDialerApp {
 
       this.renderSmsActiveMessageConsole();
       this.renderSmsQueueTable();
+      this.syncSmsControlButtons();
+      this.startSmsCountdownTick();
     } catch (err) {
       console.warn('loadSmsDispatcherScreen error:', err);
       this.showToast('Could not load SMS campaign data', 'error');
@@ -3238,6 +3249,9 @@ class SkyKinDialerApp {
   handleSmsDispatcherCampaignChange(campId) {
     const id = Number(campId);
     if (!id) return;
+    if (this.isSmsDispatcherRunning) {
+      this.stopSmsDispatcher();
+    }
     this.activeSmsCampaignId = id;
     this.activeSmsLead = null;
     this.loadSmsDispatcherScreen(id);
@@ -3247,18 +3261,247 @@ class SkyKinDialerApp {
     }
   }
 
-  setSmsDispatchMode(mode) {
-    this.smsDispatchMode = mode;
-    const btnSched = document.getElementById('btnSmsModeScheduled');
-    const btnMan = document.getElementById('btnSmsModeManual');
-    if (mode === 'scheduled') {
-      btnSched?.classList.add('active-green');
-      btnMan?.classList.remove('active-green');
-      this.showToast('SMS Dispatch mode: On Schedule', 'info');
+  syncSmsControlButtons() {
+    const btnLaunch = document.getElementById('btnLaunchSmsDispatcher');
+    const btnPause = document.getElementById('btnPauseSmsDispatcher');
+    const btnStop = document.getElementById('btnStopSmsDispatcher');
+    const pauseLabel = document.getElementById('btnPauseSmsLabel');
+    const dot = document.getElementById('smsDispatcherStatusDot');
+
+    if (!btnLaunch || !btnPause || !btnStop) return;
+
+    if (this.isSmsDispatcherRunning && !this.isSmsDispatcherPaused) {
+      btnLaunch.disabled = true;
+      btnLaunch.style.opacity = '0.55';
+      btnPause.disabled = false;
+      btnPause.style.opacity = '1';
+      if (pauseLabel) pauseLabel.textContent = 'Pause';
+      btnStop.disabled = false;
+      btnStop.style.opacity = '1';
+      if (dot) {
+        dot.style.background = '#00A651';
+        dot.className = 'dot live-pulse';
+      }
+    } else if (this.isSmsDispatcherRunning && this.isSmsDispatcherPaused) {
+      btnLaunch.disabled = true;
+      btnLaunch.style.opacity = '0.55';
+      btnPause.disabled = false;
+      btnPause.style.opacity = '1';
+      if (pauseLabel) pauseLabel.textContent = 'Resume';
+      btnStop.disabled = false;
+      btnStop.style.opacity = '1';
+      if (dot) {
+        dot.style.background = '#eab308';
+        dot.className = 'dot';
+      }
     } else {
-      btnMan?.classList.add('active-green');
-      btnSched?.classList.remove('active-green');
-      this.showToast('SMS Dispatch mode: Manual Blast', 'info');
+      btnLaunch.disabled = false;
+      btnLaunch.style.opacity = '1';
+      btnPause.disabled = true;
+      btnPause.style.opacity = '0.55';
+      if (pauseLabel) pauseLabel.textContent = 'Pause';
+      btnStop.disabled = true;
+      btnStop.style.opacity = '0.55';
+      if (dot) {
+        dot.style.background = '#64748b';
+        dot.className = 'dot';
+      }
+    }
+  }
+
+  async startSmsDispatcher() {
+    const leads = this.smsLeads || [];
+    const pending = leads.filter(l => (l.status || '').toLowerCase() === 'pending');
+    if (pending.length === 0) {
+      this.showToast('No pending contacts in this SMS campaign queue!', 'warning');
+      return;
+    }
+
+    this.isSmsDispatcherRunning = true;
+    this.isSmsDispatcherPaused = false;
+    this.syncSmsControlButtons();
+
+    const statusText = document.getElementById('smsQueueStatusText');
+    if (statusText) {
+      statusText.innerHTML = `<strong style="color:#00A651;">ACTIVE</strong> &middot; Monitoring scheduled send times (${pending.length} pending)`;
+    }
+
+    this.showToast('SMS Campaign launched! Monitoring scheduled times for automatic sending...', 'success');
+    this.startSmsCountdownTick();
+
+    // Check if any contacts are already due right now
+    this.checkAndDispatchDueSms();
+  }
+
+  togglePauseSmsDispatcher() {
+    if (!this.isSmsDispatcherRunning) return;
+    this.isSmsDispatcherPaused = !this.isSmsDispatcherPaused;
+    this.syncSmsControlButtons();
+
+    const statusText = document.getElementById('smsQueueStatusText');
+    const pendingCount = (this.smsLeads || []).filter(l => (l.status || '').toLowerCase() === 'pending').length;
+
+    if (this.isSmsDispatcherPaused) {
+      if (statusText) {
+        statusText.innerHTML = `<strong style="color:#eab308;">PAUSED</strong> &middot; Automated sending suspended (${pendingCount} pending)`;
+      }
+      this.showToast('SMS Dispatcher paused', 'warning');
+    } else {
+      if (statusText) {
+        statusText.innerHTML = `<strong style="color:#00A651;">ACTIVE</strong> &middot; Monitoring scheduled send times (${pendingCount} pending)`;
+      }
+      this.showToast('SMS Dispatcher resumed', 'info');
+      this.checkAndDispatchDueSms();
+    }
+  }
+
+  stopSmsDispatcher() {
+    this.isSmsDispatcherRunning = false;
+    this.isSmsDispatcherPaused = false;
+    this.syncSmsControlButtons();
+
+    const statusText = document.getElementById('smsQueueStatusText');
+    const total = (this.smsLeads || []).length;
+    const pending = (this.smsLeads || []).filter(l => (l.status || '').toLowerCase() === 'pending').length;
+    const sent = total - pending;
+
+    if (statusText) {
+      statusText.innerHTML = `Ready &middot; ${total} contacts in queue (${sent} sent, ${pending} pending)`;
+    }
+
+    this.updateSmsNextScheduledTimer();
+    this.showToast('SMS Dispatcher stopped', 'info');
+  }
+
+  startSmsCountdownTick() {
+    if (this._smsCountdownTimer) {
+      clearInterval(this._smsCountdownTimer);
+      this._smsCountdownTimer = null;
+    }
+
+    // Tick every 1 second
+    this._smsCountdownTimer = setInterval(() => {
+      this.updateSmsNextScheduledTimer();
+    }, 1000);
+
+    // Initial immediate update
+    this.updateSmsNextScheduledTimer();
+  }
+
+  updateSmsNextScheduledTimer() {
+    const leads = this.smsLeads || [];
+    const pending = leads.filter(l => (l.status || '').toLowerCase() === 'pending');
+
+    const nameEl = document.getElementById('smsNextTimerContact');
+    const timeEl = document.getElementById('smsNextTimerTime');
+    const badge = document.getElementById('smsNextCountdownBadge');
+    const banner = document.getElementById('smsNextScheduledTimerBanner');
+    if (!badge) return;
+
+    if (pending.length === 0) {
+      if (nameEl) nameEl.textContent = 'All Completed';
+      if (timeEl) timeEl.textContent = '';
+      badge.textContent = 'Completed';
+      badge.style.background = '#64748b';
+      if (banner) {
+        banner.style.background = '#f8fafc';
+        banner.style.borderColor = '#cbd5e1';
+      }
+
+      if (this.isSmsDispatcherRunning) {
+        this.stopSmsDispatcher();
+        this.showToast('All contacts in this campaign have been reached!', 'success');
+      }
+      return;
+    }
+
+    // Sort pending leads by scheduled timestamp (earliest first)
+    const sorted = [...pending].sort((a, b) => {
+      const aTs = this.getLeadScheduledTimestamp(a);
+      const bTs = this.getLeadScheduledTimestamp(b);
+      return (aTs || 0) - (bTs || 0);
+    });
+
+    const next = sorted[0];
+    const targetTs = this.getLeadScheduledTimestamp(next);
+    const schedInfo = this.getLeadScheduleInfo(next);
+    const now = Date.now();
+    const isFuture = (targetTs > now);
+    const isDue = (targetTs <= now && targetTs > 0);
+    const isImmediate = (!next.call_time || this.isImmediateCallTime(next.call_time) || targetTs <= 0);
+
+    if (nameEl) {
+      nameEl.textContent = `${next.customer_name || 'Contact'} (${next.phone_number})`;
+    }
+    if (timeEl) {
+      timeEl.textContent = schedInfo.displayTime || schedInfo.badgeText || next.call_time || 'Immediate';
+    }
+
+    let countdownStr = '';
+    if (isFuture) {
+      const diffSec = Math.max(0, Math.round((targetTs - now) / 1000));
+      const h = Math.floor(diffSec / 3600);
+      const m = Math.floor((diffSec % 3600) / 60);
+      const s = diffSec % 60;
+      if (h > 0) {
+        countdownStr = `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+      } else {
+        countdownStr = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      }
+    }
+
+    if (this.isSmsDispatcherPaused) {
+      if (banner) {
+        banner.style.background = '#fefce8';
+        banner.style.borderColor = '#fde047';
+      }
+      if (isImmediate) {
+        badge.textContent = 'Ready (Paused)';
+        badge.style.background = '#eab308';
+      } else if (isDue) {
+        badge.textContent = 'Due (Paused)';
+        badge.style.background = '#eab308';
+      } else if (isFuture) {
+        badge.textContent = `in ${countdownStr} (Paused)`;
+        badge.style.background = '#eab308';
+      }
+    } else if (!this.isSmsDispatcherRunning) {
+      if (banner) {
+        banner.style.background = '#f8fafc';
+        banner.style.borderColor = '#cbd5e1';
+      }
+      if (isImmediate) {
+        badge.textContent = 'Ready Now';
+        badge.style.background = '#64748b';
+      } else if (isDue) {
+        badge.textContent = 'Due Now';
+        badge.style.background = '#64748b';
+      } else if (isFuture) {
+        badge.textContent = `in ${countdownStr}`;
+        badge.style.background = '#64748b';
+      }
+    } else {
+      if (banner) {
+        banner.style.background = '#f0fdf4';
+        banner.style.borderColor = '#86efac';
+      }
+      if (isImmediate) {
+        badge.textContent = 'Ready Now';
+        badge.style.background = '#00A651';
+      } else if (isDue) {
+        badge.textContent = 'Due Now';
+        badge.style.background = '#00A651';
+      } else if (isFuture) {
+        badge.textContent = `in ${countdownStr}`;
+        badge.style.background = '#15803d';
+      }
+    }
+
+    // If dispatcher is running and contact is due (or immediate), trigger automated dispatch
+    if (this.isSmsDispatcherRunning && !this.isSmsDispatcherPaused) {
+      if (isDue || isImmediate) {
+        this.checkAndDispatchDueSms();
+      }
     }
   }
 
@@ -3287,7 +3530,7 @@ class SkyKinDialerApp {
     const sentCount = leads.filter(l => (l.status || '').toLowerCase() === 'completed').length;
     const pendingCount = pendingLeads.length;
 
-    if (queueStatusText) {
+    if (queueStatusText && !this.isSmsDispatcherRunning) {
       queueStatusText.innerHTML = `Ready &middot; ${totalCount} contact${totalCount === 1 ? '' : 's'} in queue (${sentCount} sent, ${pendingCount} pending)`;
     }
 

@@ -1817,26 +1817,41 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
       <!-- TOP CONTROLS CARD: Modes, Status, Actions & Campaign Chooser -->
       <div class="dial-top-card">
-        <!-- Row 1: Left: Dispatch Mode & Status | Right: Auto-Dispatch, Stagger & Actions -->
+        <!-- Row 1: Left: Launch, Pause, Stop & Status | Right: Next Scheduled Timer + Quick Actions -->
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-            <div class="dial-segmented">
-              <button type="button" class="dial-seg-btn active-green" id="btnSmsModeScheduled" onclick="app.setSmsDispatchMode('scheduled')">On Schedule</button>
-              <button type="button" class="dial-seg-btn" id="btnSmsModeManual" onclick="app.setSmsDispatchMode('manual')">Manual Blast</button>
+          <!-- Controls: Launch, Pause, Stop + Status -->
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <div style="display:inline-flex;align-items:center;gap:6px;">
+              <button type="button" id="btnLaunchSmsDispatcher" class="btn btn-sm btn-success" onclick="app.startSmsDispatcher()" style="font-size:12px;font-weight:700;background:#00A651;border:none;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                <span>Launch</span>
+              </button>
+              <button type="button" id="btnPauseSmsDispatcher" class="btn btn-sm btn-warning" onclick="app.togglePauseSmsDispatcher()" disabled style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
+                <span id="btnPauseSmsLabel">Pause</span>
+              </button>
+              <button type="button" id="btnStopSmsDispatcher" class="btn btn-sm btn-danger" onclick="app.stopSmsDispatcher()" disabled style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14"></rect></svg>
+                <span>Stop</span>
+              </button>
             </div>
 
-            <div class="dial-status-pill">
-              <span class="dot"></span>
+            <div class="dial-status-pill" id="smsDispatcherStatusPill">
+              <span class="dot" id="smsDispatcherStatusDot"></span>
               <span id="smsQueueStatusText">Ready &middot; 0 messages in queue</span>
             </div>
           </div>
 
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <!-- Auto-Dispatch Toggle Button -->
-            <button type="button" id="btnSmsAutoSenderToggle" class="btn btn-sm btn-outline-secondary" onclick="app.toggleSmsAutoSender()" style="font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
-              <span id="smsAutoSenderDot" style="width:7px;height:7px;border-radius:50%;background:#64748b;display:inline-block;"></span>
-              <span id="smsAutoSenderBtnLabel">Auto-Dispatch: OFF</span>
-            </button>
+          <!-- Live Next Scheduled Timer Banner (Matches Voice Dialer countdown timer) -->
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <div id="smsNextScheduledTimerBanner" style="display:inline-flex;align-items:center;gap:8px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:5px 12px;">
+              <span style="font-size:11px;font-weight:800;color:#166534;letter-spacing:0.5px;">NEXT SEND:</span>
+              <span id="smsNextTimerContact" style="font-size:12px;font-weight:700;color:#0f172a;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">-</span>
+              <span id="smsNextTimerTime" style="font-size:11.5px;color:#15803d;font-weight:600;">-</span>
+              <span id="smsNextCountdownBadge" style="background:#15803d;color:#ffffff;font-size:11.5px;font-weight:800;font-family:monospace;padding:2px 8px;border-radius:10px;">
+                Idle
+              </span>
+            </div>
 
             <!-- Auto-Schedule Stagger Button -->
             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.reapplySmsAutoSchedule()" style="font-size:12px;font-weight:600;" title="Re-calculate staggered send times for pending contacts">
