@@ -230,6 +230,11 @@ class SkyKinDialerApp {
     // Lead Search & Filter
     document.getElementById('leadSearchInput')?.addEventListener('input', () => this.renderLeadsTables());
     document.getElementById('leadStatusFilter')?.addEventListener('change', () => this.renderLeadsTables());
+
+    // SMS Dispatcher Controls
+    document.getElementById('btnLaunchSmsDispatcher')?.addEventListener('click', () => this.startSmsDispatcher());
+    document.getElementById('btnPauseSmsDispatcher')?.addEventListener('click', () => this.togglePauseSmsDispatcher());
+    document.getElementById('btnStopSmsDispatcher')?.addEventListener('click', () => this.stopSmsDispatcher());
   }
 
   /* ─────────────────────────────────────────────────────────
@@ -3331,6 +3336,20 @@ class SkyKinDialerApp {
 
       this.renderSmsActiveMessageConsole();
       this.renderSmsQueueTable();
+
+      // Restore dispatcher running/paused state based on backend campaign status
+      const campStatus = (this.activeSmsCampaign?.status || '').toLowerCase();
+      if (campStatus === 'running') {
+        this.isSmsDispatcherRunning = true;
+        this.isSmsDispatcherPaused = false;
+      } else if (campStatus === 'paused') {
+        this.isSmsDispatcherRunning = true;
+        this.isSmsDispatcherPaused = true;
+      } else {
+        this.isSmsDispatcherRunning = false;
+        this.isSmsDispatcherPaused = false;
+      }
+
       this.syncSmsControlButtons();
       this.startSmsCountdownTick();
     } catch (err) {
@@ -3366,23 +3385,37 @@ class SkyKinDialerApp {
     if (this.isSmsDispatcherRunning && !this.isSmsDispatcherPaused) {
       btnLaunch.disabled = true;
       btnLaunch.style.opacity = '0.55';
+      btnLaunch.style.cursor = 'not-allowed';
+
       btnPause.disabled = false;
       btnPause.style.opacity = '1';
+      btnPause.style.cursor = 'pointer';
+      btnPause.className = 'btn btn-sm btn-warning';
       if (pauseLabel) pauseLabel.textContent = 'Pause';
+
       btnStop.disabled = false;
       btnStop.style.opacity = '1';
+      btnStop.style.cursor = 'pointer';
+
       if (dot) {
         dot.style.background = '#00A651';
         dot.className = 'dot live-pulse';
       }
-    } else if (this.isSmsDispatcherRunning && this.isSmsDispatcherPaused) {
+    } else if (this.isSmsDispatcherPaused) {
       btnLaunch.disabled = true;
       btnLaunch.style.opacity = '0.55';
+      btnLaunch.style.cursor = 'not-allowed';
+
       btnPause.disabled = false;
       btnPause.style.opacity = '1';
+      btnPause.style.cursor = 'pointer';
+      btnPause.className = 'btn btn-sm btn-success';
       if (pauseLabel) pauseLabel.textContent = 'Resume';
+
       btnStop.disabled = false;
       btnStop.style.opacity = '1';
+      btnStop.style.cursor = 'pointer';
+
       if (dot) {
         dot.style.background = '#eab308';
         dot.className = 'dot';
@@ -3390,11 +3423,18 @@ class SkyKinDialerApp {
     } else {
       btnLaunch.disabled = false;
       btnLaunch.style.opacity = '1';
+      btnLaunch.style.cursor = 'pointer';
+
       btnPause.disabled = true;
       btnPause.style.opacity = '0.55';
+      btnPause.style.cursor = 'not-allowed';
+      btnPause.className = 'btn btn-sm btn-warning';
       if (pauseLabel) pauseLabel.textContent = 'Pause';
+
       btnStop.disabled = true;
       btnStop.style.opacity = '0.55';
+      btnStop.style.cursor = 'not-allowed';
+
       if (dot) {
         dot.style.background = '#64748b';
         dot.className = 'dot';
@@ -3414,6 +3454,15 @@ class SkyKinDialerApp {
     this.isSmsDispatcherPaused = false;
     this.syncSmsControlButtons();
 
+    const campId = Number(this.activeSmsCampaignId || this.activeSmsCampaign?.id);
+    if (campId) {
+      const fd = new FormData();
+      fd.append('campaign_id', campId);
+      fd.append('status', 'running');
+      fetch('api.php?action=set_campaign_status', { method: 'POST', body: fd }).catch(() => {});
+      if (this.activeSmsCampaign) this.activeSmsCampaign.status = 'running';
+    }
+
     const statusText = document.getElementById('smsQueueStatusText');
     if (statusText) {
       statusText.innerHTML = `<strong style="color:#00A651;">ACTIVE</strong> &middot; Monitoring scheduled send times (${pending.length} pending)`;
@@ -3427,9 +3476,26 @@ class SkyKinDialerApp {
   }
 
   togglePauseSmsDispatcher() {
-    if (!this.isSmsDispatcherRunning) return;
+    if (!this.isSmsDispatcherRunning && !this.isSmsDispatcherPaused) {
+      this.showToast('Campaign is not running. Click Launch first.', 'warning');
+      return;
+    }
+
     this.isSmsDispatcherPaused = !this.isSmsDispatcherPaused;
+    if (!this.isSmsDispatcherPaused) {
+      this.isSmsDispatcherRunning = true;
+    }
     this.syncSmsControlButtons();
+
+    const campId = Number(this.activeSmsCampaignId || this.activeSmsCampaign?.id);
+    const newStatus = this.isSmsDispatcherPaused ? 'paused' : 'running';
+    if (campId) {
+      const fd = new FormData();
+      fd.append('campaign_id', campId);
+      fd.append('status', newStatus);
+      fetch('api.php?action=set_campaign_status', { method: 'POST', body: fd }).catch(() => {});
+      if (this.activeSmsCampaign) this.activeSmsCampaign.status = newStatus;
+    }
 
     const statusText = document.getElementById('smsQueueStatusText');
     const pendingCount = (this.smsLeads || []).filter(l => (l.status || '').toLowerCase() === 'pending').length;
@@ -3438,11 +3504,13 @@ class SkyKinDialerApp {
       if (statusText) {
         statusText.innerHTML = `<strong style="color:#eab308;">PAUSED</strong> &middot; Automated sending suspended (${pendingCount} pending)`;
       }
+      this.updateSmsNextScheduledTimer();
       this.showToast('SMS Dispatcher paused', 'warning');
     } else {
       if (statusText) {
         statusText.innerHTML = `<strong style="color:#00A651;">ACTIVE</strong> &middot; Monitoring scheduled send times (${pendingCount} pending)`;
       }
+      this.updateSmsNextScheduledTimer();
       this.showToast('SMS Dispatcher resumed', 'info');
       this.checkAndDispatchDueSms();
     }
@@ -3453,13 +3521,22 @@ class SkyKinDialerApp {
     this.isSmsDispatcherPaused = false;
     this.syncSmsControlButtons();
 
+    const campId = Number(this.activeSmsCampaignId || this.activeSmsCampaign?.id);
+    if (campId) {
+      const fd = new FormData();
+      fd.append('campaign_id', campId);
+      fd.append('status', 'idle');
+      fetch('api.php?action=set_campaign_status', { method: 'POST', body: fd }).catch(() => {});
+      if (this.activeSmsCampaign) this.activeSmsCampaign.status = 'idle';
+    }
+
     const statusText = document.getElementById('smsQueueStatusText');
     const total = (this.smsLeads || []).length;
     const pending = (this.smsLeads || []).filter(l => (l.status || '').toLowerCase() === 'pending').length;
     const sent = total - pending;
 
     if (statusText) {
-      statusText.innerHTML = `Ready &middot; ${total} contacts in queue (${sent} sent, ${pending} pending)`;
+      statusText.innerHTML = `<strong style="color:#64748b;">STOPPED</strong> &middot; ${total} contacts in queue (${sent} sent, ${pending} pending)`;
     }
 
     this.updateSmsNextScheduledTimer();
@@ -3564,13 +3641,13 @@ class SkyKinDialerApp {
         banner.style.borderColor = '#cbd5e1';
       }
       if (isImmediate) {
-        badge.textContent = 'Ready Now';
+        badge.textContent = 'Idle (Stopped)';
         badge.style.background = '#64748b';
       } else if (isDue) {
-        badge.textContent = 'Due Now';
+        badge.textContent = 'Due (Stopped)';
         badge.style.background = '#64748b';
       } else if (isFuture) {
-        badge.textContent = `in ${countdownStr}`;
+        badge.textContent = `in ${countdownStr} (Stopped)`;
         badge.style.background = '#64748b';
       }
     } else {
@@ -4340,6 +4417,16 @@ class SkyKinDialerApp {
   async checkAndDispatchDueSms() {
     if (this._isDispatchingDueSms) return;
     if (this._smsAutoSenderDisabled) return;
+
+    if (this.campaignViewMode === 'sms') {
+      if (!this.isSmsDispatcherRunning || this.isSmsDispatcherPaused) {
+        return;
+      }
+    } else {
+      if (!this.isRunning || this.isPaused) {
+        return;
+      }
+    }
 
     const campId = Number(this.activeSmsCampaignId || this.activeCampaignId || this.campaign?.id);
     if (!campId) return;

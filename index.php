@@ -1688,9 +1688,9 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
               </div>
             </div>
 
-            <button id="btnStartCampaign" class="btn btn-success">Start Auto-Dialer</button>
-            <button id="btnPauseCampaign" class="btn btn-warning" disabled>Pause</button>
-            <button id="btnStopCampaign" class="btn btn-danger" disabled>Stop</button>
+            <button id="btnStartCampaign" class="btn btn-success" onclick="window.app && window.app.startCampaign()">Start Auto-Dialer</button>
+            <button id="btnPauseCampaign" class="btn btn-warning" onclick="window.app && window.app.togglePauseCampaign()" disabled>Pause</button>
+            <button id="btnStopCampaign" class="btn btn-danger" onclick="window.app && window.app.stopCampaign()" disabled>Stop</button>
             <button id="btnResetLeads" class="btn btn-secondary">Reset Leads</button>
             <button id="btnOpenRetrySettings" class="btn btn-secondary" onclick="app.openRetrySettingsModal()" style="border-color:#93c5fd;color:#0047AB;" title="Configure Call Retry and Scheduling Rules">⚙️ Retry Rules</button>
           </div>
@@ -1824,15 +1824,15 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
           <!-- Controls: Launch, Pause, Stop + Status -->
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <div style="display:inline-flex;align-items:center;gap:6px;">
-              <button type="button" id="btnLaunchSmsDispatcher" class="btn btn-sm btn-success" onclick="app.startSmsDispatcher()" style="font-size:12px;font-weight:700;background:#00A651;border:none;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
+              <button type="button" id="btnLaunchSmsDispatcher" class="btn btn-sm btn-success" onclick="window.app && window.app.startSmsDispatcher()" style="font-size:12px;font-weight:700;background:#00A651;border:none;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                 <span>Launch</span>
               </button>
-              <button type="button" id="btnPauseSmsDispatcher" class="btn btn-sm btn-warning" onclick="app.togglePauseSmsDispatcher()" disabled style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
+              <button type="button" id="btnPauseSmsDispatcher" class="btn btn-sm btn-warning" onclick="window.app && window.app.togglePauseSmsDispatcher()" disabled style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>
                 <span id="btnPauseSmsLabel">Pause</span>
               </button>
-              <button type="button" id="btnStopSmsDispatcher" class="btn btn-sm btn-danger" onclick="app.stopSmsDispatcher()" disabled style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
+              <button type="button" id="btnStopSmsDispatcher" class="btn btn-sm btn-danger" onclick="window.app && window.app.stopSmsDispatcher()" disabled style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:5px;padding:6px 14px;border-radius:6px;cursor:pointer;">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14"></rect></svg>
                 <span>Stop</span>
               </button>
