@@ -2714,7 +2714,7 @@ class SkyKinDialerApp {
           <tr>
             <td style="font-weight:600;color:#0f172a;">${this.escapeHtml(l.customer_name || 'Contact')}</td>
             <td style="color:#334155;font-weight:500;">${this.escapeHtml(l.phone_number)}</td>
-            <td><span class="${sched.badgeClass}">${this.escapeHtml(sched.fullLabel)}</span></td>
+            <td><span class="${sched.badgeClass}">${this.escapeHtml(sched.displayTime || l.call_time || 'Immediate')}</span></td>
             <td><span class="${statusClass}">${this.escapeHtml(statusLabel)}</span></td>
             <td style="color:#64748b;font-size:12px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${this.escapeHtml(previewMsg)}">${this.escapeHtml(shortPreview)}</td>
             <td style="text-align:right;white-space:nowrap;">
@@ -2744,7 +2744,7 @@ class SkyKinDialerApp {
           <tr>
             <td style="font-weight:600;color:#0f172a;">${this.escapeHtml(l.customer_name || 'Customer')}</td>
             <td style="color:#334155;font-weight:500;">${this.escapeHtml(l.phone_number)}</td>
-            <td><span class="${sched.badgeClass}">${this.escapeHtml(sched.fullLabel)}</span></td>
+            <td><span class="${sched.badgeClass}">${this.escapeHtml(sched.displayTime || l.call_time || 'Immediate')}</span></td>
             <td><span class="${statusClass}">${this.escapeHtml(statusLabel)}</span></td>
             <td style="color:#94a3b8;">${dur}</td>
             <td style="text-align:right;white-space:nowrap;">
@@ -3609,8 +3609,7 @@ class SkyKinDialerApp {
       nameEl.textContent = `${next.customer_name || 'Contact'} (${next.phone_number})`;
     }
     if (timeEl) {
-      const baseTime = schedInfo.displayTime || schedInfo.badgeText || next.call_time || 'Immediate';
-      timeEl.textContent = isPastDue ? `${baseTime} (Past Due)` : baseTime;
+      timeEl.textContent = schedInfo.displayTime || schedInfo.badgeText || next.call_time || 'Immediate';
     }
 
     let countdownStr = '';
@@ -3767,10 +3766,8 @@ class SkyKinDialerApp {
     }
 
     if (timeEl) {
-      const color = isPastDue ? '#c2410c' : (isDue ? '#166534' : '#0284c7');
-      const badge = isPastDue
-        ? '<span style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;">Past Due</span>'
-        : (isDue ? '<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;">Ready Now</span>' : '');
+      const color = isDue ? '#166534' : '#0284c7';
+      const badge = isDue ? '<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;">Ready Now</span>' : '';
       const schedDisplay = schedInfo.displayTime || schedInfo.formatted || schedInfo.badgeText || (lead.call_time && !this.isImmediateCallTime(lead.call_time) ? lead.call_time : 'Immediate');
       timeEl.innerHTML = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
@@ -3884,7 +3881,7 @@ class SkyKinDialerApp {
             : '<span style="background:#fee2e2;color:#ef4444;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Failed</span>'));
 
       const schedDisplay = schedInfo.displayTime || schedInfo.formatted || schedInfo.badgeText || (l.call_time && !this.isImmediateCallTime(l.call_time) ? l.call_time : 'Immediate');
-      const schedColor = isPastDue ? '#c2410c' : (isDue ? '#166534' : '#475569');
+      const schedColor = isDue ? '#166534' : '#475569';
 
       const cName = l.customer_name || 'Customer';
       const cPhone = l.phone_number || '';
@@ -3910,7 +3907,7 @@ class SkyKinDialerApp {
             <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:${schedColor};">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
               <span>${this.escapeHtml(schedDisplay)}</span>
-              ${isPastDue ? '<span style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-size:9.5px;padding:1px 6px;border-radius:4px;font-weight:700;">Past Due</span>' : (isDue && isPending ? '<span style="background:#dcfce7;color:#166534;font-size:9.5px;padding:1px 5px;border-radius:4px;font-weight:700;">Ready</span>' : '')}
+              ${isDue && isPending ? '<span style="background:#dcfce7;color:#166534;font-size:9.5px;padding:1px 5px;border-radius:4px;font-weight:700;">Ready</span>' : ''}
             </div>
           </td>
           <td style="vertical-align:middle;">${statusBadge}</td>
