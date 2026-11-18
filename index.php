@@ -522,6 +522,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                     <button type="button" class="btn btn-xs" style="font-size:10.5px;padding:2px 7px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('newCampSmsOnlyTemplate', '{name}')">+{name}</button>
                     <button type="button" class="btn btn-xs" style="font-size:10.5px;padding:2px 7px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('newCampSmsOnlyTemplate', '{campaign}')">+{campaign}</button>
                     <button type="button" class="btn btn-xs" style="font-size:10.5px;padding:2px 7px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('newCampSmsOnlyTemplate', '{phone}')">+{phone}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:10.5px;padding:2px 7px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('newCampSmsOnlyTemplate', '{date}')">+{date}</button>
                   </div>
                 </div>
 
@@ -829,6 +830,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
                     <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{name}')">+{name}</button>
                     <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{campaign}')">+{campaign}</button>
                     <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{phone}')">+{phone}</button>
+                    <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{date}')">+{date}</button>
                     <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{outcome}')">+{outcome}</button>
                     <button type="button" class="btn btn-xs" style="font-size:11px;padding:2px 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;color:#334155;cursor:pointer;" onclick="app.insertSmsTag('designerSmsTemplate', '{key}')">+{key}</button>
                   </div>
@@ -2943,6 +2945,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
               <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{name}')" style="font-size:11px;padding:2px 7px;">+{name}</button>
               <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{phone}')" style="font-size:11px;padding:2px 7px;">+{phone}</button>
               <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{campaign}')" style="font-size:11px;padding:2px 7px;">+{campaign}</button>
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{date}')" style="font-size:11px;padding:2px 7px;">+{date}</button>
               <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToNewSmsTemplate('{account}')" style="font-size:11px;padding:2px 7px;">+{account}</button>
             </div>
           </div>
@@ -3056,6 +3059,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
               <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{name}')" style="font-size:11px;padding:2px 7px;">+{name}</button>
               <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{phone}')" style="font-size:11px;padding:2px 7px;">+{phone}</button>
               <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{campaign}')" style="font-size:11px;padding:2px 7px;">+{campaign}</button>
+              <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{date}')" style="font-size:11px;padding:2px 7px;">+{date}</button>
               <button type="button" class="btn btn-xs btn-outline-secondary" onclick="app.insertTagToEditSmsTemplate('{account}')" style="font-size:11px;padding:2px 7px;">+{account}</button>
             </div>
           </div>

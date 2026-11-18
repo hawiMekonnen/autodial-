@@ -1824,10 +1824,11 @@ class SkyKinDialerApp {
     const campName = document.getElementById('newCampaignNameInput')?.value.trim() || 'Appointment Reminder';
     if (!bubble) return;
     const tpl = txtEl?.value.trim() || 'Hello {name}, this is an important message regarding {campaign}. Please contact us if you have any questions.';
-    bubble.textContent = tpl
-      .replace(/{name}|{customer_name}/g, 'Abebe Bikila')
-      .replace(/{campaign}|{campaign_name}/g, campName)
-      .replace(/{phone}|{phone_number}/g, '+251911223344');
+    bubble.textContent = this.renderSmsTemplate(tpl, {
+      name: 'Abebe Bikila',
+      campaign: campName,
+      phone: '+251911223344'
+    });
   }
 
   handleNewCampaignSmsFileSelect(input) {
@@ -2692,10 +2693,12 @@ class SkyKinDialerApp {
           statusLabel = 'Failed';
         }
 
-        const previewMsg = tpl
-          .replace(/{name}|{customer_name}/g, l.customer_name || 'Contact')
-          .replace(/{campaign}|{campaign_name}/g, campName)
-          .replace(/{phone}|{phone_number}/g, l.phone_number || '');
+        const previewMsg = this.renderSmsTemplate(tpl, {
+          name: l.customer_name || 'Contact',
+          campaign: campName,
+          phone: l.phone_number || '',
+          call_time: l.call_time
+        });
         const shortPreview = previewMsg.length > 55 ? (previewMsg.substring(0, 52) + '...') : previewMsg;
 
         rowsHtml += `
@@ -2779,6 +2782,91 @@ class SkyKinDialerApp {
     tbody.innerHTML = rowsHtml;
   }
 
+  renderSmsTemplate(template, data = {}) {
+    if (!template) return '';
+    const now = new Date();
+    const todayIso = now.toISOString().split('T')[0];
+    const todayTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    const name = data.name || data.customer_name || 'Contact';
+    const phone = data.phone || data.phone_number || '';
+    const campaign = data.campaign || data.campaign_name || this.activeSmsCampaign?.name || this.campaign?.name || 'SkyConnect';
+    const account = data.account || data.account_number || '';
+    const outcome = data.outcome || data.status || 'Confirmed';
+    const key = data.key || data.key_pressed || data.dtmf || '1';
+
+    let dateStr = data.date || '';
+    let timeStr = data.time || '';
+    if (!dateStr && data.call_time && !this.isImmediateCallTime(data.call_time)) {
+      const parsed = new Date(data.call_time);
+      if (!isNaN(parsed.getTime())) {
+        dateStr = parsed.toISOString().split('T')[0];
+        timeStr = parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      } else if (typeof data.call_time === 'string' && data.call_time.includes(' ')) {
+        dateStr = data.call_time.split(' ')[0];
+        timeStr = data.call_time.split(' ')[1] || todayTime;
+      }
+    }
+    if (!dateStr) dateStr = todayIso;
+    if (!timeStr) timeStr = todayTime;
+
+    return template
+      .replace(/\{customer_name\}|\{name\}/gi, name)
+      .replace(/\{phone_number\}|\{phone\}/gi, phone)
+      .replace(/\{campaign_name\}|\{campaign\}/gi, campaign)
+      .replace(/\{account_number\}|\{account\}/gi, account)
+      .replace(/\{outcome\}/gi, outcome)
+      .replace(/\{key_pressed\}|\{key\}/gi, key)
+      .replace(/\{date\}/gi, dateStr)
+      .replace(/\{time\}/gi, timeStr);
+  }
+
+  renderSmsTemplateHighlighted(template, data = {}) {
+    if (!template) return { text: '', html: '' };
+    const rendered = this.renderSmsTemplate(template, data);
+    const escaped = this.escapeHtml(template);
+
+    const now = new Date();
+    const todayIso = now.toISOString().split('T')[0];
+    const todayTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    const name = data.name || data.customer_name || 'Contact';
+    const phone = data.phone || data.phone_number || '';
+    const campaign = data.campaign || data.campaign_name || this.activeSmsCampaign?.name || this.campaign?.name || 'SkyConnect';
+    const account = data.account || data.account_number || '';
+    const outcome = data.outcome || data.status || 'Confirmed';
+    const key = data.key || data.key_pressed || data.dtmf || '1';
+
+    let dateStr = data.date || '';
+    let timeStr = data.time || '';
+    if (!dateStr && data.call_time && !this.isImmediateCallTime(data.call_time)) {
+      const parsed = new Date(data.call_time);
+      if (!isNaN(parsed.getTime())) {
+        dateStr = parsed.toISOString().split('T')[0];
+        timeStr = parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      } else if (typeof data.call_time === 'string' && data.call_time.includes(' ')) {
+        dateStr = data.call_time.split(' ')[0];
+        timeStr = data.call_time.split(' ')[1] || todayTime;
+      }
+    }
+    if (!dateStr) dateStr = todayIso;
+    if (!timeStr) timeStr = todayTime;
+
+    const span = (val) => `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(val)}</strong>`;
+
+    const html = escaped
+      .replace(/\{customer_name\}|\{name\}/gi, span(name))
+      .replace(/\{phone_number\}|\{phone\}/gi, span(phone))
+      .replace(/\{campaign_name\}|\{campaign\}/gi, span(campaign))
+      .replace(/\{account_number\}|\{account\}/gi, span(account))
+      .replace(/\{outcome\}/gi, span(outcome))
+      .replace(/\{key_pressed\}|\{key\}/gi, span(key))
+      .replace(/\{date\}/gi, span(dateStr))
+      .replace(/\{time\}/gi, span(timeStr));
+
+    return { text: rendered, html: html };
+  }
+
   updateSmsDesignerLivePreview() {
     const bubble = document.getElementById('smsPhonePreviewBubble');
     const sender = document.getElementById('smsPhonePreviewSender');
@@ -2791,11 +2879,12 @@ class SkyKinDialerApp {
     if (!bubble) return;
     const tpl = txtEl?.value.trim() || 'Hello {name}, this is an important message regarding {campaign}. Please reply or call us if you have any questions.';
     const campName = this.campaign?.name || 'Appointment Reminder';
-    bubble.textContent = tpl
-      .replace(/{name}|{customer_name}/g, 'Abebe Bikila')
-      .replace(/{campaign}|{campaign_name}/g, campName)
-      .replace(/{phone}|{phone_number}/g, '+251911223344')
-      .replace(/{date}/g, new Date().toISOString().split('T')[0]);
+    bubble.textContent = this.renderSmsTemplate(tpl, {
+      name: 'Abebe Bikila',
+      campaign: campName,
+      phone: '+251911223344',
+      date: new Date().toISOString().split('T')[0]
+    });
   }
 
   async saveSmsCampaignDesigner() {
@@ -2937,12 +3026,15 @@ class SkyKinDialerApp {
     const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || (this.campaign?.sms_template || 'Hello {name}, thank you for choosing {campaign}.');
     const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || (this.campaign?.sms_sender_id || 'SkyConnect');
     const campName = this.campaign?.name || 'Campaign';
+    const lead = (this.leads || []).find(l => Number(l.id) === Number(leadId));
 
-    const rendered = tpl
-      .replace(/{name}|{customer_name}/g, name || 'Contact')
-      .replace(/{campaign}|{campaign_name}/g, campName)
-      .replace(/{phone}|{phone_number}/g, phone)
-      .replace(/{outcome}/g, 'Delivered');
+    const rendered = this.renderSmsTemplate(tpl, {
+      name: name || 'Contact',
+      campaign: campName,
+      phone: phone,
+      outcome: 'Delivered',
+      call_time: lead?.call_time
+    });
 
     const fd = new FormData();
     fd.append('phone_number', phone);
@@ -2982,11 +3074,12 @@ class SkyKinDialerApp {
     const sender = document.getElementById('smsDesignerSenderId')?.value.trim() || 'SkyConnect';
     const campName = this.campaign?.name || 'Test Campaign';
 
-    const rendered = tpl
-      .replace(/{name}|{customer_name}/g, 'Test Recipient')
-      .replace(/{campaign}|{campaign_name}/g, campName)
-      .replace(/{phone}|{phone_number}/g, phone)
-      .replace(/{outcome}/g, 'Test');
+    const rendered = this.renderSmsTemplate(tpl, {
+      name: 'Test Recipient',
+      campaign: campName,
+      phone: phone,
+      outcome: 'Test'
+    });
 
     const fd = new FormData();
     fd.append('phone_number', phone);
@@ -3585,19 +3678,19 @@ class SkyKinDialerApp {
     const cName = lead.customer_name || 'Customer';
     const cPhone = lead.phone_number || '';
 
-    const rendered = rawTemplate
-      .replace(/\{name\}|\{customer_name\}/gi, cName)
-      .replace(/\{phone\}|\{phone_number\}/gi, cPhone)
-      .replace(/\{campaign\}|\{campaign_name\}/gi, campName)
-      .replace(/\{account\}|\{account_number\}/gi, refNum);
+    const previewData = {
+      name: cName,
+      phone: cPhone,
+      campaign: campName,
+      account: refNum,
+      call_time: lead.call_time
+    };
+
+    const rendered = this.renderSmsTemplate(rawTemplate, previewData);
+    const highlighted = this.renderSmsTemplateHighlighted(rawTemplate, previewData);
 
     if (bubbleEl) {
-      let highlighted = this.escapeHtml(rawTemplate)
-        .replace(/\{name\}|\{customer_name\}/gi, `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(cName)}</strong>`)
-        .replace(/\{phone\}|\{phone_number\}/gi, `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(cPhone)}</strong>`)
-        .replace(/\{campaign\}|\{campaign_name\}/gi, `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(campName)}</strong>`)
-        .replace(/\{account\}|\{account_number\}/gi, `<strong style="color:#00A651;font-weight:700;">${this.escapeHtml(refNum)}</strong>`);
-      bubbleEl.innerHTML = `&ldquo;${highlighted.replace(/\n/g, '<br>')}&rdquo;`;
+      bubbleEl.innerHTML = `&ldquo;${highlighted.html.replace(/\n/g, '<br>')}&rdquo;`;
     }
 
     if (countEl) {
@@ -3674,11 +3767,13 @@ class SkyKinDialerApp {
       const cPhone = l.phone_number || '';
       const refNum = l.account_number || ('REF-' + l.id);
 
-      const msgPreview = rawTemplate
-        .replace(/\{name\}|\{customer_name\}/gi, cName)
-        .replace(/\{phone\}|\{phone_number\}/gi, cPhone)
-        .replace(/\{campaign\}|\{campaign_name\}/gi, campName)
-        .replace(/\{account\}|\{account_number\}/gi, refNum);
+      const msgPreview = this.renderSmsTemplate(rawTemplate, {
+        name: cName,
+        phone: cPhone,
+        campaign: campName,
+        account: refNum,
+        call_time: l.call_time
+      });
 
       const isCurrentActive = this.activeSmsLead && Number(this.activeSmsLead.id) === Number(l.id);
       const rowBg = isCurrentActive ? 'background:#f0fdf4;' : '';
@@ -3747,11 +3842,13 @@ class SkyKinDialerApp {
       const cPhone = lead.phone_number || '';
       const refNum = lead.account_number || ('REF-' + lead.id);
 
-      const msg = rawTemplate
-        .replace(/\{name\}|\{customer_name\}/gi, cName)
-        .replace(/\{phone\}|\{phone_number\}/gi, cPhone)
-        .replace(/\{campaign\}|\{campaign_name\}/gi, campName)
-        .replace(/\{account\}|\{account_number\}/gi, refNum);
+      const msg = this.renderSmsTemplate(rawTemplate, {
+        name: cName,
+        phone: cPhone,
+        campaign: campName,
+        account: refNum,
+        call_time: lead.call_time
+      });
 
       const fd = new FormData();
       fd.append('phone_number', cPhone);
@@ -10354,11 +10451,26 @@ class SkyKinDialerApp {
     ta.value = text.substring(0, start) + tag + text.substring(end);
     ta.selectionStart = ta.selectionEnd = start + tag.length;
     ta.focus();
-    if (textareaId === 'designerSmsTemplate') {
+
+    // Trigger input event
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Explicit updates
+    if (textareaId === 'smsDesignerTemplate') {
+      this.updateSmsCharCount(ta, 'smsDesignerCharCount');
+      this.updateSmsDesignerLivePreview();
+    } else if (textareaId === 'designerSmsTemplate') {
       this.updateSmsCharCount(ta, 'designerSmsCharCount');
       this.updateDesignerSmsPreview();
+    } else if (textareaId === 'newCampSmsOnlyTemplate') {
+      this.updateSmsCharCount(ta, 'newCampSmsOnlyCharCount');
+      this.updateWizardSmsOnlyPreview();
     } else if (textareaId === 'newCampaignSmsTemplate') {
       this.updateSmsCharCount(ta, 'newCampSmsCharCount');
+    } else if (textareaId === 'newSmsModalTemplate') {
+      this.updateNewSmsCharCount(ta.value);
+    } else if (textareaId === 'editSmsTemplateText') {
+      this.updateEditSmsCharCount(ta.value);
     }
   }
 
@@ -10373,14 +10485,15 @@ class SkyKinDialerApp {
     if (!bubble) return;
     let template = (txtEl && txtEl.value.trim()) ? txtEl.value.trim() : 'Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.';
     const sampleCamp = this.campaign?.name || 'Appointment Reminder';
-    const rendered = template
-      .replace(/{name}|{customer_name}/g, 'Abebe Bikila')
-      .replace(/{campaign}|{campaign_name}/g, sampleCamp)
-      .replace(/{phone}|{phone_number}/g, '+251911223344')
-      .replace(/{outcome}/g, 'Confirmed')
-      .replace(/{key}|{key_pressed}/g, '1')
-      .replace(/{date}/g, new Date().toISOString().split('T')[0])
-      .replace(/{time}/g, '10:30 AM');
+    const rendered = this.renderSmsTemplate(template, {
+      name: 'Abebe Bikila',
+      campaign: sampleCamp,
+      phone: '+251911223344',
+      outcome: 'Confirmed',
+      key: '1',
+      date: new Date().toISOString().split('T')[0],
+      time: '10:30 AM'
+    });
     bubble.textContent = rendered;
   }
 
@@ -10404,12 +10517,14 @@ class SkyKinDialerApp {
     if (senderInp && this.campaign?.sms_sender_id) senderInp.value = this.campaign.sms_sender_id;
 
     let template = this.campaign?.sms_template || 'Hello {name}, thank you for taking our call regarding {campaign}. We have recorded your response.';
-    const rendered = template
-      .replace(/{name}|{customer_name}/g, name)
-      .replace(/{campaign}|{campaign_name}/g, campName)
-      .replace(/{phone}|{phone_number}/g, phone)
-      .replace(/{outcome}/g, this.selectedDispo || 'Completed')
-      .replace(/{key}|{key_pressed}/g, lead?.dtmf_response || '1');
+    const rendered = this.renderSmsTemplate(template, {
+      name: name,
+      campaign: campName,
+      phone: phone,
+      outcome: this.selectedDispo || 'Completed',
+      key: lead?.dtmf_response || '1',
+      call_time: lead?.call_time
+    });
 
     if (msgInp) {
       msgInp.value = rendered;
@@ -10466,12 +10581,13 @@ class SkyKinDialerApp {
     const txt = document.getElementById('designerSmsTemplate')?.value || 'Test SMS from SkyConnect';
     const sender = document.getElementById('designerSmsSenderId')?.value || 'SkyConnect';
     const camp = this.campaign?.name || 'Campaign';
-    const rendered = txt
-      .replace(/{name}|{customer_name}/g, 'Test Contact')
-      .replace(/{campaign}|{campaign_name}/g, camp)
-      .replace(/{phone}|{phone_number}/g, phone)
-      .replace(/{outcome}/g, 'Confirmed')
-      .replace(/{key}|{key_pressed}/g, '1');
+    const rendered = this.renderSmsTemplate(txt, {
+      name: 'Test Contact',
+      campaign: camp,
+      phone: phone,
+      outcome: 'Confirmed',
+      key: '1'
+    });
 
     const fd = new FormData();
     fd.append('phone_number', phone);

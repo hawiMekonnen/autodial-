@@ -3655,7 +3655,9 @@ if ($action === 'dispatch_sms_campaign') {
             'name' => $l['customer_name'] ?? 'Contact',
             'phone' => $l['phone_number'],
             'campaign' => $camp['name'],
-            'outcome' => 'Delivered'
+            'outcome' => 'Delivered',
+            'account' => $l['account_number'] ?? '',
+            'call_time' => $l['call_time'] ?? ''
         ]);
 
         $res = $smsSvc->send($l['phone_number'], $msg, [
@@ -3772,7 +3774,9 @@ if ($action === 'dispatch_due_sms') {
                     'name' => $l['customer_name'] ?? 'Contact',
                     'phone' => $l['phone_number'],
                     'campaign' => $c['name'],
-                    'outcome' => 'Delivered'
+                    'outcome' => 'Delivered',
+                    'account' => $l['account_number'] ?? '',
+                    'call_time' => $l['call_time'] ?? ''
                 ]);
 
                 $res = $smsSvc->send($l['phone_number'], $msg, [

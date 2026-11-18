@@ -149,8 +149,10 @@ class SmsService {
         $campaignName = $data['campaign_name'] ?? $data['campaign'] ?? 'SkyConnect';
         $outcome = $data['outcome'] ?? $data['status'] ?? 'Completed';
         $keyPressed = $data['key_pressed'] ?? $data['key'] ?? $data['dtmf_response'] ?? '';
-        $date = date('Y-m-d');
-        $time = date('h:i A');
+        $account = $data['account_number'] ?? $data['account'] ?? '';
+        
+        $date = !empty($data['date']) ? $data['date'] : (!empty($data['call_time']) ? explode(' ', trim($data['call_time']))[0] : date('Y-m-d'));
+        $time = !empty($data['time']) ? $data['time'] : date('h:i A');
 
         $replacements = [
             '{customer_name}' => $customerName,
@@ -159,6 +161,8 @@ class SmsService {
             '{phone}' => $phoneNumber,
             '{campaign_name}' => $campaignName,
             '{campaign}' => $campaignName,
+            '{account_number}' => $account,
+            '{account}' => $account,
             '{outcome}' => $outcome,
             '{key_pressed}' => $keyPressed,
             '{key}' => $keyPressed,
@@ -166,7 +170,7 @@ class SmsService {
             '{time}' => $time
         ];
 
-        return str_replace(array_keys($replacements), array_values($replacements), $template);
+        return str_ireplace(array_keys($replacements), array_values($replacements), $template);
     }
 
     /**
@@ -190,6 +194,18 @@ class SmsService {
                 'phone' => $normalizedPhone
             ];
         }
+
+        // Safety replacement for unexpanded tags
+        $dateFallback = !empty($options['date']) ? $options['date'] : date('Y-m-d');
+        $timeFallback = !empty($options['time']) ? $options['time'] : date('h:i A');
+        $custFallback = $options['customer_name'] ?? 'Valued Customer';
+        $fallbackReplacements = [
+            '{date}' => $dateFallback,
+            '{time}' => $timeFallback,
+            '{customer_name}' => $custFallback,
+            '{name}' => $custFallback
+        ];
+        $message = str_ireplace(array_keys($fallbackReplacements), array_values($fallbackReplacements), $message);
 
         $campaignId = !empty($options['campaign_id']) ? (int)$options['campaign_id'] : null;
         if ($campaignId !== null && $campaignId > 0) {
