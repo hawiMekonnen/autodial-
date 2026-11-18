@@ -2003,6 +2003,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
             <select id="smsLeadStatusFilter" style="font-size:12.5px;padding:7px 12px;border:1px solid #cbd5e1;border-radius:6px;" onchange="app.filterSmsQueueStatus(this.value)">
               <option value="all">All statuses</option>
               <option value="pending">Pending</option>
+              <option value="past_due">Past Due</option>
               <option value="completed">Sent / Delivered</option>
               <option value="failed">Failed</option>
             </select>

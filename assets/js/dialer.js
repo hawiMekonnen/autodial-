@@ -2688,6 +2688,7 @@ class SkyKinDialerApp {
 
       if (isSms) {
         const sched = this.getLeadScheduleInfo(l);
+        const isPastDue = rawStatus === 'pending' && (this.isLeadPastDue(l) || sched.type === 'past_due');
         let statusClass = 'des-badge-pending';
         let statusLabel = 'Pending';
         if (['completed', 'answered'].includes(rawStatus)) {
@@ -2696,6 +2697,9 @@ class SkyKinDialerApp {
         } else if (['failed', 'no_answer'].includes(rawStatus)) {
           statusClass = 'des-badge-noanswer';
           statusLabel = 'Failed';
+        } else if (isPastDue) {
+          statusClass = 'des-badge-pastdue';
+          statusLabel = 'Past Due';
         }
 
         const previewMsg = this.renderSmsTemplate(tpl, {
@@ -3597,14 +3601,16 @@ class SkyKinDialerApp {
     const schedInfo = this.getLeadScheduleInfo(next);
     const now = Date.now();
     const isFuture = (targetTs > now);
-    const isDue = (targetTs <= now && targetTs > 0);
+    const isPastDue = (targetTs > 0 && targetTs < now && (now - targetTs) > 60 * 1000);
+    const isDue = (targetTs <= now && targetTs > 0 && !isPastDue);
     const isImmediate = (!next.call_time || this.isImmediateCallTime(next.call_time) || targetTs <= 0);
 
     if (nameEl) {
       nameEl.textContent = `${next.customer_name || 'Contact'} (${next.phone_number})`;
     }
     if (timeEl) {
-      timeEl.textContent = schedInfo.displayTime || schedInfo.badgeText || next.call_time || 'Immediate';
+      const baseTime = schedInfo.displayTime || schedInfo.badgeText || next.call_time || 'Immediate';
+      timeEl.textContent = isPastDue ? `${baseTime} (Past Due)` : baseTime;
     }
 
     let countdownStr = '';
@@ -3628,6 +3634,9 @@ class SkyKinDialerApp {
       if (isImmediate) {
         badge.textContent = 'Ready (Paused)';
         badge.style.background = '#eab308';
+      } else if (isPastDue) {
+        badge.textContent = 'Past Due (Paused)';
+        badge.style.background = '#eab308';
       } else if (isDue) {
         badge.textContent = 'Due (Paused)';
         badge.style.background = '#eab308';
@@ -3637,11 +3646,14 @@ class SkyKinDialerApp {
       }
     } else if (!this.isSmsDispatcherRunning) {
       if (banner) {
-        banner.style.background = '#f8fafc';
-        banner.style.borderColor = '#cbd5e1';
+        banner.style.background = isPastDue ? '#fff7ed' : '#f8fafc';
+        banner.style.borderColor = isPastDue ? '#fed7aa' : '#cbd5e1';
       }
       if (isImmediate) {
         badge.textContent = 'Idle (Stopped)';
+        badge.style.background = '#64748b';
+      } else if (isPastDue) {
+        badge.textContent = 'Past Due (Stopped)';
         badge.style.background = '#64748b';
       } else if (isDue) {
         badge.textContent = 'Due (Stopped)';
@@ -3652,12 +3664,15 @@ class SkyKinDialerApp {
       }
     } else {
       if (banner) {
-        banner.style.background = '#f0fdf4';
-        banner.style.borderColor = '#86efac';
+        banner.style.background = isPastDue ? '#fff7ed' : '#f0fdf4';
+        banner.style.borderColor = isPastDue ? '#fed7aa' : '#86efac';
       }
       if (isImmediate) {
         badge.textContent = 'Ready Now';
         badge.style.background = '#00A651';
+      } else if (isPastDue) {
+        badge.textContent = 'Past Due (Ready)';
+        badge.style.background = '#c2410c';
       } else if (isDue) {
         badge.textContent = 'Due Now';
         badge.style.background = '#00A651';
@@ -3667,9 +3682,9 @@ class SkyKinDialerApp {
       }
     }
 
-    // If dispatcher is running and contact is due (or immediate), trigger automated dispatch
+    // If dispatcher is running and contact is due (or immediate or past due), trigger automated dispatch
     if (this.isSmsDispatcherRunning && !this.isSmsDispatcherPaused) {
-      if (isDue || isImmediate) {
+      if (isDue || isImmediate || isPastDue) {
         this.checkAndDispatchDueSms();
       }
     }
@@ -3726,16 +3741,36 @@ class SkyKinDialerApp {
     if (phoneEl) phoneEl.textContent = lead.phone_number || '-';
 
     const isPending = (lead.status || '').toLowerCase() === 'pending';
+    const isCompleted = (lead.status || '').toLowerCase() === 'completed';
+    const schedInfo = this.getLeadScheduleInfo(lead);
+    const isPastDue = isPending && (this.isLeadPastDue(lead) || schedInfo.type === 'past_due');
+    const isDue = !isPastDue && this.isLeadDueForCall(lead);
+
     if (statusBadge) {
-      statusBadge.textContent = isPending ? 'Scheduled' : (lead.status === 'completed' ? 'Delivered' : lead.status);
-      statusBadge.className = isPending ? 'dial-badge-mint' : 'dial-badge-gray';
+      if (isCompleted) {
+        statusBadge.textContent = 'Delivered';
+        statusBadge.className = 'dial-badge-gray';
+        statusBadge.style.cssText = 'background:#e8f8ee;color:#00A651;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;';
+      } else if (isPastDue) {
+        statusBadge.textContent = 'Past Due';
+        statusBadge.className = '';
+        statusBadge.style.cssText = 'background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;border:1px solid #fed7aa;box-shadow:0 1px 2px rgba(194,65,12,0.06);';
+      } else if (isPending) {
+        statusBadge.textContent = 'Scheduled';
+        statusBadge.className = 'dial-badge-mint';
+        statusBadge.style.cssText = '';
+      } else {
+        statusBadge.textContent = lead.status;
+        statusBadge.className = 'dial-badge-gray';
+        statusBadge.style.cssText = '';
+      }
     }
 
-    const schedInfo = this.getLeadScheduleInfo(lead);
     if (timeEl) {
-      const isDue = this.isLeadDueForCall(lead);
-      const color = isDue ? '#166534' : '#0284c7';
-      const badge = isDue ? '<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;">Ready Now</span>' : '';
+      const color = isPastDue ? '#c2410c' : (isDue ? '#166534' : '#0284c7');
+      const badge = isPastDue
+        ? '<span style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;">Past Due</span>'
+        : (isDue ? '<span style="background:#dcfce7;color:#166534;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700;">Ready Now</span>' : '');
       const schedDisplay = schedInfo.displayTime || schedInfo.formatted || schedInfo.badgeText || (lead.call_time && !this.isImmediateCallTime(lead.call_time) ? lead.call_time : 'Immediate');
       timeEl.innerHTML = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
@@ -3787,9 +3822,11 @@ class SkyKinDialerApp {
     const totalCount = leads.length;
     const sentCount = leads.filter(l => (l.status || '').toLowerCase() === 'completed').length;
     const pendingCount = leads.filter(l => (l.status || '').toLowerCase() === 'pending').length;
+    const pastDueCount = leads.filter(l => (l.status || '').toLowerCase() === 'pending' && (this.isLeadPastDue(l) || this.getLeadScheduleInfo(l).type === 'past_due')).length;
 
     if (badge) {
-      badge.textContent = `${totalCount} contacts (${sentCount} sent, ${pendingCount} pending)`;
+      const pastDueText = pastDueCount > 0 ? `, ${pastDueCount} past due` : '';
+      badge.textContent = `${totalCount} contacts (${sentCount} sent, ${pendingCount} pending${pastDueText})`;
     }
 
     // Apply Search Filter
@@ -3804,7 +3841,13 @@ class SkyKinDialerApp {
 
     // Apply Status Filter
     if (this._smsStatusFilter && this._smsStatusFilter !== 'all') {
-      leads = leads.filter(l => (l.status || '').toLowerCase() === this._smsStatusFilter);
+      if (this._smsStatusFilter === 'past_due') {
+        leads = leads.filter(l => (l.status || '').toLowerCase() === 'pending' && (this.isLeadPastDue(l) || this.getLeadScheduleInfo(l).type === 'past_due'));
+      } else if (this._smsStatusFilter === 'pending') {
+        leads = leads.filter(l => (l.status || '').toLowerCase() === 'pending');
+      } else {
+        leads = leads.filter(l => (l.status || '').toLowerCase() === this._smsStatusFilter);
+      }
     }
 
     if (leads.length === 0) {
@@ -3828,17 +3871,20 @@ class SkyKinDialerApp {
     tbody.innerHTML = visibleLeads.map((l, idx) => {
       const isPending = (l.status || '').toLowerCase() === 'pending';
       const isCompleted = (l.status || '').toLowerCase() === 'completed';
+      const schedInfo = this.getLeadScheduleInfo(l);
+      const isPastDue = isPending && (this.isLeadPastDue(l) || schedInfo.type === 'past_due');
+      const isDue = !isPastDue && this.isLeadDueForCall(l);
 
       const statusBadge = isCompleted
         ? '<span style="background:#e8f8ee;color:#00A651;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Sent</span>'
-        : (isPending
-          ? '<span style="background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Pending</span>'
-          : '<span style="background:#fee2e2;color:#ef4444;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Failed</span>');
+        : (isPastDue
+          ? '<span style="background:#fff7ed;color:#c2410c;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-flex;align-items:center;gap:4px;border:1px solid #fed7aa;box-shadow:0 1px 2px rgba(194,65,12,0.06);" title="Scheduled send time has passed"><span style="width:6px;height:6px;border-radius:50%;background:#f97316;display:inline-block;"></span>Past Due</span>'
+          : (isPending
+            ? '<span style="background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Pending</span>'
+            : '<span style="background:#fee2e2;color:#ef4444;font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block;">Failed</span>'));
 
-      const schedInfo = this.getLeadScheduleInfo(l);
-      const isDue = this.isLeadDueForCall(l);
       const schedDisplay = schedInfo.displayTime || schedInfo.formatted || schedInfo.badgeText || (l.call_time && !this.isImmediateCallTime(l.call_time) ? l.call_time : 'Immediate');
-      const schedColor = isDue ? '#166534' : '#475569';
+      const schedColor = isPastDue ? '#c2410c' : (isDue ? '#166534' : '#475569');
 
       const cName = l.customer_name || 'Customer';
       const cPhone = l.phone_number || '';
@@ -3864,7 +3910,7 @@ class SkyKinDialerApp {
             <div style="display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:${schedColor};">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
               <span>${this.escapeHtml(schedDisplay)}</span>
-              ${isDue && isPending ? '<span style="background:#dcfce7;color:#166534;font-size:9.5px;padding:1px 5px;border-radius:4px;font-weight:700;">Ready</span>' : ''}
+              ${isPastDue ? '<span style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-size:9.5px;padding:1px 6px;border-radius:4px;font-weight:700;">Past Due</span>' : (isDue && isPending ? '<span style="background:#dcfce7;color:#166534;font-size:9.5px;padding:1px 5px;border-radius:4px;font-weight:700;">Ready</span>' : '')}
             </div>
           </td>
           <td style="vertical-align:middle;">${statusBadge}</td>
@@ -4437,7 +4483,15 @@ class SkyKinDialerApp {
 
     if (campLeads.length === 0) return;
 
-    const dueLeads = campLeads.filter(l => this.isLeadDueForCall(l));
+    const dueLeads = campLeads.filter(l => {
+      if (this.campaignViewMode === 'sms') {
+        const timeStr = String(l.call_time || '').trim().toLowerCase();
+        if (!timeStr || timeStr === 'immediate' || timeStr === 'now') return true;
+        const targetTs = this.getLeadScheduledTimestamp(l);
+        return targetTs <= 0 || Date.now() >= targetTs;
+      }
+      return this.isLeadDueForCall(l);
+    });
     if (dueLeads.length === 0) return;
 
     this._isDispatchingDueSms = true;
@@ -6874,8 +6928,8 @@ class SkyKinDialerApp {
     return false;
   }
 
-    isLeadPastDue(lead) {
-    if (!lead || lead.status !== 'pending') return false;
+  isLeadPastDue(lead) {
+    if (!lead || (lead.status || '').toLowerCase() !== 'pending') return false;
     const today = this.serverToday || new Date().toISOString().split('T')[0];
     if (lead.is_past || (lead.effective_date && lead.effective_date < today)) {
       return true;
