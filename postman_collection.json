@@ -1,16 +1,16 @@
 {
 	"info": {
-		"_postman_id": "skyconnect-auto-dialer-ingestion-api",
-		"name": "SkyConnect Automatic Dialer - Customer Ingestion API",
-		"description": "Production Customer API Collection for SkyConnect Automatic Outbound Voice Dialer.\n\nFeatures:\n- Multi-tenant API Key Authentication (X-API-KEY / Bearer)\n- Frequency Rate Limiting (60 requests/minute)\n- Batch Size Limits (up to 500 contacts per request)\n- DNC (Do Not Call) Compliance Scrubbing\n- Deduplication & Anti-Flooding Cooldown\n- Intelligent Auto-Scheduling",
+		"_postman_id": "skyconnect-auto-dialer-api-suite",
+		"name": "SkyConnect Automatic Dialer & SMS Suite API",
+		"description": "Complete Postman API Collection for SkyConnect Outbound Dialer and SMS Messaging Gateway (AfroMessage Ethiopia).\n\nIncludes:\n- Contact Ingestion & Auto-Scheduling API (/api/leads.php)\n- Live SMS Dispatch & Delivery Engine (/api.php)\n- Campaign Management & Queue Monitoring (/api.php)\n- Multi-tenant API Key Authentication & Rate Limiting",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"item": [
 		{
-			"name": "1. Authentication & System",
+			"name": "1. Contact Ingestion API (/api/leads.php)",
 			"item": [
 				{
-					"name": "Verify API Key & Account Limits",
+					"name": "Verify API Key & Account Quota",
 					"request": {
 						"method": "GET",
 						"header": [
@@ -33,7 +33,7 @@
 								{
 									"key": "action",
 									"value": "verify",
-									"description": "Verifies API Key, returns tenant identity, rate limits, and batch capacity"
+									"description": "Verifies API Key, returns client name, rate limits, and batch capacity"
 								}
 							]
 						},
@@ -65,7 +65,7 @@
 								{
 									"key": "action",
 									"value": "limits",
-									"description": "Returns current minute rate limit usage and countdown"
+									"description": "Returns current minute rate limit usage and reset countdown"
 								}
 							]
 						},
@@ -74,7 +74,7 @@
 					"response": []
 				},
 				{
-					"name": "Public API Specification (Health Check)",
+					"name": "API Health Check & Documentation",
 					"request": {
 						"method": "GET",
 						"header": [],
@@ -88,15 +88,10 @@
 								"leads.php"
 							]
 						},
-						"description": "Public unauthenticated endpoint returning service status, OpenAPI-compatible documentation, and integration instructions."
+						"description": "Public unauthenticated endpoint returning service status, OpenAPI documentation, and integration guide."
 					},
 					"response": []
-				}
-			]
-		},
-		{
-			"name": "2. Send Numbers (Contact Ingestion)",
-			"item": [
+				},
 				{
 					"name": "Queue Single Contact",
 					"event": [
@@ -129,7 +124,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"name\": \"Helen Tesfaye\",\n    \"phone\": \"+251911223344\",\n    \"schedule_interval_mins\": 5\n}"
+							"raw": "{\n    \"name\": \"Helen Tesfaye\",\n    \"phone\": \"+251911223344\",\n    \"campaign_id\": {{campaign_id}},\n    \"schedule_interval_mins\": 5\n}"
 						},
 						"url": {
 							"raw": "{{base_url}}/api/leads.php",
@@ -141,12 +136,12 @@
 								"leads.php"
 							]
 						},
-						"description": "Queues a single customer contact into the automatic dialer queue. The system normalizes the phone number into E.164 and auto-schedules the outbound call."
+						"description": "Queues a single customer contact into the automatic dialer queue. The system normalizes the phone number into E.164 and auto-schedules the outbound slot."
 					},
 					"response": []
 				},
 				{
-					"name": "Queue Batch Contacts (Array of Numbers)",
+					"name": "Queue Batch of Contacts (JSON Array)",
 					"event": [
 						{
 							"listen": "test",
@@ -189,7 +184,7 @@
 								"leads.php"
 							]
 						},
-						"description": "Submits a batch of contacts (up to 500 contacts per request). Automatically staggers call slots starting immediately and continuing across the configured pacing interval."
+						"description": "Submits a batch of contacts (up to 500 contacts per request). Automatically staggers send times starting immediately and continuing across the configured interval."
 					},
 					"response": []
 				},
@@ -225,7 +220,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"campaign_id\": 1,\n    \"schedule_interval_mins\": 3,\n    \"contacts\": [\n        {\n            \"name\": \"Kidus Alemu\",\n            \"phone\": \"+251911778899\",\n            \"call_time\": \"Today, 02:30 PM\"\n        },\n        {\n            \"name\": \"Tigist Assefa\",\n            \"phone\": \"+251922889900\",\n            \"call_time\": \"auto\"\n        }\n    ]\n}"
+							"raw": "{\n    \"campaign_id\": {{campaign_id}},\n    \"schedule_interval_mins\": 3,\n    \"contacts\": [\n        {\n            \"name\": \"Kidus Alemu\",\n            \"phone\": \"+251911778899\",\n            \"call_time\": \"auto\"\n        },\n        {\n            \"name\": \"Tigist Assefa\",\n            \"phone\": \"+251922889900\",\n            \"call_time\": \"auto\"\n        }\n    ]\n}"
 						},
 						"url": {
 							"raw": "{{base_url}}/api/leads.php",
@@ -240,12 +235,7 @@
 						"description": "Queues contacts with target campaign routing, custom call interval spacing, and optional exact scheduled call times."
 					},
 					"response": []
-				}
-			]
-		},
-		{
-			"name": "3. Query Batch Status",
-			"item": [
+				},
 				{
 					"name": "Check Ingestion Batch Status",
 					"request": {
@@ -278,7 +268,368 @@
 								}
 							]
 						},
-						"description": "Returns real-time execution status of all contacts submitted in a specific batch (pending, answered, completed, callback requested, busy, no answer, failed)."
+						"description": "Returns real-time execution status of all contacts submitted in a specific batch (pending, completed, failed, etc.)."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "2. SMS Messaging & AfroMessage Gateway (/api.php)",
+			"item": [
+				{
+					"name": "Send Single Direct SMS",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "phone_number",
+									"value": "+251939777880",
+									"type": "text"
+								},
+								{
+									"key": "message",
+									"value": "Hello Abebe, your appointment with SkyConnect is confirmed for {date}. Contact us if you have any questions.",
+									"type": "text"
+								},
+								{
+									"key": "customer_name",
+									"value": "Abebe Kebede",
+									"type": "text"
+								},
+								{
+									"key": "sender_id",
+									"value": "SkyConnect",
+									"type": "text"
+								},
+								{
+									"key": "campaign_id",
+									"value": "{{campaign_id}}",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api.php?action=send_sms",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "send_sms"
+								}
+							]
+						},
+						"description": "Sends an instant single SMS to any recipient. Uses AfroMessage live gateway if configured in .env, or simulator mode if no key is set. Automatically substitutes template tags such as {date}, {time}, and {name}."
+					},
+					"response": []
+				},
+				{
+					"name": "Dispatch SMS Campaign (All Pending)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "campaign_id",
+									"value": "{{campaign_id}}",
+									"type": "text"
+								},
+								{
+									"key": "template",
+									"value": "Hello {name}, this is an important message regarding {campaign}. Please contact us if you have any questions. {date}",
+									"type": "text"
+								},
+								{
+									"key": "sender_id",
+									"value": "SkyConnect",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api.php?action=dispatch_sms_campaign",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "dispatch_sms_campaign"
+								}
+							]
+						},
+						"description": "Dispatches pending SMS messages for a given campaign. Renders personalized templates for each contact and transmits them via the AfroMessage SMS gateway."
+					},
+					"response": []
+				},
+				{
+					"name": "Dispatch Due SMS Only (Automated Dispatcher Hook)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "campaign_id",
+									"value": "{{campaign_id}}",
+									"type": "text"
+								},
+								{
+									"key": "only_due",
+									"value": "1",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api.php?action=dispatch_sms_campaign",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "dispatch_sms_campaign"
+								}
+							]
+						},
+						"description": "Used by the background scheduler and automated dispatcher timer. Only sends contacts whose scheduled send time is reached (call_time <= now or immediate)."
+					},
+					"response": []
+				},
+				{
+					"name": "Save / Update SMS Campaign Template",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "campaign_id",
+									"value": "{{campaign_id}}",
+									"type": "text"
+								},
+								{
+									"key": "sms_template",
+									"value": "Hello {name}, your appointment for {campaign} is confirmed for {date}. Contact us for any questions.",
+									"type": "text"
+								},
+								{
+									"key": "sms_sender_id",
+									"value": "SkyConnect",
+									"type": "text"
+								},
+								{
+									"key": "sms_enabled",
+									"value": "1",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api.php?action=save_campaign_designer",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "save_campaign_designer"
+								}
+							]
+						},
+						"description": "Updates the SMS template and sender ID for any campaign. Also accepts action=update_campaign."
+					},
+					"response": []
+				},
+				{
+					"name": "Re-Schedule Staggered Send Times",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "campaign_id",
+									"value": "{{campaign_id}}",
+									"type": "text"
+								},
+								{
+									"key": "schedule_strategy",
+									"value": "interval",
+									"type": "text"
+								},
+								{
+									"key": "schedule_interval_mins",
+									"value": "5",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api.php?action=reschedule_campaign_pending_leads",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "reschedule_campaign_pending_leads"
+								}
+							]
+						},
+						"description": "Recalculates and updates staggered scheduled times (call_time) for all pending contacts in a campaign using the specified interval (e.g. 5 minutes)."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "3. Campaign Management (/api.php)",
+			"item": [
+				{
+					"name": "List All Campaigns",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api.php?action=get_all_campaigns",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "get_all_campaigns"
+								}
+							]
+						},
+						"description": "Retrieves the full list of campaigns, including voice campaigns and sms_only campaigns, along with total leads and completed leads counts."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Campaign Data & Leads Queue",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api.php?action=get_campaign_data&campaign_id={{campaign_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "get_campaign_data"
+								},
+								{
+									"key": "campaign_id",
+									"value": "{{campaign_id}}"
+								}
+							]
+						},
+						"description": "Returns full details for a specific campaign, including campaign settings and the full list of leads with status, call_time, and phone numbers."
+					},
+					"response": []
+				},
+				{
+					"name": "Create New SMS Campaign",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "name",
+									"value": "SMS Promotional Campaign",
+									"type": "text"
+								},
+								{
+									"key": "type",
+									"value": "sms_only",
+									"type": "text"
+								},
+								{
+									"key": "sms_sender_id",
+									"value": "SkyConnect",
+									"type": "text"
+								},
+								{
+									"key": "sms_template",
+									"value": "Hello {name}, welcome to SkyConnect! Your account was registered on {date}.",
+									"type": "text"
+								},
+								{
+									"key": "calling_method",
+									"value": "auto_schedule",
+									"type": "text"
+								},
+								{
+									"key": "schedule_strategy",
+									"value": "interval",
+									"type": "text"
+								},
+								{
+									"key": "schedule_interval_mins",
+									"value": "5",
+									"type": "text"
+								},
+								{
+									"key": "sms_enabled",
+									"value": "1",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api.php?action=create_campaign",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api.php"
+							],
+							"query": [
+								{
+									"key": "action",
+									"value": "create_campaign"
+								}
+							]
+						},
+						"description": "Creates a new campaign. Setting type to 'sms_only' creates a dedicated SMS messaging campaign with auto-scheduling."
 					},
 					"response": []
 				}
@@ -297,8 +648,13 @@
 			"type": "string"
 		},
 		{
+			"key": "campaign_id",
+			"value": "1",
+			"type": "string"
+		},
+		{
 			"key": "batch_id",
-			"value": "SK-20261115-AB83FE",
+			"value": "SK-20261118-001",
 			"type": "string"
 		}
 	]
