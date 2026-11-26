@@ -1827,12 +1827,12 @@ class SkyKinDialerApp {
     if (mode === 'sms_only') {
       if (voiceSec) voiceSec.style.display = 'none';
       if (smsSec) smsSec.style.display = 'block';
-      if (submitBtn) submitBtn.textContent = 'Continue to SMS campaign designer';
+      if (submitBtn) submitBtn.textContent = 'Continue to campaign design';
       this.updateWizardSmsOnlyPreview();
     } else {
       if (voiceSec) voiceSec.style.display = 'block';
       if (smsSec) smsSec.style.display = 'none';
-      if (submitBtn) submitBtn.textContent = 'Continue to message design';
+      if (submitBtn) submitBtn.textContent = 'Continue to campaign design';
     }
   }
 

@@ -622,7 +622,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
               </div>
 
-              <button type="submit" id="btnNewCampaignSubmit" class="camp-btn-submit">Continue to message design</button>
+              <button type="submit" id="btnNewCampaignSubmit" class="camp-btn-submit">Continue to campaign design</button>
             </form>
           </div>
         </div>
