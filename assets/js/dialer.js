@@ -1132,12 +1132,25 @@ class SkyKinDialerApp {
           this.ivrResponses = null;
         }
       }
+      this.syncServerClock(data);
       this.selectedCampaigns = data.selected_campaigns || (data.campaign ? [data.campaign] : []);
-      this.leads = data.leads || [];
+      const activeByLeadId = new Map();
+      if (this.activeChannels && this.activeChannels.size > 0) {
+        this.activeChannels.forEach(ch => {
+          if (ch.lead && ch.lead.id) activeByLeadId.set(Number(ch.lead.id), ch);
+        });
+      }
+      this.leads = (data.leads || []).map(l => {
+        const activeCh = activeByLeadId.get(Number(l.id));
+        if (activeCh && l.status === 'pending') {
+          return { ...l, status: 'calling' };
+        }
+        return l;
+      });
       this.stats = data.stats || {};
       this.audioRecordings = data.audio_recordings || [];
       this.recentLogs = data.recent_logs || [];
-      this.serverToday = data.server_today || new Date().toISOString().split('T')[0];
+      this.serverToday = data.server_today || this.getLocalDateString();
       this.availableDates = data.available_dates || [];
       this.remainingCount = data.remaining_count || 0;
 
@@ -1147,7 +1160,7 @@ class SkyKinDialerApp {
         this.updateTelephonyKpiCards();
       }
 
-      if (this.campaign) {
+      if (this.campaign && !this._dialerTransitionLock) {
         if (this.campaign.status === 'running') {
           this.isRunning = true;
           this.isPaused = false;
@@ -1158,7 +1171,7 @@ class SkyKinDialerApp {
           this.isRunning = true;
           this.isPaused = true;
           this.stopSchedulerLoop();
-        } else {
+        } else if (!this.activeChannels || this.activeChannels.size === 0) {
           this.isRunning = false;
           this.isPaused = false;
           this.stopSchedulerLoop();
@@ -2040,8 +2053,7 @@ class SkyKinDialerApp {
           upData.append('schedule_interval_mins', scheduleInterval);
           upData.append('schedule_window_start', windowStart);
           upData.append('schedule_window_end', windowEnd);
-          upData.append('client_time', Math.floor(Date.now() / 1000));
-          upData.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
+          upData.append('client_timezone', this.getDialerTimezoneName());
           try {
             const upRes = await fetch('api.php?action=upload_leads', { method: 'POST', body: upData });
             const upJson = await upRes.json();
@@ -2793,9 +2805,11 @@ class SkyKinDialerApp {
 
   renderSmsTemplate(template, data = {}) {
     if (!template) return '';
-    const now = new Date();
-    const todayIso = now.toISOString().split('T')[0];
-    const todayTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const nowParts = this.getZonedDateParts(this.getServerNow());
+    const todayIso = nowParts.ymd;
+    const h12Now = (nowParts.hour % 12) || 12;
+    const ampmNow = nowParts.hour >= 12 ? 'PM' : 'AM';
+    const todayTime = `${String(h12Now).padStart(2, '0')}:${String(nowParts.minute).padStart(2, '0')} ${ampmNow}`;
 
     const name = data.name || data.customer_name || 'Contact';
     const phone = data.phone || data.phone_number || '';
@@ -2807,10 +2821,13 @@ class SkyKinDialerApp {
     let dateStr = data.date || '';
     let timeStr = data.time || '';
     if (!dateStr && data.call_time && !this.isImmediateCallTime(data.call_time)) {
-      const parsed = new Date(data.call_time);
-      if (!isNaN(parsed.getTime())) {
-        dateStr = parsed.toISOString().split('T')[0];
-        timeStr = parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const schedMs = this.getLeadScheduledTimestamp({ call_time: data.call_time, created_at: data.created_at });
+      if (schedMs > 0) {
+        const sp = this.getZonedDateParts(schedMs);
+        dateStr = sp.ymd;
+        const sh12 = (sp.hour % 12) || 12;
+        const sampm = sp.hour >= 12 ? 'PM' : 'AM';
+        timeStr = `${String(sh12).padStart(2, '0')}:${String(sp.minute).padStart(2, '0')} ${sampm}`;
       } else if (typeof data.call_time === 'string' && data.call_time.includes(' ')) {
         dateStr = data.call_time.split(' ')[0];
         timeStr = data.call_time.split(' ')[1] || todayTime;
@@ -2835,9 +2852,11 @@ class SkyKinDialerApp {
     const rendered = this.renderSmsTemplate(template, data);
     const escaped = this.escapeHtml(template);
 
-    const now = new Date();
-    const todayIso = now.toISOString().split('T')[0];
-    const todayTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const nowParts = this.getZonedDateParts(this.getServerNow());
+    const todayIso = nowParts.ymd;
+    const h12Now = (nowParts.hour % 12) || 12;
+    const ampmNow = nowParts.hour >= 12 ? 'PM' : 'AM';
+    const todayTime = `${String(h12Now).padStart(2, '0')}:${String(nowParts.minute).padStart(2, '0')} ${ampmNow}`;
 
     const name = data.name || data.customer_name || 'Contact';
     const phone = data.phone || data.phone_number || '';
@@ -2849,10 +2868,13 @@ class SkyKinDialerApp {
     let dateStr = data.date || '';
     let timeStr = data.time || '';
     if (!dateStr && data.call_time && !this.isImmediateCallTime(data.call_time)) {
-      const parsed = new Date(data.call_time);
-      if (!isNaN(parsed.getTime())) {
-        dateStr = parsed.toISOString().split('T')[0];
-        timeStr = parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const schedMs = this.getLeadScheduledTimestamp({ call_time: data.call_time, created_at: data.created_at });
+      if (schedMs > 0) {
+        const sp = this.getZonedDateParts(schedMs);
+        dateStr = sp.ymd;
+        const sh12 = (sp.hour % 12) || 12;
+        const sampm = sp.hour >= 12 ? 'PM' : 'AM';
+        timeStr = `${String(sh12).padStart(2, '0')}:${String(sp.minute).padStart(2, '0')} ${sampm}`;
       } else if (typeof data.call_time === 'string' && data.call_time.includes(' ')) {
         dateStr = data.call_time.split(' ')[0];
         timeStr = data.call_time.split(' ')[1] || todayTime;
@@ -2892,7 +2914,7 @@ class SkyKinDialerApp {
       name: 'Abebe Bikila',
       campaign: campName,
       phone: '+251911223344',
-      date: new Date().toISOString().split('T')[0]
+      date: this.getLocalDateString()
     });
   }
 
@@ -2941,11 +2963,35 @@ class SkyKinDialerApp {
     }
   }
 
-  async dispatchSmsCampaign(campId = null) {
+  async dispatchSmsCampaign(campId = null, forceBlast = false) {
     const targetId = Number(campId || this.activeCampaignId || this.campaign?.id);
     if (!targetId) {
       this.showToast('Please select a campaign first', 'warning');
       return;
+    }
+
+    const targetCamp = (this.campaign && Number(this.campaign.id) === targetId)
+      ? this.campaign
+      : ((this.allCampaigns || []).find(c => Number(c.id) === targetId) || null);
+
+    // For auto-scheduled SMS campaigns, Launch starts scheduled auto-dispatch unless explicit Force Blast was clicked
+    if (!forceBlast && targetCamp && targetCamp.calling_method === 'auto_schedule') {
+      const nowMs = this.getServerNow();
+      const campLeads = (this.leads || []).filter(l => Number(l.campaign_id) === targetId && (l.status || '').toLowerCase() === 'pending');
+      const hasFutureScheduled = campLeads.some(l => {
+        if (this.isImmediateCallTime(l.call_time)) return false;
+        const ts = this.getLeadScheduledTimestamp(l);
+        return ts > nowMs;
+      });
+      if (hasFutureScheduled) {
+        this.activeSmsCampaignId = targetId;
+        if (typeof switchTab === 'function') {
+          switchTab('tabSmsCampaigns');
+        }
+        await this.loadSmsDispatcherScreen(targetId);
+        await this.startSmsDispatcher();
+        return;
+      }
     }
 
     const tpl = document.getElementById('smsDesignerTemplate')?.value.trim() || (this.campaign?.sms_template || '');
@@ -3324,6 +3370,7 @@ class SkyKinDialerApp {
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Failed to load campaign data');
 
+      this.syncServerClock(data);
       this.activeSmsCampaign = data.campaign;
       this.smsLeads = data.leads || [];
 
@@ -3463,7 +3510,9 @@ class SkyKinDialerApp {
       const fd = new FormData();
       fd.append('campaign_id', campId);
       fd.append('status', 'running');
-      fetch('api.php?action=set_campaign_status', { method: 'POST', body: fd }).catch(() => {});
+      try {
+        await fetch('api.php?action=set_campaign_status', { method: 'POST', body: fd });
+      } catch (e) {}
       if (this.activeSmsCampaign) this.activeSmsCampaign.status = 'running';
     }
 
@@ -3599,11 +3648,11 @@ class SkyKinDialerApp {
     const next = sorted[0];
     const targetTs = this.getLeadScheduledTimestamp(next);
     const schedInfo = this.getLeadScheduleInfo(next);
-    const now = Date.now();
-    const isFuture = (targetTs > now);
-    const isPastDue = (targetTs > 0 && targetTs < now && (now - targetTs) > 60 * 1000);
-    const isDue = (targetTs <= now && targetTs > 0 && !isPastDue);
-    const isImmediate = (!next.call_time || this.isImmediateCallTime(next.call_time) || targetTs <= 0);
+    const now = this.getServerNow();
+    const isImmediate = (!next.call_time || this.isImmediateCallTime(next.call_time));
+    const isFuture = (!isImmediate && targetTs > now);
+    const isPastDue = (!isImmediate && targetTs > 0 && now >= targetTs + 60 * 1000);
+    const isDue = (!isImmediate && targetTs > 0 && now >= targetTs && !isPastDue);
 
     if (nameEl) {
       nameEl.textContent = `${next.customer_name || 'Contact'} (${next.phone_number})`;
@@ -3614,7 +3663,7 @@ class SkyKinDialerApp {
 
     let countdownStr = '';
     if (isFuture) {
-      const diffSec = Math.max(0, Math.round((targetTs - now) / 1000));
+      const diffSec = Math.max(0, Math.ceil((targetTs - now) / 1000));
       const h = Math.floor(diffSec / 3600);
       const m = Math.floor((diffSec % 3600) / 60);
       const s = diffSec % 60;
@@ -4124,7 +4173,7 @@ class SkyKinDialerApp {
   handleNewSmsStrategyChange(strat) {
     const intvRow = document.getElementById('newSmsModalIntervalRow');
     const dtRow = document.getElementById('newSmsModalDateTimeRow');
-    if (intvRow) intvRow.style.display = strat === 'auto_schedule' ? 'block' : 'none';
+    if (intvRow) intvRow.style.display = (strat === 'immediate') ? 'none' : 'block';
     if (dtRow) dtRow.style.display = strat === 'scheduled_date' ? 'block' : 'none';
   }
 
@@ -4175,9 +4224,10 @@ class SkyKinDialerApp {
       fd.append('sms_enabled', '1');
       fd.append('sms_sender_id', senderId);
       fd.append('sms_template', template);
-      fd.append('schedule_strategy', strategy);
+      fd.append('calling_method', strategy === 'immediate' ? 'manual' : 'auto_schedule');
+      fd.append('schedule_strategy', strategy === 'immediate' ? 'immediate' : 'interval');
       fd.append('schedule_interval_mins', intervalMins);
-      if (startDate && startTime) {
+      if (strategy === 'scheduled_date' && startDate && startTime) {
         fd.append('schedule_start_time', `${startDate} ${startTime}:00`);
       }
 
@@ -4191,12 +4241,22 @@ class SkyKinDialerApp {
 
       const newCampId = Number(data.campaign_id);
 
-      // If a CSV or text file was attached, upload leads immediately
+      // If a CSV or text file was attached, upload leads immediately with campaign schedule rules
       if (fileInput && fileInput.files && fileInput.files[0]) {
         const fileFd = new FormData();
         fileFd.append('campaign_id', newCampId);
         fileFd.append('lead_file', fileInput.files[0]);
-        await fetch('api.php?action=upload_leads_file', { method: 'POST', body: fileFd });
+        fileFd.append('auto_schedule', strategy === 'immediate' ? '0' : '1');
+        fileFd.append('schedule_strategy', strategy === 'immediate' ? 'immediate' : 'interval');
+        fileFd.append('schedule_interval_mins', intervalMins);
+        if (strategy === 'scheduled_date' && startDate && startTime) {
+          fileFd.append('schedule_start_time', `${startDate} ${startTime}:00`);
+        }
+        const upRes = await fetch('api.php?action=upload_leads', { method: 'POST', body: fileFd });
+        const upData = await upRes.json();
+        if (!upData || !upData.success) {
+          this.showToast(upData?.error || 'Campaign created, but initial contacts upload failed', 'warning');
+        }
       }
 
       this.closeModal('modalNewSmsCampaign');
@@ -4265,6 +4325,9 @@ class SkyKinDialerApp {
     }
 
     try {
+      const schedMode = document.getElementById('addSmsSchedulingSelect')?.value || 'auto_stagger';
+      const isAutoStagger = (schedMode === 'auto_stagger');
+
       if (isFile) {
         const fileInput = document.getElementById('addSmsFileInput');
         if (!fileInput || !fileInput.files || !fileInput.files[0]) {
@@ -4274,7 +4337,12 @@ class SkyKinDialerApp {
         const fd = new FormData();
         fd.append('campaign_id', campId);
         fd.append('lead_file', fileInput.files[0]);
-        const res = await fetch('api.php?action=upload_leads_file', { method: 'POST', body: fd });
+        fd.append('auto_schedule', isAutoStagger ? '1' : '0');
+        if (!isAutoStagger) fd.append('force_immediate', '1');
+        if (this.activeSmsCampaign?.schedule_interval_mins) {
+          fd.append('schedule_interval_mins', this.activeSmsCampaign.schedule_interval_mins);
+        }
+        const res = await fetch('api.php?action=upload_leads', { method: 'POST', body: fd });
         const data = await res.json();
         if (data && data.success) {
           this.showToast(`Imported ${data.imported || 0} contacts!`, 'success');
@@ -4291,6 +4359,11 @@ class SkyKinDialerApp {
         const fd = new FormData();
         fd.append('campaign_id', campId);
         fd.append('leads_text', text);
+        fd.append('auto_schedule', isAutoStagger ? '1' : '0');
+        if (!isAutoStagger) fd.append('force_immediate', '1');
+        if (this.activeSmsCampaign?.schedule_interval_mins) {
+          fd.append('schedule_interval_mins', this.activeSmsCampaign.schedule_interval_mins);
+        }
         const res = await fetch('api.php?action=save_manual_leads', { method: 'POST', body: fd });
         const data = await res.json();
         if (data && data.success) {
@@ -4433,8 +4506,7 @@ class SkyKinDialerApp {
     fd.append('schedule_interval_mins', intv);
     fd.append('schedule_window_start', winStart);
     fd.append('schedule_window_end', winEnd);
-    fd.append('client_time', Math.floor(Date.now() / 1000));
-    fd.append('client_timezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa');
+    fd.append('client_timezone', this.getDialerTimezoneName());
 
     this.showToast('Re-calculating schedule times for pending contacts...', 'info');
     try {
@@ -4461,33 +4533,39 @@ class SkyKinDialerApp {
     if (this._isDispatchingDueSms) return;
     if (this._smsAutoSenderDisabled) return;
 
+    let campId = 0;
     if (this.campaignViewMode === 'sms') {
       if (!this.isSmsDispatcherRunning || this.isSmsDispatcherPaused) {
         return;
       }
+      if (!this.activeSmsCampaign || this.activeSmsCampaign.type !== 'sms_only') {
+        return;
+      }
+      campId = Number(this.activeSmsCampaignId || this.activeSmsCampaign.id);
     } else {
       if (!this.isRunning || this.isPaused) {
         return;
       }
+      if (!this.campaign || this.campaign.type !== 'sms_only' || this.campaign.status !== 'running') {
+        return;
+      }
+      campId = Number(this.activeCampaignId || this.campaign.id);
     }
 
-    const campId = Number(this.activeSmsCampaignId || this.activeCampaignId || this.campaign?.id);
     if (!campId) return;
 
-    const campLeads = (this.smsLeads && this.smsLeads.length > 0)
-      ? this.smsLeads.filter(l => (l.status || '').toLowerCase() === 'pending')
+    const campLeads = (this.campaignViewMode === 'sms')
+      ? (this.smsLeads || []).filter(l => (l.status || '').toLowerCase() === 'pending')
       : (this.leads || []).filter(l => Number(l.campaign_id) === campId && (l.status || '').toLowerCase() === 'pending');
 
     if (campLeads.length === 0) return;
 
+    const nowMs = this.getServerNow();
     const dueLeads = campLeads.filter(l => {
-      if (this.campaignViewMode === 'sms') {
-        const timeStr = String(l.call_time || '').trim().toLowerCase();
-        if (!timeStr || timeStr === 'immediate' || timeStr === 'now') return true;
-        const targetTs = this.getLeadScheduledTimestamp(l);
-        return targetTs <= 0 || Date.now() >= targetTs;
-      }
-      return this.isLeadDueForCall(l);
+      if (this.isImmediateCallTime(l.call_time)) return true;
+      const targetTs = this.getLeadScheduledTimestamp(l);
+      // Never auto-send unparseable scheduled timestamps as immediate
+      return targetTs > 0 && nowMs >= targetTs;
     });
     if (dueLeads.length === 0) return;
 
@@ -4499,6 +4577,7 @@ class SkyKinDialerApp {
       const fd = new FormData();
       fd.append('campaign_id', campId);
       fd.append('only_due', '1');
+      fd.append('lead_ids', dueLeads.map(l => Number(l.id)).filter(Boolean).join(','));
       fd.append('template', tpl);
       fd.append('sender_id', sender);
 
@@ -5393,18 +5472,18 @@ class SkyKinDialerApp {
     }).join('');
   }
 
-    getTodayLeads() {
-    const today = this.serverToday || new Date().toISOString().split('T')[0];
-    return this.leads.filter(l => l.is_today || l.effective_date === today || (!l.effective_date && !l.is_past));
+  getTodayLeads() {
+    const today = this.serverToday || this.getLocalDateString();
+    return this.leads.filter(l => l.is_today || l.effective_date === today || (!l.effective_date && !l.is_past && !l.is_past_day));
   }
 
-    getHistoryLeads() {
-    const today = this.serverToday || new Date().toISOString().split('T')[0];
+  getHistoryLeads() {
+    const today = this.serverToday || this.getLocalDateString();
     return (this.leads || []).filter(l => {
       // 1. Any lead that has been dialed / carried out (status is not pending)
       if (l.status && l.status !== 'pending') return true;
       // 2. Any lead from previous days
-      if (l.is_past || (l.effective_date && l.effective_date < today)) return true;
+      if (l.is_past || l.is_past_day || (l.effective_date && l.effective_date < today)) return true;
       return false;
     });
   }
@@ -5622,9 +5701,9 @@ class SkyKinDialerApp {
 
     // Populate History Date Filter Dropdown if not filled
     const dateSelect = document.getElementById('historyDateSelect');
+    const today = this.serverToday || this.getLocalDateString();
     if (dateSelect && this.availableDates) {
       const currentSelected = dateSelect.value;
-      const today = this.serverToday || new Date().toISOString().split('T')[0];
       const pastDates = this.availableDates.filter(d => d !== today);
 
       let optionsHtml = '<option value="all">All Dates</option><option value="today">Today</option><option value="yesterday">Yesterday</option>';
@@ -5644,7 +5723,7 @@ class SkyKinDialerApp {
     const query = searchInput?.value.toLowerCase().trim() || '';
     const statusFilter = document.getElementById('historyStatusFilter')?.value || 'all';
 
-    const yestDate = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const yestDate = this.getLocalDateString(new Date(this.getServerNow() - 86400000));
     const pastLeads = this.getPastLeads();
 
     const filtered = pastLeads.filter(l => {
@@ -5745,12 +5824,12 @@ class SkyKinDialerApp {
     if (nameEl) nameEl.textContent = lead.customer_name || 'Customer';
     if (phoneEl) phoneEl.textContent = lead.phone_number || '';
     
-    const today = this.serverToday || new Date().toISOString().split('T')[0];
+    const today = this.serverToday || this.getLocalDateString();
     if (dateInp) dateInp.value = today;
 
-    const now = new Date();
-    const hh = String(now.getHours()).padStart(2, '0');
-    const mm = String(now.getMinutes()).padStart(2, '0');
+    const nowParts = this.getZonedDateParts(this.getServerNow());
+    const hh = String(nowParts.hour).padStart(2, '0');
+    const mm = String(nowParts.minute).padStart(2, '0');
     if (timeInp) timeInp.value = `${hh}:${mm}`;
 
     this.updateRedialPreview();
@@ -5868,7 +5947,7 @@ class SkyKinDialerApp {
     try {
       const formData = new FormData();
       formData.append('campaign_id', this.campaign?.id || 1);
-      formData.append('target_date', this.serverToday || new Date().toISOString().split('T')[0]);
+      formData.append('target_date', this.serverToday || this.getLocalDateString());
       formData.append('target_time', 'Immediate');
 
       const res = await fetch('api.php?action=bulk_rollover_to_today', { method: 'POST', body: formData });
@@ -5900,7 +5979,7 @@ class SkyKinDialerApp {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `call_history_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `call_history_${this.getLocalDateString()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -5941,11 +6020,97 @@ class SkyKinDialerApp {
     }
   }
 
-  getLocalDateString(d = new Date()) {
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+  getDialerTimezoneName() {
+    return this.serverTimezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Addis_Ababa';
+  }
+
+  syncServerClock(data) {
+    if (!data || typeof data !== 'object') return;
+    if (data.server_timezone) {
+      this.serverTimezone = data.server_timezone;
+    }
+    if (data.server_today) {
+      this.serverToday = data.server_today;
+    }
+    const serverMs = Number(data.server_now_ms);
+    if (Number.isFinite(serverMs) && serverMs > 0) {
+      this.serverTimeOffsetMs = serverMs - Date.now();
+    }
+  }
+
+  getServerNow() {
+    return Date.now() + (Number(this.serverTimeOffsetMs) || 0);
+  }
+
+  getZonedDateParts(ms = this.getServerNow(), timeZone = null) {
+    const tz = timeZone || this.getDialerTimezoneName();
+    try {
+      const dtf = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      const parts = {};
+      dtf.formatToParts(new Date(ms)).forEach(p => {
+        if (p.type !== 'literal') parts[p.type] = p.value;
+      });
+      const hour = Number(parts.hour) === 24 ? 0 : Number(parts.hour);
+      return {
+        year: Number(parts.year),
+        month: Number(parts.month),
+        day: Number(parts.day),
+        hour,
+        minute: Number(parts.minute),
+        second: Number(parts.second),
+        ymd: `${parts.year}-${parts.month}-${parts.day}`
+      };
+    } catch (e) {
+      const d = new Date(ms);
+      const pad = (n) => String(n).padStart(2, '0');
+      return {
+        year: d.getFullYear(),
+        month: d.getMonth() + 1,
+        day: d.getDate(),
+        hour: d.getHours(),
+        minute: d.getMinutes(),
+        second: d.getSeconds(),
+        ymd: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      };
+    }
+  }
+
+  zonedWallTimeToUtcMs(year, month1Based, day, hour = 0, minute = 0, second = 0, timeZone = null) {
+    const tz = timeZone || this.getDialerTimezoneName();
+    const approxUtc = Date.UTC(year, month1Based - 1, day, hour, minute, second);
+    try {
+      const p1 = this.getZonedDateParts(approxUtc, tz);
+      const wall1 = Date.UTC(p1.year, p1.month - 1, p1.day, p1.hour, p1.minute, p1.second);
+      const corrected = approxUtc - (wall1 - approxUtc);
+      const p2 = this.getZonedDateParts(corrected, tz);
+      const wall2 = Date.UTC(p2.year, p2.month - 1, p2.day, p2.hour, p2.minute, p2.second);
+      return corrected - (wall2 - approxUtc);
+    } catch (e) {
+      return new Date(year, month1Based - 1, day, hour, minute, second, 0).getTime();
+    }
+  }
+
+  formatZonedCanonical(ms, timeZone = null) {
+    const p = this.getZonedDateParts(ms, timeZone);
+    const pad = (n) => String(n).padStart(2, '0');
+    const ampm = p.hour >= 12 ? 'PM' : 'AM';
+    const h12 = (p.hour % 12) || 12;
+    return `${p.ymd} ${pad(h12)}:${pad(p.minute)}:${pad(p.second)} ${ampm}`;
+  }
+
+  getLocalDateString(d = new Date(this.getServerNow())) {
+    const ms = (d instanceof Date) ? d.getTime() : Number(d);
+    if (!Number.isFinite(ms)) return this.getZonedDateParts(this.getServerNow()).ymd;
+    return this.getZonedDateParts(ms).ymd;
   }
 
   setUnansDatePreset(preset, triggerRender = true) {
@@ -6770,7 +6935,7 @@ class SkyKinDialerApp {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `unanswered_leads_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `unanswered_leads_${this.getLocalDateString()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -6925,34 +7090,41 @@ class SkyKinDialerApp {
     return false;
   }
 
+  isLeadFromPastDay(lead) {
+    if (!lead) return false;
+    const today = this.serverToday || this.getLocalDateString();
+    if (lead.is_past_day) return true;
+    if (lead.effective_date && lead.effective_date < today) return true;
+    if (lead.is_past && !lead.effective_date) return true;
+    return false;
+  }
+
   isLeadPastDue(lead) {
     if (!lead || (lead.status || '').toLowerCase() !== 'pending') return false;
-    const today = this.serverToday || new Date().toISOString().split('T')[0];
-    if (lead.is_past || (lead.effective_date && lead.effective_date < today)) {
+    if (this.isLeadFromPastDay(lead)) {
       return true;
     }
-    const s = String(lead.call_time || '').trim().toLowerCase();
-    if (!s || s === 'immediate' || s === 'now') {
+    if (this.isImmediateCallTime(lead.call_time)) {
       return false;
     }
     const scheduledTs = this.getLeadScheduledTimestamp(lead);
-    // Scheduled minute has elapsed (current time is 60+ seconds past scheduled timestamp)
-    return scheduledTs > 0 && Date.now() >= (scheduledTs + 60000);
+    // UI indicator: scheduled minute has elapsed (60+ seconds past scheduled timestamp)
+    return scheduledTs > 0 && this.getServerNow() >= (scheduledTs + 60000);
   }
 
   isLeadDueForCall(lead) {
-    if (!lead) return false;
-    if (this.isLeadPastDue(lead)) return false;
-    const timeStr = String(lead.call_time || '').trim();
-    if (timeStr === '' || timeStr.toLowerCase() === 'immediate' || timeStr.toLowerCase() === 'now') {
+    if (!lead || (lead.status || '').toLowerCase() !== 'pending') return false;
+    // Exclude previous-day historical leads unless rolled over to today
+    if (this.isLeadFromPastDay(lead)) return false;
+    if (this.isImmediateCallTime(lead.call_time)) {
       return true; // Immediate calls are always ready
     }
 
     const scheduledTs = this.getLeadScheduledTimestamp(lead);
-    if (scheduledTs <= 0) return true;
+    if (scheduledTs <= 0) return false;
 
-    // Due when current time is at or after scheduled time (and not past due)
-    return Date.now() >= scheduledTs;
+    // Dial once the scheduled second has arrived; same-day delayed calls remain eligible
+    return this.getServerNow() >= scheduledTs;
   }
 
   formatTo12HourAmPm(timeStr) {
@@ -6960,37 +7132,42 @@ class SkyKinDialerApp {
     const s = String(timeStr).trim();
     if (!s || this.isImmediateCallTime(s)) return 'Immediate';
 
-    // If already contains AM or PM: normalize spacing (e.g. "09:10 AM")
+    // If already contains AM or PM: normalize padding and keep non-zero seconds
     if (/\b(AM|PM)\b/i.test(s)) {
-      return s.replace(/(\d{1,2})[:.](\d{2})\s*(AM|PM)/i, (m, h, min, ap) => {
+      return s.replace(/(\d{1,2})[:.](\d{2})(?::(\d{2}))?\s*(AM|PM)/i, (m, h, min, sec, ap) => {
         const hh = String(parseInt(h, 10)).padStart(2, '0');
-        return `${hh}:${min} ${ap.toUpperCase()}`;
+        const ssPart = (sec && sec !== '00') ? `:${sec}` : '';
+        return `${hh}:${min}${ssPart} ${ap.toUpperCase()}`;
       });
     }
 
-    // ISO date + 24-hr time: "2026-10-28 17:00" or "2026-10-26 09:10"
-    const isoMatch = s.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2})[:.](\d{2})(?:[:.]\d{2})?/);
+    // ISO date + 24-hr time: "2026-10-28 17:00" or "2026-10-26 09:10:30"
+    const isoMatch = s.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2})[:.](\d{2})(?::(\d{2}))?/);
     if (isoMatch) {
       const datePart = isoMatch[1];
       const hrs24 = parseInt(isoMatch[2], 10);
       const mins = isoMatch[3];
+      const sec = isoMatch[4];
+      const ssPart = (sec && sec !== '00') ? `:${sec}` : '';
       const ampm = hrs24 >= 12 ? 'PM' : 'AM';
       let hrs12 = hrs24 % 12;
       if (hrs12 === 0) hrs12 = 12;
       const hh = String(hrs12).padStart(2, '0');
-      return `${datePart} ${hh}:${mins} ${ampm}`;
+      return `${datePart} ${hh}:${mins}${ssPart} ${ampm}`;
     }
 
     // Bare 24-hr time: "17:00" or "14:10" or "09:10"
-    const timeMatch = s.match(/^(\d{1,2})[:.](\d{2})(?:[:.]\d{2})?$/);
+    const timeMatch = s.match(/^(\d{1,2})[:.](\d{2})(?::(\d{2}))?$/);
     if (timeMatch) {
       const hrs24 = parseInt(timeMatch[1], 10);
       const mins = timeMatch[2];
+      const sec = timeMatch[3];
+      const ssPart = (sec && sec !== '00') ? `:${sec}` : '';
       const ampm = hrs24 >= 12 ? 'PM' : 'AM';
       let hrs12 = hrs24 % 12;
       if (hrs12 === 0) hrs12 = 12;
       const hh = String(hrs12).padStart(2, '0');
-      return `${hh}:${mins} ${ampm}`;
+      return `${hh}:${mins}${ssPart} ${ampm}`;
     }
 
     return s;
@@ -7034,7 +7211,8 @@ class SkyKinDialerApp {
     // Always format with 12-hour AM/PM: e.g. "2026-10-28 05:00 PM"
     const displayTime = this.formatTo12HourAmPm(raw);
     const targetTs = this.getLeadScheduledTimestamp({ ...lead, call_time: raw });
-    const now = Date.now();
+    const now = this.getServerNow();
+    const isPastDay = this.isLeadFromPastDay(lead);
 
     // 1. Future scheduled call (e.g. tomorrow, next week, or upcoming later today)
     if (targetTs > now) {
@@ -7053,7 +7231,7 @@ class SkyKinDialerApp {
     }
 
     // 2. Scheduled call that arrived right now (within 60-second current window)
-    if (targetTs > 0 && (now - targetTs) <= 60 * 1000) {
+    if (!isPastDay && targetTs > 0 && (now - targetTs) <= 60 * 1000) {
       return {
         type: 'today',
         targetTs: targetTs,
@@ -7068,8 +7246,8 @@ class SkyKinDialerApp {
       };
     }
 
-    // 3. Past due call (scheduled time has passed by > 60 seconds without being dialed)
-    if (targetTs > 0) {
+    // 3. Past due call (scheduled time has passed by > 60 seconds or is from a past day)
+    if (isPastDay || targetTs > 0) {
       return {
         type: 'past_due',
         targetTs: targetTs,
@@ -7078,7 +7256,7 @@ class SkyKinDialerApp {
         fullLabel: `${displayTime} · Past due`,
         displayTime: displayTime,
         formatted: displayTime,
-        isDue: false,
+        isDue: !isPastDay && targetTs > 0 && now >= targetTs,
         isFuture: false,
         isPast: true
       };
@@ -7105,97 +7283,161 @@ class SkyKinDialerApp {
       return 0; // Immediate priority
     }
 
-    // 1. Relative offsets (e.g. "+5 mins", "+15 min", "+1 hour")
+    // Prefer exact server-computed epoch ms when available and not locally mutated
+    const serverSchedMs = Number(lead.scheduled_ts_ms);
+    if (!lead._dirtySchedule && Number.isFinite(serverSchedMs) && serverSchedMs > 0) {
+      return serverSchedMs;
+    }
+
+    const nowMs = this.getServerNow();
+
+    // Helper: parse lead.created_at accurately (respecting server created_at_ms or ISO offset)
+    const getAnchorMs = () => {
+      if (Number.isFinite(Number(lead.created_at_ms)) && Number(lead.created_at_ms) > 0) {
+        return Number(lead.created_at_ms);
+      }
+      if (lead.created_at) {
+        const rawCr = String(lead.created_at).trim();
+        if (/(Z|[+-]\d{2}(?::?\d{2})?)$/i.test(rawCr)) {
+          const t = new Date(rawCr.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00')).getTime();
+          if (Number.isFinite(t)) return t;
+        }
+        const mCr = rawCr.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+        if (mCr) {
+          return this.zonedWallTimeToUtcMs(
+            parseInt(mCr[1], 10), parseInt(mCr[2], 10), parseInt(mCr[3], 10),
+            parseInt(mCr[4], 10), parseInt(mCr[5], 10), mCr[6] ? parseInt(mCr[6], 10) : 0
+          );
+        }
+      }
+      if (lead.effective_date && /^\d{4}-\d{2}-\d{2}$/.test(lead.effective_date)) {
+        const [ey, em, ed] = lead.effective_date.split('-').map(Number);
+        return this.zonedWallTimeToUtcMs(ey, em, ed, 0, 0, 0);
+      }
+      return nowMs;
+    };
+
+    // 1. Relative offsets (e.g. "+30 secs", "+5 mins", "+1 hour")
+    const relSecMatch = s.match(/^\+(\d+)\s*(?:sec|secs|second|seconds)$/i);
+    if (relSecMatch) {
+      return getAnchorMs() + parseInt(relSecMatch[1], 10) * 1000;
+    }
     const relMatch = s.match(/^\+(\d+)\s*(?:min|mins|minute|minutes)$/i);
     if (relMatch) {
-      const mins = parseInt(relMatch[1], 10);
-      const created = lead.created_at ? new Date(lead.created_at).getTime() : Date.now();
-      return (isNaN(created) ? Date.now() : created) + mins * 60 * 1000;
+      return getAnchorMs() + parseInt(relMatch[1], 10) * 60 * 1000;
     }
     const relHourMatch = s.match(/^\+(\d+)\s*(?:hr|hrs|hour|hours)$/i);
     if (relHourMatch) {
-      const hrs = parseInt(relHourMatch[1], 10);
-      const created = lead.created_at ? new Date(lead.created_at).getTime() : Date.now();
-      return (isNaN(created) ? Date.now() : created) + hrs * 3600 * 1000;
+      return getAnchorMs() + parseInt(relHourMatch[1], 10) * 3600 * 1000;
     }
 
-    const now = new Date();
-    let baseYear = now.getFullYear();
-    let baseMonth = now.getMonth();
-    let baseDate = now.getDate();
-    let hasExplicitDate = false;
+    // 2. Full ISO-8601 with explicit offset / Z
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(s)) {
+      const isoMs = new Date(s).getTime();
+      if (Number.isFinite(isoMs) && isoMs > 0) return isoMs;
+    }
 
-    // Check if Tomorrow
-    if (/^tomorrow/i.test(s)) {
+    // Anchor wall-clock calendar date in dialer timezone
+    const anchorParts = this.getZonedDateParts(getAnchorMs());
+    let baseYear = anchorParts.year;
+    let baseMonth = anchorParts.month; // 1-12
+    let baseDay = anchorParts.day;
+    let hasExplicitDate = false;
+    let cleanStr = s;
+
+    const relPrefix = s.match(/^(today|tomorrow|yesterday)\b[,\s]*(?:at\s*)?(.*)$/i);
+    if (relPrefix) {
       hasExplicitDate = true;
-      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      baseYear = tomorrow.getFullYear();
-      baseMonth = tomorrow.getMonth();
-      baseDate = tomorrow.getDate();
-    } else if (/^today/i.test(s)) {
-      hasExplicitDate = true;
+      const kw = relPrefix[1].toLowerCase();
+      let offsetDays = 0;
+      if (kw === 'tomorrow') offsetDays = 1;
+      else if (kw === 'yesterday') offsetDays = -1;
+      const shiftedAnchor = this.getZonedDateParts(
+        this.zonedWallTimeToUtcMs(baseYear, baseMonth, baseDay, 12, 0, 0) + offsetDays * 86400000
+      );
+      baseYear = shiftedAnchor.year;
+      baseMonth = shiftedAnchor.month;
+      baseDay = shiftedAnchor.day;
+      cleanStr = (relPrefix[2] || '').trim();
+      if (!cleanStr) {
+        return this.zonedWallTimeToUtcMs(baseYear, baseMonth, baseDay, 9, 0, 0);
+      }
     } else {
-      // Check for date formats like "Sep 14, 2026", "2026-09-14", "Sep 14"
-      const dateMatch = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?:,?\s*(\d{4}))?/i);
+      const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+      const dateMatch = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:[,\s]+(\d{4}))?(.*)$/i);
       if (dateMatch) {
-        hasExplicitDate = true;
-        const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
         const mIdx = monthNames.indexOf(dateMatch[1].toLowerCase().slice(0, 3));
         if (mIdx !== -1) {
-          baseMonth = mIdx;
-          baseDate = parseInt(dateMatch[2], 10);
+          hasExplicitDate = true;
+          baseMonth = mIdx + 1;
+          baseDay = parseInt(dateMatch[2], 10);
           if (dateMatch[3]) baseYear = parseInt(dateMatch[3], 10);
+          cleanStr = (dateMatch[4] || '').replace(/^[,\s]+/, '').trim();
         }
       } else {
-        const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        const isoMatch = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[T,\s]+(.*))?$/);
         if (isoMatch) {
           hasExplicitDate = true;
           baseYear = parseInt(isoMatch[1], 10);
-          baseMonth = parseInt(isoMatch[2], 10) - 1;
-          baseDate = parseInt(isoMatch[3], 10);
+          baseMonth = parseInt(isoMatch[2], 10);
+          baseDay = parseInt(isoMatch[3], 10);
+          cleanStr = (isoMatch[4] || '').trim();
+        } else {
+          const dmyMatch = s.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})(?:[,\s]+(.*))?$/);
+          if (dmyMatch) {
+            hasExplicitDate = true;
+            const p1 = parseInt(dmyMatch[1], 10);
+            const p2 = parseInt(dmyMatch[2], 10);
+            baseYear = parseInt(dmyMatch[3], 10);
+            if (p2 >= 1 && p2 <= 12 && p1 <= 31) {
+              baseDay = p1; baseMonth = p2;
+            } else {
+              baseMonth = p1; baseDay = p2;
+            }
+            cleanStr = (dmyMatch[4] || '').trim();
+          }
         }
       }
     }
 
-    // 2. Standard 12-hour format: "Today, 01:50 PM", "01:50 PM", "1:50 PM", "12:50 PM", "07:50 AM"
-    const match12 = s.match(/(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*(AM|PM)/i);
+    if (hasExplicitDate && (!cleanStr || this.isImmediateCallTime(cleanStr))) {
+      return this.zonedWallTimeToUtcMs(baseYear, baseMonth, baseDay, 0, 0, 0);
+    }
+
+    // 3. Standard 12-hour format: "01:50 PM", "01:50:30 PM"
+    const match12 = cleanStr.match(/(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*(AM|PM)/i);
     if (match12) {
       let hours = parseInt(match12[1], 10);
       const minutes = parseInt(match12[2], 10);
       const seconds = match12[3] ? parseInt(match12[3], 10) : 0;
       const ampm = match12[4].toUpperCase();
 
-      if (ampm === 'PM' && hours < 12) {
-        hours += 12;
-      } else if (ampm === 'AM' && hours === 12) {
-        hours = 0;
-      }
+      if (ampm === 'PM' && hours < 12) hours += 12;
+      else if (ampm === 'AM' && hours === 12) hours = 0;
 
-      const target = new Date(baseYear, baseMonth, baseDate, hours, minutes, seconds, 0);
-      return target.getTime();
+      return this.zonedWallTimeToUtcMs(baseYear, baseMonth, baseDay, hours, minutes, seconds);
     }
 
-    // 3. 24-hour time or time without AM/PM: "13:50", "13.50", "13:50:00", "01:50", "12:00"
-    const matchTime = s.match(/(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?/);
+    // 4. 24-hour time or bare time without AM/PM
+    const matchTime = cleanStr.match(/(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?/);
     if (matchTime) {
       let hours = parseInt(matchTime[1], 10);
       const minutes = parseInt(matchTime[2], 10);
       const seconds = matchTime[3] ? parseInt(matchTime[3], 10) : 0;
+      const nowParts = this.getZonedDateParts(nowMs);
 
-      // If hours is 1..6 during daytime afternoon (>= 12), infer PM ONLY for bare times without explicit date
-      if (!hasExplicitDate && hours >= 1 && hours <= 6 && now.getHours() >= 12) {
+      if (!hasExplicitDate && hours >= 1 && hours <= 6 && nowParts.hour >= 12) {
         hours += 12;
       }
 
-      const target = new Date(baseYear, baseMonth, baseDate, hours, minutes, seconds, 0);
-      return target.getTime();
+      return this.zonedWallTimeToUtcMs(baseYear, baseMonth, baseDay, hours, minutes, seconds);
     }
 
-    // 4. Fallback Date.parse
+    // 5. Fallback Date parse (only accept realistic years >= 2020)
     try {
-      const cleanStr = s.replace(/^Today,\s*/i, '').replace(/^Tomorrow,\s*/i, '');
-      const parsedDate = new Date(cleanStr);
-      if (!isNaN(parsedDate.getTime())) {
+      const stripped = s.replace(/^Today,\s*/i, '').replace(/^Tomorrow,\s*/i, '');
+      const parsedDate = new Date(stripped);
+      if (!isNaN(parsedDate.getTime()) && parsedDate.getFullYear() >= 2020) {
         return parsedDate.getTime();
       }
     } catch (e) {}
@@ -7235,75 +7477,98 @@ class SkyKinDialerApp {
     // If already running and scheduler active, nothing to do
     if (this.isRunning && !this.isPaused && this.schedulerInterval) return;
 
-    this.isRunning = true;
-    this.isPaused = false;
-    this.syncDialerControlButtons();
+    this._dialerTransitionLock = true;
+    try {
+      // Refresh latest queue data from database BEFORE asserting active status
+      await this.loadCampaignData();
 
-    // Refresh queue data from database first
-    await this.loadCampaignData();
+      let pendingLeads = this.getTodayLeads().filter(l => l.status === 'pending' && !this.isLeadFromPastDay(l));
+      if (pendingLeads.length === 0) {
+        pendingLeads = (this.leads || []).filter(l => l.status === 'pending' && !this.isLeadFromPastDay(l));
+      }
+      if (pendingLeads.length === 0) {
+        const pastDayPending = (this.leads || []).filter(l => l.status === 'pending').length;
+        this.isRunning = false;
+        this.isPaused = false;
+        this.stopSchedulerLoop();
+        this.syncDialerControlButtons();
+        if (pastDayPending > 0) {
+          this.showToast(`Found ${pastDayPending} contact(s) from previous days. Click Rollover to Today or Reset Leads before starting.`, 'warning');
+        } else {
+          this.showToast('No pending leads in queue! Import an Excel file, add numbers, or roll over remaining calls from History.', 'warning');
+        }
+        return;
+      }
 
-    let pendingLeads = this.getTodayLeads().filter(l => l.status === 'pending');
-    if (pendingLeads.length === 0) {
-      pendingLeads = (this.leads || []).filter(l => l.status === 'pending');
+      // Persist running status synchronously before starting scheduler loop
+      if (this.campaign && this.campaign.id) {
+        const formData = new FormData();
+        formData.append('campaign_id', this.campaign.id);
+        formData.append('status', 'running');
+        try {
+          await fetch('api.php?action=set_campaign_status', { method: 'POST', body: formData });
+        } catch (e) {}
+        this.campaign.status = 'running';
+      }
+
+      this.isRunning = true;
+      this.isPaused = false;
+      this.syncDialerControlButtons();
+
+      const l1Registered = this.line1?.isRegistered;
+      const l2Registered = this.line2?.enabled && this.line2?.isRegistered;
+      const lineMode = (this.line2?.enabled) ? 'Dual-Line (2 Concurrent Numbers)' : 'Single Line';
+
+      if (l1Registered || l2Registered) {
+        this.showToast(`Auto-Dialer active [${lineMode}] (SIP Softphone Connected): Monitoring queue...`, 'success');
+      } else {
+        this.showToast(`Auto-Dialer active [${lineMode}] (Voice Broadcast Mode): Monitoring queue...`, 'success');
+      }
+
+      this.renderCampaignHeader();
+      this.startSchedulerLoop();
+      this.processOutboundQueue();
+    } finally {
+      this._dialerTransitionLock = false;
     }
-    if (pendingLeads.length === 0) {
-      this.stopCampaign();
-      this.showToast('No pending leads in queue! Import an Excel file, add numbers, or roll over remaining calls from History.', 'warning');
-      return;
-    }
-
-    // Sync status to backend if campaign exists
-    if (this.campaign && this.campaign.id) {
-      const formData = new FormData();
-      formData.append('campaign_id', this.campaign.id);
-      formData.append('status', 'running');
-      fetch('api.php?action=set_campaign_status', { method: 'POST', body: formData }).catch(() => {});
-      this.campaign.status = 'running';
-    }
-
-    const l1Registered = this.line1?.isRegistered;
-    const l2Registered = this.line2?.enabled && this.line2?.isRegistered;
-    const lineMode = (this.line2?.enabled) ? 'Dual-Line (2 Concurrent Numbers)' : 'Single Line';
-
-    if (l1Registered || l2Registered) {
-      this.showToast(`Auto-Dialer active [${lineMode}] (SIP Softphone Connected): Monitoring queue...`, 'success');
-    } else {
-      this.showToast(`Auto-Dialer active [${lineMode}] (Voice Broadcast Mode): Monitoring queue...`, 'success');
-    }
-
-    this.renderCampaignHeader();
-    this.startSchedulerLoop();
-    this.processOutboundQueue();
   }
 
-  togglePauseCampaign() {
+  async togglePauseCampaign() {
     if (!this.isRunning) return;
     this.isPaused = !this.isPaused;
     this.syncDialerControlButtons();
     this.renderCampaignHeader();
     this.showToast(this.isPaused ? 'Auto-Dialer Paused' : 'Auto-Dialer Resumed', 'info');
 
-    if (this.campaign && this.campaign.id) {
-      const formData = new FormData();
-      formData.append('campaign_id', this.campaign.id);
-      formData.append('status', this.isPaused ? 'paused' : 'running');
-      fetch('api.php?action=set_campaign_status', { method: 'POST', body: formData }).catch(() => {});
-      this.campaign.status = this.isPaused ? 'paused' : 'running';
-    }
-
-    if (!this.isPaused) {
-      this.startSchedulerLoop();
-      this.processOutboundQueue();
-    } else {
-      this.stopSchedulerLoop();
-      if (this._displayCountdownTimer) {
-        clearInterval(this._displayCountdownTimer);
-        this._displayCountdownTimer = null;
+    this._dialerTransitionLock = true;
+    try {
+      if (this.campaign && this.campaign.id) {
+        const formData = new FormData();
+        formData.append('campaign_id', this.campaign.id);
+        formData.append('status', this.isPaused ? 'paused' : 'running');
+        try {
+          await fetch('api.php?action=set_campaign_status', { method: 'POST', body: formData });
+        } catch (e) {}
+        this.campaign.status = this.isPaused ? 'paused' : 'running';
       }
+
+      if (!this.isPaused) {
+        this.startSchedulerLoop();
+        this.processOutboundQueue();
+      } else {
+        this.stopSchedulerLoop();
+        if (this._displayCountdownTimer) {
+          clearInterval(this._displayCountdownTimer);
+          this._displayCountdownTimer = null;
+        }
+      }
+    } finally {
+      this._dialerTransitionLock = false;
     }
   }
 
   stopCampaign() {
+    this._dialerTransitionLock = true;
     this.isRunning = false;
     this.isPaused = false;
     this.stopSchedulerLoop();
@@ -7318,8 +7583,12 @@ class SkyKinDialerApp {
       const formData = new FormData();
       formData.append('campaign_id', this.campaign.id);
       formData.append('status', 'idle');
-      fetch('api.php?action=set_campaign_status', { method: 'POST', body: formData }).catch(() => {});
+      fetch('api.php?action=set_campaign_status', { method: 'POST', body: formData })
+        .catch(() => {})
+        .finally(() => { this._dialerTransitionLock = false; });
       this.campaign.status = 'idle';
+    } else {
+      this._dialerTransitionLock = false;
     }
 
     // Terminate any in-flight SIP or IVR audio on both lines
@@ -7360,39 +7629,46 @@ class SkyKinDialerApp {
         }
       });
 
-      // Filter today's pending leads (excluding any lead ID or phone number already in progress)
+      // Filter today & future pending leads (excluding previous-day leads or numbers already in progress)
       let pendingLeads = this.getTodayLeads().filter(l => {
         if (l.status !== 'pending') return false;
+        if (this.isLeadFromPastDay(l)) return false;
         if (activeLeadIds.has(Number(l.id))) return false;
         const normPhone = window.skykinNormalizeEtDial(l.phone_number);
         if (activePhoneNumbers.has(normPhone)) return false;
         return true;
       });
 
-      // Fallback: If no today pending leads, check any pending leads in this.leads
-      if (pendingLeads.length === 0 && this.activeChannels.size === 0) {
-        const otherPending = (this.leads || []).filter(l => {
+      // Fallback: check future scheduled leads across this.leads when today has none left
+      if (pendingLeads.length === 0) {
+        pendingLeads = (this.leads || []).filter(l => {
           if (l.status !== 'pending') return false;
+          if (this.isLeadFromPastDay(l)) return false;
           if (activeLeadIds.has(Number(l.id))) return false;
           const normPhone = window.skykinNormalizeEtDial(l.phone_number);
           if (activePhoneNumbers.has(normPhone)) return false;
           return true;
         });
-        if (otherPending.length === 0) {
+      }
+
+      if (pendingLeads.length === 0 && this.activeChannels.size === 0) {
+        const anyRemaining = (this.leads || []).some(l => l.status === 'pending');
+        if (!anyRemaining) {
           this.stopCampaign();
           this.showToast('All pending customer leads in queue have been processed!', 'success');
           await this.loadCampaignData();
-          return;
+        } else {
+          this.renderActiveChannels();
         }
-        pendingLeads = otherPending;
+        return;
       }
 
-      const now = Date.now();
+      const now = this.getServerNow();
 
       // 1. Immediate leads
       const immediateLeads = pendingLeads.filter(l => this.isImmediateCallTime(l.call_time));
 
-      // 2. Scheduled leads whose time has arrived and is currently due
+      // 2. Scheduled leads whose time has arrived (including same-day delayed calls)
       const dueScheduledLeads = pendingLeads.filter(l => {
         if (this.isImmediateCallTime(l.call_time)) return false;
         return this.isLeadDueForCall(l);
@@ -7449,11 +7725,8 @@ class SkyKinDialerApp {
   }
 
   getNextLeadInQueue() {
-    const now = Date.now();
-    let pending = this.getTodayLeads().filter(l => l.status === 'pending');
-    if (pending.length === 0) {
-      pending = (this.leads || []).filter(l => l.status === 'pending');
-    }
+    const now = this.getServerNow();
+    let pending = (this.leads || []).filter(l => l.status === 'pending' && !this.isLeadFromPastDay(l));
     if (pending.length === 0) return null;
 
     // Filter to active campaign if activeCampaignId is set
@@ -7825,9 +8098,9 @@ class SkyKinDialerApp {
       return;
     }
 
-    // Helper: build countdown text from a timestamp
+    // Helper: build countdown text from a timestamp using synchronized server clock
     const makeCountdown = (targetTs) => {
-      const diff = Math.max(0, Math.round((targetTs - Date.now()) / 1000));
+      const diff = Math.max(0, Math.ceil((targetTs - this.getServerNow()) / 1000));
       if (diff <= 0) return 'Calling now...';
       const h = Math.floor(diff / 3600);
       const m = Math.floor((diff % 3600) / 60);
@@ -7840,7 +8113,7 @@ class SkyKinDialerApp {
     // Get the next lead (future-prioritized)
     const next = this.getNextLeadInQueue();
     const targetTs = next ? this.getLeadScheduledTimestamp(next) : 0;
-    const isFuture = targetTs > Date.now();
+    const isFuture = targetTs > this.getServerNow();
 
     // 2. Auto-Dialer Running
     if (this.isRunning) {
@@ -7850,10 +8123,10 @@ class SkyKinDialerApp {
           this.channelsContainer.innerHTML = `
             <div style="grid-column:1/-1;background:#fffbeb;border:1.5px solid #fde68a;border-radius:10px;padding:16px;text-align:center;">
               <div style="font-weight:700;color:#92400e;font-size:14px;margin-bottom:4px;">
-                Auto-Dialer Active &bull; Waiting for Scheduled Contacts
+                Auto-Dialer Active &bull; Historical Leads Remaining
               </div>
               <div style="font-size:12.5px;color:#a16207;">
-                ${pendingCount} pending contact(s) have past scheduled call times (Past Due). The auto-dialer will not auto-call them when their time has passed. Click "Call" on any row to dial manually.
+                ${pendingCount} pending contact(s) belong to previous calendar days. Click Rollover to Today, Reset Leads, or click "Call" on a row to dial manually.
               </div>
             </div>
           `;
@@ -8037,17 +8310,17 @@ class SkyKinDialerApp {
     const customDate = document.getElementById('quickAddCustomDate');
     const customTime = document.getElementById('quickAddCustomTime');
     if (preset === 'custom') {
+      const defParts = this.getZonedDateParts(this.getServerNow() + 15 * 60 * 1000);
       if (customDate) {
         customDate.style.display = 'inline-block';
         if (!customDate.value) {
-          customDate.value = new Date().toISOString().split('T')[0];
+          customDate.value = defParts.ymd;
         }
       }
       if (customTime) {
         customTime.style.display = 'inline-block';
         if (!customTime.value) {
-          const d = new Date(Date.now() + 15 * 60 * 1000);
-          customTime.value = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+          customTime.value = `${String(defParts.hour).padStart(2, '0')}:${String(defParts.minute).padStart(2, '0')}`;
         }
       }
     } else {
@@ -8061,13 +8334,13 @@ class SkyKinDialerApp {
     const customDate = document.getElementById('modalAddCustomDate');
     const customTime = document.getElementById('modalAddCustomTime');
     if (preset === 'custom') {
+      const defParts = this.getZonedDateParts(this.getServerNow() + 15 * 60 * 1000);
       if (wrap) wrap.style.display = 'flex';
       if (customDate && !customDate.value) {
-        customDate.value = new Date().toISOString().split('T')[0];
+        customDate.value = defParts.ymd;
       }
       if (customTime && !customTime.value) {
-        const d = new Date(Date.now() + 15 * 60 * 1000);
-        customTime.value = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        customTime.value = `${String(defParts.hour).padStart(2, '0')}:${String(defParts.minute).padStart(2, '0')}`;
       }
     } else {
       if (wrap) wrap.style.display = 'none';
@@ -8077,47 +8350,30 @@ class SkyKinDialerApp {
   getCalculatedCallTime(presetValue, dateVal = '', timeVal = '') {
     if (presetValue === 'immediate' || !presetValue) return 'Immediate';
     if (presetValue === 'custom') {
-      let d = dateVal ? dateVal.trim() : '';
-      let t = timeVal ? timeVal.trim() : '';
-      if (!t && !d) return 'Immediate';
-      if (!t) t = '12:00 PM';
-
-      if (/^\d{1,2}:\d{2}$/.test(t)) {
-        const [hh, mm] = t.split(':');
-        const rawH = parseInt(hh, 10);
-        let ampm = rawH >= 12 ? 'PM' : 'AM';
-        let formattedH = (rawH % 12) || 12;
-        if (rawH === 12) {
-          ampm = 'PM';
-          formattedH = 12;
+      const todayYmd = this.getLocalDateString();
+      const d = dateVal ? dateVal.trim() : todayYmd;
+      const tRaw = timeVal ? timeVal.trim() : '12:00';
+      const tm = tRaw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?$/i);
+      const [y, m, day] = d.split('-').map(Number);
+      if (tm && y && m && day) {
+        let hrs = parseInt(tm[1], 10);
+        const mins = parseInt(tm[2], 10);
+        const secs = tm[3] ? parseInt(tm[3], 10) : 0;
+        if (tm[4]) {
+          const ap = tm[4].toUpperCase();
+          if (ap === 'PM' && hrs < 12) hrs += 12;
+          else if (ap === 'AM' && hrs === 12) hrs = 0;
         }
-        t = `${String(formattedH).padStart(2, '0')}:${mm} ${ampm}`;
+        const targetMs = this.zonedWallTimeToUtcMs(y, m, day, hrs, mins, secs);
+        return this.formatZonedCanonical(targetMs);
       }
-
-      if (d) {
-        try {
-          const dtObj = new Date(d + 'T' + (timeVal || '12:00'));
-          const today = new Date();
-          if (dtObj.toDateString() === today.toDateString()) {
-            return `Today, ${t}`;
-          }
-          const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-          return `${monthNames[dtObj.getMonth()]} ${dtObj.getDate()}, ${t}`;
-        } catch(e) {
-          return `${d} ${t}`;
-        }
-      }
-      return `Today, ${t}`;
+      return `${d} ${tRaw}`;
     }
     const minsMatch = presetValue.match(/\+(\d+)min/);
     if (minsMatch) {
       const mins = parseInt(minsMatch[1], 10);
-      const targetDate = new Date(Date.now() + mins * 60 * 1000);
-      let h = targetDate.getHours();
-      const m = String(targetDate.getMinutes()).padStart(2, '0');
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      h = (h % 12) || 12;
-      return `Today, ${String(h).padStart(2, '0')}:${m} ${ampm}`;
+      const targetMs = this.getServerNow() + mins * 60 * 1000;
+      return this.formatZonedCanonical(targetMs);
     }
     return 'Immediate';
   }
@@ -8150,6 +8406,7 @@ class SkyKinDialerApp {
       const res = await fetch('api.php?action=add_single_lead', { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
+        this.syncServerClock(data);
         this.showToast(data.message || `Contact ${name} added!`, 'success');
         if (nameInp) nameInp.value = '';
         if (phoneInp) phoneInp.value = '';
@@ -8711,7 +8968,7 @@ class SkyKinDialerApp {
     if (customWrap) {
       customWrap.style.display = (mode === 'custom_date') ? 'block' : 'none';
       if (mode === 'custom_date') {
-        const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+        const tomorrow = this.getLocalDateString(new Date(this.getServerNow() + 86400000));
         const dateInput = document.getElementById('cfgRetryCustomDate');
         if (dateInput && !dateInput.value) dateInput.value = tomorrow;
       }
@@ -8901,6 +9158,11 @@ class SkyKinDialerApp {
       const data = await res.json();
       if (data && data.success) {
         this.showToast('Business and dialing settings saved!', 'success');
+        const newTz = getVal('settingTimezone');
+        if (newTz) {
+          this.serverTimezone = newTz;
+          this.serverToday = this.getLocalDateString();
+        }
         this.settings = data.settings || this.settings;
         if (data.metrics) this.updateTelephonyKpiCards(data.metrics);
       } else {
@@ -10645,7 +10907,7 @@ class SkyKinDialerApp {
       phone: '+251911223344',
       outcome: 'Confirmed',
       key: '1',
-      date: new Date().toISOString().split('T')[0],
+      date: this.getLocalDateString(),
       time: '10:30 AM'
     });
     bubble.textContent = rendered;

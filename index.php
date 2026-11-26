@@ -10,7 +10,9 @@ header("Expires: 0");
 session_start();
 
 require_once __DIR__ . '/data/db.php';
+require_once __DIR__ . '/data/scheduler.php';
 $db = DialerDB::getInstance()->getPdo();
+refreshDialerTimezone($db);
 
 if (!empty($_SESSION['dialer_user']['id'])) {
     $stmt = $db->prepare("SELECT * FROM users WHERE id = ?");
@@ -1210,7 +1212,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
 
             <div style="display:flex;gap:10px;align-items:center;">
               <button type="button" class="btn-clean-white" style="font-size:12px;font-weight:600;padding:6px 14px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#475569;cursor:pointer;" onclick="app.exportCampaignContacts(app.activeCampaignId || app.campaign?.id)">Export CSV</button>
-              <button type="button" id="btnContactsDispatchSms" class="btn btn-primary" style="display:none;background:#00A651;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-weight:700;font-size:12.5px;cursor:pointer;" onclick="app.dispatchSmsCampaign()">Dispatch All Pending</button>
+              <button type="button" id="btnContactsDispatchSms" class="btn btn-primary" style="display:none;background:#00A651;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-weight:700;font-size:12.5px;cursor:pointer;" onclick="app.dispatchSmsCampaign(null, true)">Dispatch All Pending</button>
               <button type="button" class="btn btn-primary" style="background:#00A651;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-weight:700;font-size:12.5px;cursor:pointer;" onclick="app.openAddContactsModal(app.activeCampaignId || app.campaign?.id)">Add numbers</button>
             </div>
           </div>
@@ -2918,6 +2920,7 @@ $initials      = strtoupper(substr($currentUser['username'] ?? 'A', 0, 2));
           <div id="newSmsModalIntervalRow" class="form-group" style="margin-bottom:12px;">
             <label class="form-label" style="font-size:12px;font-weight:600;color:#1e293b;">Interval Between Messages</label>
             <select id="newSmsModalIntervalMins" class="form-control" style="font-size:13px;">
+              <option value="1">Every 1 minute</option>
               <option value="2">Every 2 minutes</option>
               <option value="5" selected>Every 5 minutes (Recommended)</option>
               <option value="10">Every 10 minutes</option>

@@ -151,8 +151,23 @@ class SmsService {
         $keyPressed = $data['key_pressed'] ?? $data['key'] ?? $data['dtmf_response'] ?? '';
         $account = $data['account_number'] ?? $data['account'] ?? '';
         
-        $date = !empty($data['date']) ? $data['date'] : (!empty($data['call_time']) ? explode(' ', trim($data['call_time']))[0] : date('Y-m-d'));
-        $time = !empty($data['time']) ? $data['time'] : date('h:i A');
+        $tz = function_exists('getDialerTimezone') ? getDialerTimezone() : (date_default_timezone_get() ?: 'Africa/Addis_Ababa');
+        $rawCallTime = trim((string)($data['call_time'] ?? ''));
+        $parsedTs = ($rawCallTime !== '' && function_exists('parseAnyDateTime'))
+            ? parseAnyDateTime($rawCallTime, $tz, $data['created_at'] ?? null)
+            : null;
+        $date = !empty($data['date'])
+            ? $data['date']
+            : ($parsedTs !== null
+                ? (new DateTimeImmutable('@' . $parsedTs))->setTimezone(new DateTimeZone($tz))->format('Y-m-d')
+                : ($rawCallTime !== '' && !preg_match('/^(today|tomorrow|immediate|now)/i', $rawCallTime)
+                    ? explode(' ', $rawCallTime)[0]
+                    : date('Y-m-d')));
+        $time = !empty($data['time'])
+            ? $data['time']
+            : ($parsedTs !== null
+                ? (new DateTimeImmutable('@' . $parsedTs))->setTimezone(new DateTimeZone($tz))->format('h:i A')
+                : date('h:i A'));
 
         $replacements = [
             '{customer_name}' => $customerName,

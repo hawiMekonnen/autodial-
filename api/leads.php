@@ -32,6 +32,7 @@ require_once dirname(__DIR__) . '/data/scheduler.php';
 $dbInstance = DialerDB::getInstance();
 $db = $dbInstance->getPdo();
 $isPgsql = ($dbInstance->getDriver() === 'pgsql');
+refreshDialerTimezone($db);
 
 // Load Environment Configuration & Fallback Keys
 $envFile = dirname(__DIR__) . '/.env';
@@ -534,11 +535,16 @@ if ($scheduleInterval <= 0 || $scheduleInterval > 60) $scheduleInterval = 5;
 
 $batchId = 'SK-' . date('Ymd') . '-' . substr(strtoupper(bin2hex(random_bytes(4))), 0, 6);
 
-// Pre-calculate Auto-Schedule slots starting at present moment
-$autoTimes = calculateSystemAutoSchedules($db, $campaignId, $totalReceived, [
+// Pre-calculate Auto-Schedule slots starting at present moment (or configured future start time / append after queued leads)
+$autoSchedOverride = [
     'schedule_strategy' => 'interval',
-    'schedule_interval_mins' => $scheduleInterval
-]);
+    'schedule_interval_mins' => $scheduleInterval,
+    'append_queue' => true
+];
+if (!empty($data['schedule_start_time'])) {
+    $autoSchedOverride['schedule_start_time'] = trim((string)$data['schedule_start_time']);
+}
+$autoTimes = calculateSystemAutoSchedules($db, $campaignId, $totalReceived, $autoSchedOverride);
 
 // Prepare Database Statements
 $stmtCheckDup = $db->prepare("

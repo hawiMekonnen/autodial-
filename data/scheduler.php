@@ -4,9 +4,128 @@
  * Timezone: Africa/Addis_Ababa
  */
 
+if (!function_exists('isValidTimezoneId')) {
+    function isValidTimezoneId(string $tz): bool {
+        static $validSet = null;
+        if ($validSet === null) {
+            $validSet = array_flip(DateTimeZone::listIdentifiers());
+        }
+        $tz = trim($tz);
+        return $tz !== '' && isset($validSet[$tz]);
+    }
+}
+
 if (!function_exists('getDialerTimezone')) {
-    function getDialerTimezone(): string {
-        return getenv('APP_TIMEZONE') ?: 'Africa/Addis_Ababa';
+    function getDialerTimezone(?PDO $db = null, bool $forceReload = false): string {
+        static $cachedTz = null;
+        static $loadedFromDb = false;
+
+        if (!$forceReload && $cachedTz !== null && ($db === null || $loadedFromDb)) {
+            return $cachedTz;
+        }
+
+        $candidate = '';
+        if ($db !== null) {
+            try {
+                $stmt = $db->prepare("SELECT value FROM settings WHERE key = 'timezone' LIMIT 1");
+                $stmt->execute();
+                $dbTz = trim((string)$stmt->fetchColumn());
+                if (isValidTimezoneId($dbTz)) {
+                    $candidate = $dbTz;
+                    $loadedFromDb = true;
+                }
+            } catch (Throwable $e) {
+            }
+        }
+
+        if ($candidate === '') {
+            $envTz = trim((string)(getenv('APP_TIMEZONE') ?: ($_ENV['APP_TIMEZONE'] ?? '')));
+            if (isValidTimezoneId($envTz)) {
+                $candidate = $envTz;
+            }
+        }
+
+        if ($candidate === '') {
+            $iniTz = trim((string)ini_get('date.timezone'));
+            if (isValidTimezoneId($iniTz)) {
+                $candidate = $iniTz;
+            }
+        }
+
+        if ($candidate === '') {
+            $candidate = 'Africa/Addis_Ababa';
+        }
+
+        $cachedTz = $candidate;
+        @date_default_timezone_set($cachedTz);
+
+        if ($db !== null) {
+            try {
+                if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'pgsql') {
+                    $db->exec("SET TIME ZONE " . $db->quote($cachedTz));
+                }
+            } catch (Throwable $e) {
+            }
+        }
+
+        return $cachedTz;
+    }
+}
+
+if (!function_exists('refreshDialerTimezone')) {
+    function refreshDialerTimezone(?PDO $db = null, ?string $explicitTz = null): string {
+        $tz = getDialerTimezone($db, true);
+        if (isValidTimezoneId((string)$explicitTz)) {
+            $tz = trim((string)$explicitTz);
+            @date_default_timezone_set($tz);
+            if ($db !== null) {
+                try {
+                    if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'pgsql') {
+                        $db->exec("SET TIME ZONE " . $db->quote($tz));
+                    }
+                } catch (Throwable $e) {
+                }
+            }
+        }
+        return $tz;
+    }
+}
+
+if (!function_exists('isImmediateScheduleValue')) {
+    function isImmediateScheduleValue(?string $raw): bool {
+        $s = strtolower(trim((string)$raw));
+        return $s === '' || $s === 'immediate' || $s === 'now' || $s === 'asap' || $s === 'none' || $s === '-';
+    }
+}
+
+if (!function_exists('formatCanonicalCallTime')) {
+    function formatCanonicalCallTime(int $ts, string $tz = ''): string {
+        $resolvedTz = isValidTimezoneId($tz) ? $tz : getDialerTimezone();
+        try {
+            $dt = (new DateTimeImmutable('@' . $ts))->setTimezone(new DateTimeZone($resolvedTz));
+            return $dt->format('Y-m-d h:i:s A');
+        } catch (Throwable $e) {
+            return date('Y-m-d h:i:s A', $ts);
+        }
+    }
+}
+
+if (!function_exists('parseDbTimestamp')) {
+    function parseDbTimestamp(?string $rawTs, string $tz = '', bool $isSqlite = false): ?int {
+        $s = trim((string)$rawTs);
+        if ($s === '') {
+            return null;
+        }
+        $resolvedTz = isValidTimezoneId($tz) ? $tz : getDialerTimezone();
+        try {
+            if (preg_match('/(Z|[+-]\d{2}(?::?\d{2})?)$/i', $s)) {
+                return (new DateTimeImmutable($s))->getTimestamp();
+            }
+            $tzObj = new DateTimeZone($isSqlite ? 'UTC' : $resolvedTz);
+            return (new DateTimeImmutable($s, $tzObj))->getTimestamp();
+        } catch (Throwable $e) {
+            return null;
+        }
     }
 }
 
@@ -112,39 +231,50 @@ function validatePhoneNumber(string $raw, string $defaultCountryCode = '+251'): 
  * - Excel serial timestamps (e.g. 46321.336805555555)
  * - ISO formats (2026-10-26 08:05 AM, 2026-10-26 14:30)
  * - Slashes & dots (26/10/2026 08:05 AM, 10/26/2026, 26.10.2026)
- * - Textual dates (Oct 26, 2026 08:05 AM, 26-Oct-2026)
- * - Time only (08:05 AM, 14:30, Today 08:05 AM, Tomorrow 09:00 AM)
+ * - Textual dates (Oct 26, 2026 08:05 AM, May 15, 02:30 PM, 26-Oct-2026)
+ * - Time only (08:05 AM, 14:30, Today, 08:05 AM, Tomorrow, 09:00 AM)
  * - Relative offsets (+5 mins, +1 hour)
  */
 if (!function_exists('parseAnyDateTime')) {
-function parseAnyDateTime(string $raw, string $tz = ''): ?int {
+function parseAnyDateTime(string $raw, string $tz = '', ?string $anchorCreatedAt = null, bool $isSqlite = false, ?int $referenceNow = null): ?int {
     $s = trim($raw);
-    if (empty($s) || strcasecmp($s, 'immediate') === 0 || strcasecmp($s, 'now') === 0 || strcasecmp($s, 'none') === 0) {
+    if (isImmediateScheduleValue($s)) {
         return null;
     }
 
-    if (empty($tz)) $tz = getDialerTimezone();
-    @date_default_timezone_set($tz);
-    $now = time();
-    $todayDate = date('Y-m-d', $now);
+    $resolvedTz = isValidTimezoneId($tz) ? $tz : getDialerTimezone();
+    $tzObj = new DateTimeZone($resolvedTz);
+    $now = $referenceNow ?? time();
+
+    $anchorTs = $anchorCreatedAt ? parseDbTimestamp($anchorCreatedAt, $resolvedTz, $isSqlite) : null;
+    $anchorDt = (new DateTimeImmutable('@' . ($anchorTs ?? $now)))->setTimezone($tzObj);
+    $anchorDate = $anchorDt->format('Y-m-d');
+    $anchorYear = $anchorDt->format('Y');
 
     // 1. Excel Serial Number (e.g. 46321.336805555555 or 46321 or 0.336805555555)
+    // Excel serials represent local wall-clock date/time, so convert directly in $tzObj (no UTC shift).
     if (is_numeric($s)) {
         $num = (float)$s;
-        // Excel serial date range for years 1970 - 2100 (25569 to 73415)
         if ($num >= 25569 && $num <= 73415) {
-            $utcStr = gmdate('Y-m-d H:i:s', (int)round(($num - 25569) * 86400));
-            $localTs = @strtotime($utcStr);
-            if ($localTs !== false && $localTs > 0) return $localTs;
+            $days = (int)floor($num);
+            $secOfDay = (int)round(($num - $days) * 86400);
+            $dt = (new DateTimeImmutable('1899-12-30 00:00:00', $tzObj))
+                ->modify("+{$days} days")
+                ->modify("+{$secOfDay} seconds");
+            return $dt->getTimestamp();
         }
-        // Time fraction without date: 0.0 < num < 1.0
         if ($num > 0 && $num < 1.0) {
-            $midnight = strtotime($todayDate . ' 00:00:00');
-            return (int)round($midnight + ($num * 86400));
+            $secOfDay = (int)round($num * 86400);
+            $dt = (new DateTimeImmutable("{$anchorDate} 00:00:00", $tzObj))
+                ->modify("+{$secOfDay} seconds");
+            return $dt->getTimestamp();
         }
     }
 
     // 2. Relative offset (e.g. "+5 mins", "+10 min", "+1 hour")
+    if (preg_match('/^\+(\d+)\s*(?:sec|secs|second|seconds)$/i', $s, $m)) {
+        return $now + (int)$m[1];
+    }
     if (preg_match('/^\+(\d+)\s*(?:min|mins|minute|minutes)$/i', $s, $m)) {
         return $now + ((int)$m[1] * 60);
     }
@@ -152,73 +282,187 @@ function parseAnyDateTime(string $raw, string $tz = ''): ?int {
         return $now + ((int)$m[1] * 3600);
     }
 
-    // 3. Clean string: remove "Today," or "Tomorrow,"
-    $isTomorrow = (stripos($s, 'tomorrow') !== false);
-    $clean = trim(preg_replace('/^(?:today|tomorrow),?\s*(?:at\s*)?/i', '', $s));
+    // 3. Explicit ISO-8601 date-time with timezone offset / Z
+    if (preg_match('/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)$/i', $s)) {
+        try {
+            return (new DateTimeImmutable($s))->getTimestamp();
+        } catch (Throwable $e) {
+        }
+    }
+
+    // 4. Relative day prefix: "Today, ...", "Tomorrow, ...", "Yesterday, ..." anchored to $anchorDt
+    $dayOffset = 0;
+    $hasRelPrefix = false;
+    $clean = $s;
+    if (preg_match('/^(today|tomorrow|yesterday)\b[,\s]*(?:at\s*)?(.*)$/i', $s, $m)) {
+        $hasRelPrefix = true;
+        $kw = strtolower($m[1]);
+        if ($kw === 'tomorrow') $dayOffset = 1;
+        elseif ($kw === 'yesterday') $dayOffset = -1;
+        $clean = trim($m[2]);
+    }
     $clean = trim(preg_replace('/\s+at\s+/i', ' ', $clean));
+    $clean = trim(preg_replace('/^(?:today|tomorrow|yesterday),?\s*/i', '', $clean));
 
-    // 4. Time-only format: "08:05 AM", "8:05 pm", "14:30", "08:05:00"
-    if (preg_match('/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i', $clean, $m)) {
-        $baseDate = $isTomorrow ? date('Y-m-d', strtotime('+1 day', $now)) : $todayDate;
-        $timeStr = $m[1] . ':' . $m[2] . (!empty($m[3]) ? ':' . $m[3] : ':00') . (!empty($m[4]) ? ' ' . $m[4] : '');
-        $ts = @strtotime("{$baseDate} {$timeStr}");
-        if ($ts !== false && $ts > 0) return $ts;
+    $relBaseDt = $dayOffset !== 0 ? $anchorDt->modify(($dayOffset > 0 ? '+' : '') . $dayOffset . ' days') : $anchorDt;
+    $relDate = $relBaseDt->format('Y-m-d');
+
+    if ($hasRelPrefix && $clean === '') {
+        return (new DateTimeImmutable("{$relDate} 09:00:00", $tzObj))->getTimestamp();
     }
 
-    // 5. European / African Date format with slashes or dots:
-    // DD/MM/YYYY or DD.MM.YYYY (e.g. 26/10/2026 08:05 AM or 26.10.2026 08:05)
-    if (preg_match('/^(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{4})(.*)$/', $clean, $m)) {
-        $d = (int)$m[1];
+    // 5. Time-only format: "08:05 AM", "8:05:30 PM", "14:30", "08:05:00"
+    if (preg_match('/^(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*(AM|PM)?$/i', $clean, $m)) {
+        $hr = (int)$m[1];
+        $mn = (int)$m[2];
+        $sc = isset($m[3]) && $m[3] !== '' ? (int)$m[3] : 0;
+        $ampm = !empty($m[4]) ? strtoupper($m[4]) : '';
+        if ($ampm !== '') {
+            if ($ampm === 'PM' && $hr < 12) $hr += 12;
+            elseif ($ampm === 'AM' && $hr === 12) $hr = 0;
+        }
+        if ($hr >= 0 && $hr <= 23 && $mn >= 0 && $mn <= 59 && $sc >= 0 && $sc <= 59) {
+            try {
+                $dt = new DateTimeImmutable(sprintf('%s %02d:%02d:%02d', $relDate, $hr, $mn, $sc), $tzObj);
+                return $dt->getTimestamp();
+            } catch (Throwable $e) {
+            }
+        }
+    }
+
+    // 6. YYYY-MM-DD or YYYY/MM/DD with optional time & AM/PM
+    if (preg_match('/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})(?:[T,\s]+(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*(AM|PM)?)?$/i', $clean, $m)) {
+        $y = (int)$m[1];
         $mo = (int)$m[2];
+        $d = (int)$m[3];
+        if (checkdate($mo, $d, $y)) {
+            $hr = isset($m[4]) && $m[4] !== '' ? (int)$m[4] : 0;
+            $mn = isset($m[5]) && $m[5] !== '' ? (int)$m[5] : 0;
+            $sc = isset($m[6]) && $m[6] !== '' ? (int)$m[6] : 0;
+            $ampm = !empty($m[7]) ? strtoupper($m[7]) : '';
+            if ($ampm !== '') {
+                if ($ampm === 'PM' && $hr < 12) $hr += 12;
+                elseif ($ampm === 'AM' && $hr === 12) $hr = 0;
+            }
+            if ($hr >= 0 && $hr <= 23 && $mn >= 0 && $mn <= 59 && $sc >= 0 && $sc <= 59) {
+                try {
+                    return (new DateTimeImmutable(sprintf('%04d-%02d-%02d %02d:%02d:%02d', $y, $mo, $d, $hr, $mn, $sc), $tzObj))->getTimestamp();
+                } catch (Throwable $e) {
+                }
+            }
+        }
+    }
+
+    // 7. European / African Date format: DD/MM/YYYY or DD.MM.YYYY or DD-MM-YYYY
+    if (preg_match('/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})(?:[,\s]+(.*))?$/', $clean, $m)) {
+        $p1 = (int)$m[1];
+        $p2 = (int)$m[2];
         $y = (int)$m[3];
-        $rest = trim($m[4]);
-        $isoStr = sprintf('%04d-%02d-%02d %s', $y, $mo, $d, $rest);
-        $ts = @strtotime(trim($isoStr));
-        if ($ts !== false && $ts > 0) return $ts;
+        $rest = trim($m[4] ?? '');
+        // Default to DD/MM/YYYY if valid day/month, else fall back to MM/DD/YYYY
+        if ($p2 >= 1 && $p2 <= 12 && checkdate($p2, $p1, $y)) {
+            $d = $p1; $mo = $p2;
+        } elseif ($p1 >= 1 && $p1 <= 12 && checkdate($p1, $p2, $y)) {
+            $mo = $p1; $d = $p2;
+        } else {
+            $d = 0; $mo = 0;
+        }
+        if ($d > 0) {
+            $timeSuffix = $rest !== '' ? $rest : '00:00:00';
+            try {
+                return (new DateTimeImmutable(sprintf('%04d-%02d-%02d %s', $y, $mo, $d, $timeSuffix), $tzObj))->getTimestamp();
+            } catch (Throwable $e) {
+            }
+        }
     }
 
-    // 6. YYYY/MM/DD with slashes or dots: 2026/10/26 08:05 AM
-    if (preg_match('/^(\d{4})[\/\.](\d{1,2})[\/\.](\d{1,2})(.*)$/', $clean, $m)) {
-        $isoStr = sprintf('%04d-%02d-%02d %s', (int)$m[1], (int)$m[2], (int)$m[3], trim($m[4]));
-        $ts = @strtotime(trim($isoStr));
-        if ($ts !== false && $ts > 0) return $ts;
+    // 8. Textual month WITHOUT year (e.g. "May 15, 02:30 PM") - attach anchor year!
+    $candidateText = $clean;
+    if (preg_match('/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:\s*,|\s+)(?!\d{4}\b)(.+)$/i', $candidateText, $m)) {
+        $candidateText = $m[1] . ' ' . preg_replace('/^([A-Za-z]+\s+\d{1,2})(?:st|nd|rd|th)?/', '$1', explode(',', $candidateText)[0]);
+        // Simpler safe rewrite: insert anchorYear right after day number
+        $candidateText = preg_replace('/^([A-Za-z]+\s+\d{1,2})(?:st|nd|rd|th)?[,\s]+(.+)$/i', '$1 ' . $anchorYear . ' $2', $clean);
     }
 
-    // 7. General strtotime fallback (handles "2026-10-26 08:05 AM", "Oct 26, 2026", etc.)
-    $ts = @strtotime($clean);
-    if ($ts !== false && $ts > 0) {
-        if ($isTomorrow) $ts += 86400;
-        return $ts;
+    // 9. General DateTimeImmutable fallback in $tzObj
+    try {
+        $dt = new DateTimeImmutable($candidateText, $tzObj);
+        if ($hasRelPrefix && $dayOffset !== 0) {
+            $dt = $dt->modify(($dayOffset > 0 ? '+' : '') . $dayOffset . ' days');
+        }
+        $yr = (int)$dt->format('Y');
+        if ($yr >= 2020 && $yr <= 2100) {
+            return $dt->getTimestamp();
+        }
+    } catch (Throwable $e) {
     }
 
     return null;
 }
 }
 
+if (!function_exists('extractLeadDate')) {
+function extractLeadDate(?string $callTime, ?string $createdAt = null, string $tz = '', bool $isSqlite = false): string {
+    $resolvedTz = isValidTimezoneId($tz) ? $tz : getDialerTimezone();
+    $tzObj = new DateTimeZone($resolvedTz);
+
+    $raw = trim((string)$callTime);
+    if (!isImmediateScheduleValue($raw)) {
+        $parsedTs = parseAnyDateTime($raw, $resolvedTz, $createdAt, $isSqlite);
+        if ($parsedTs !== null) {
+            return (new DateTimeImmutable('@' . $parsedTs))->setTimezone($tzObj)->format('Y-m-d');
+        }
+    }
+
+    $createdTs = $createdAt ? parseDbTimestamp($createdAt, $resolvedTz, $isSqlite) : null;
+    if ($createdTs !== null) {
+        return (new DateTimeImmutable('@' . $createdTs))->setTimezone($tzObj)->format('Y-m-d');
+    }
+
+    return (new DateTimeImmutable('now', $tzObj))->format('Y-m-d');
+}
+}
+
+if (!function_exists('isLeadFromPastDay')) {
+function isLeadFromPastDay(?string $callTime, ?string $createdAt = null, string $tz = '', bool $isSqlite = false): bool {
+    $resolvedTz = isValidTimezoneId($tz) ? $tz : getDialerTimezone();
+    $tzObj = new DateTimeZone($resolvedTz);
+    $today = (new DateTimeImmutable('now', $tzObj))->format('Y-m-d');
+    $effDate = extractLeadDate($callTime, $createdAt, $resolvedTz, $isSqlite);
+    return $effDate < $today;
+}
+}
+
+if (!function_exists('isLeadDateTimePassed')) {
+function isLeadDateTimePassed(?string $callTime, ?string $createdAt = null, int $graceSeconds = 60, string $tz = '', bool $isSqlite = false): bool {
+    $raw = trim((string)$callTime);
+    if (isImmediateScheduleValue($raw)) {
+        return false;
+    }
+    $resolvedTz = isValidTimezoneId($tz) ? $tz : getDialerTimezone();
+    $ts = parseAnyDateTime($raw, $resolvedTz, $createdAt, $isSqlite);
+    if ($ts === null) {
+        return false;
+    }
+    return (time() - $ts) >= max(0, $graceSeconds);
+}
+}
+
 
 /**
- * Normalizes user-submitted scheduled time string
+ * Normalizes user-submitted scheduled time string to canonical "YYYY-MM-DD hh:i:s AM/PM" or "Immediate"
  */
 if (!function_exists('normalizeScheduledTime')) {
-function normalizeScheduledTime(string $raw): string {
+function normalizeScheduledTime(string $raw, string $tz = '', ?string $anchorCreatedAt = null, bool $isSqlite = false): string {
     $s = trim($raw);
-    if (empty($s) || strcasecmp($s, 'immediate') === 0 || strcasecmp($s, 'now') === 0 || strcasecmp($s, 'none') === 0) {
+    if (isImmediateScheduleValue($s)) {
         return 'Immediate';
     }
 
-    $tz = getDialerTimezone();
-    @date_default_timezone_set($tz);
-    $now = time();
-    $todayDate = date('Y-m-d', $now);
-
-    $ts = parseAnyDateTime($s, $tz);
+    $resolvedTz = isValidTimezoneId($tz) ? $tz : getDialerTimezone();
+    $ts = parseAnyDateTime($s, $resolvedTz, $anchorCreatedAt, $isSqlite);
     if ($ts !== null && $ts > 0) {
-        $leadDate = date('Y-m-d', $ts);
-        $leadTime = date('h:i A', $ts);
-        if ($leadDate === $todayDate) {
-            return "Today, {$leadTime}";
-        }
-        return "{$leadDate} {$leadTime}";
+        return formatCanonicalCallTime($ts, $resolvedTz);
     }
 
     return $s;
@@ -227,14 +471,25 @@ function normalizeScheduledTime(string $raw): string {
 
 /**
  * Intelligent System Auto-Scheduler
- * Computes scheduled timestamps for a batch of contacts starting at the present moment.
+ * Computes scheduled timestamps for a batch of contacts starting at schedule_start_time or server now.
  */
 if (!function_exists('calculateSystemAutoSchedules')) {
 function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, array $override = []): array {
     if ($count <= 0) return [];
 
-    $tz = !empty($override['client_timezone']) ? $override['client_timezone'] : getDialerTimezone();
+    // Always prefer canonical DB/server timezone over potentially skewed browser timezone
+    $tz = getDialerTimezone($db);
+    if (!isValidTimezoneId($tz) && !empty($override['client_timezone']) && isValidTimezoneId((string)$override['client_timezone'])) {
+        $tz = trim((string)$override['client_timezone']);
+    }
+    $tzObj = new DateTimeZone($tz);
     @date_default_timezone_set($tz);
+
+    $isSqlite = false;
+    try {
+        $isSqlite = ($db->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite');
+    } catch (Throwable $e) {
+    }
 
     $camp = [];
     try {
@@ -243,38 +498,52 @@ function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, arra
         $camp = $stmt->fetch() ?: [];
     } catch (Exception $e) {}
 
-    $strategy = $override['schedule_strategy'] ?? $camp['schedule_strategy'] ?? 'interval';
+    $strategy = trim((string)($override['schedule_strategy'] ?? $camp['schedule_strategy'] ?? 'interval'));
+    if ($strategy === 'auto_schedule' || $strategy === 'scheduled_date') {
+        $strategy = 'interval';
+    }
     $intervalMins = (int)($override['schedule_interval_mins'] ?? $camp['schedule_interval_mins'] ?? 2);
     if ($intervalMins <= 0) $intervalMins = 2;
 
-    $winStart = $override['schedule_window_start'] ?? $camp['schedule_window_start'] ?? '09:00';
-    $winEnd = $override['schedule_window_end'] ?? $camp['schedule_window_end'] ?? '17:00';
+    $winStart = trim((string)($override['schedule_window_start'] ?? $camp['schedule_window_start'] ?? '09:00')) ?: '09:00';
+    $winEnd = trim((string)($override['schedule_window_end'] ?? $camp['schedule_window_end'] ?? '17:00')) ?: '17:00';
     $batchSize = (int)($override['schedule_batch_size'] ?? $camp['schedule_batch_size'] ?? 5);
     if ($batchSize <= 0) $batchSize = 5;
 
-    // Start at the present moment!
-    $now = !empty($override['client_time']) ? (int)$override['client_time'] : time();
-    $todayDate = date('Y-m-d', $now);
-    $baseTs = $now;
+    // Authoritative server clock for schedule generation & dispatch parity
+    $now = isset($override['__test_now_ts']) ? (int)$override['__test_now_ts'] : time();
+    $todayDate = (new DateTimeImmutable('@' . $now))->setTimezone($tzObj)->format('Y-m-d');
 
-    // If append_queue is explicitly requested, append after existing pending scheduled calls
+    $baseTs = $now;
+    $includeZeroSlot = false;
+
+    $startTimeRaw = trim((string)($override['schedule_start_time'] ?? $camp['schedule_start_time'] ?? 'now'));
+    if (!isImmediateScheduleValue($startTimeRaw)) {
+        $parsedStartTs = parseAnyDateTime($startTimeRaw, $tz, null, $isSqlite, $now);
+        if ($parsedStartTs !== null && $parsedStartTs > $now) {
+            $baseTs = $parsedStartTs;
+            $includeZeroSlot = true;
+        }
+    }
+
+    // If append_queue is requested, append strictly AFTER the latest future pending scheduled lead
     if (!empty($override['append_queue'])) {
         try {
-            $stmtPending = $db->prepare("SELECT call_time FROM leads WHERE campaign_id = ? AND status = 'pending' AND call_time != 'Immediate' ORDER BY id DESC LIMIT 20");
+            $stmtPending = $db->prepare("SELECT call_time, created_at FROM leads WHERE campaign_id = ? AND status = 'pending' AND call_time IS NOT NULL AND LOWER(TRIM(call_time)) NOT IN ('', 'immediate', 'now', 'asap')");
             $stmtPending->execute([$campaignId]);
-            $lastCallTimes = $stmtPending->fetchAll(PDO::FETCH_COLUMN);
+            $rowsPending = $stmtPending->fetchAll(PDO::FETCH_ASSOC);
 
             $latestPendingTs = 0;
-            foreach ($lastCallTimes as $ct) {
-                $cleanTime = str_replace(['Today,', 'Today'], '', $ct);
-                $ts = @strtotime($todayDate . ' ' . trim($cleanTime));
-                if ($ts && $ts > $latestPendingTs) {
+            foreach ($rowsPending as $rp) {
+                $ts = parseAnyDateTime((string)($rp['call_time'] ?? ''), $tz, $rp['created_at'] ?? null, $isSqlite, $now);
+                if ($ts !== null && $ts > $latestPendingTs) {
                     $latestPendingTs = $ts;
                 }
             }
 
-            if ($latestPendingTs > $now && $strategy === 'interval') {
-                $baseTs = $latestPendingTs + ($intervalMins * 60);
+            if ($latestPendingTs > $baseTs) {
+                $baseTs = $latestPendingTs;
+                $includeZeroSlot = false;
             }
         } catch (Exception $e) {}
     }
@@ -297,41 +566,43 @@ function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, arra
         $endH = (int)($endParts[0] ?? 17);
         $endM = (int)($endParts[1] ?? 0);
 
-        $curH = (int)date('G', $baseTs);
-        $curM = (int)date('i', $baseTs);
+        $baseDt = (new DateTimeImmutable('@' . $baseTs))->setTimezone($tzObj);
+        $curH = (int)$baseDt->format('G');
+        $curM = (int)$baseDt->format('i');
         $curTotalMin = $curH * 60 + $curM;
         $startTotalMin = $startH * 60 + $startM;
         $endTotalMin = $endH * 60 + $endM;
 
         if ($curTotalMin < $startTotalMin) {
-            $cursorTs = strtotime(date('Y-m-d', $baseTs) . ' ' . $winStart);
+            $cursorTs = (new DateTimeImmutable($baseDt->format('Y-m-d') . sprintf(' %02d:%02d:00', $startH, $startM), $tzObj))->getTimestamp();
         } else {
-            // Prioritize dialing today starting from current time
-            $cursorTs = (int)(ceil(($baseTs + 30) / 60) * 60);
+            $cursorTs = $includeZeroSlot ? $baseTs : ($baseTs + 30);
         }
 
         $slotIntervalSecs = 60;
         $lineCounter = 0;
-        // Extend evening calling window for today up to 21:00 (9 PM) so late afternoon batches dial today
+        // Extend evening calling window up to 21:00 unless user configured a later end time
         $effectiveDayEnd = max($endTotalMin, 21 * 60);
 
         for ($i = 0; $i < $count; $i++) {
-            if ((int)date('w', $cursorTs) === 0) {
-                $nextDay = strtotime('+1 day', $cursorTs);
-                $cursorTs = strtotime(date('Y-m-d', $nextDay) . ' ' . $winStart);
+            $cursorDt = (new DateTimeImmutable('@' . $cursorTs))->setTimezone($tzObj);
+            if ((int)$cursorDt->format('w') === 0) {
+                $nextDayDt = $cursorDt->modify('+1 day');
+                $cursorTs = (new DateTimeImmutable($nextDayDt->format('Y-m-d') . sprintf(' %02d:%02d:00', $startH, $startM), $tzObj))->getTimestamp();
+                $cursorDt = (new DateTimeImmutable('@' . $cursorTs))->setTimezone($tzObj);
             }
 
-            $dayDate = date('Y-m-d', $cursorTs);
-            $dayEndTs = strtotime($dayDate . ' ' . sprintf('%02d:%02d', floor($effectiveDayEnd / 60), $effectiveDayEnd % 60));
+            $dayDate = $cursorDt->format('Y-m-d');
+            $dayEndTs = (new DateTimeImmutable($dayDate . sprintf(' %02d:%02d:00', intdiv($effectiveDayEnd, 60), $effectiveDayEnd % 60), $tzObj))->getTimestamp();
             if ($cursorTs >= $dayEndTs) {
-                $nextDay = strtotime('+1 day', $cursorTs);
-                if ((int)date('w', $nextDay) === 0) $nextDay = strtotime('+1 day', $nextDay);
-                $cursorTs = strtotime(date('Y-m-d', $nextDay) . ' ' . $winStart);
-                $dayDate = date('Y-m-d', $cursorTs);
+                $nextDayDt = $cursorDt->modify('+1 day');
+                if ((int)$nextDayDt->format('w') === 0) {
+                    $nextDayDt = $nextDayDt->modify('+1 day');
+                }
+                $cursorTs = (new DateTimeImmutable($nextDayDt->format('Y-m-d') . sprintf(' %02d:%02d:00', $startH, $startM), $tzObj))->getTimestamp();
             }
 
-            $timePart = date('h:i A', $cursorTs);
-            $schedules[] = ($dayDate === $todayDate) ? "Today, {$timePart}" : "{$dayDate} {$timePart}";
+            $schedules[] = formatCanonicalCallTime($cursorTs, $tz);
 
             $lineCounter++;
             if ($lineCounter >= $lines) {
@@ -340,41 +611,42 @@ function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, arra
             }
         }
     } elseif ($strategy === 'window') {
-        $startWindowTs = strtotime($todayDate . ' ' . $winStart);
-        $endWindowTs = strtotime($todayDate . ' ' . $winEnd);
+        $baseDt = (new DateTimeImmutable('@' . $baseTs))->setTimezone($tzObj);
+        $targetDate = $baseDt->format('Y-m-d');
+        $startWindowTs = (new DateTimeImmutable("{$targetDate} {$winStart}:00", $tzObj))->getTimestamp();
+        $endWindowTs = (new DateTimeImmutable("{$targetDate} {$winEnd}:00", $tzObj))->getTimestamp();
+        if ($endWindowTs <= $startWindowTs) {
+            $endWindowTs = $startWindowTs + 3600;
+        }
 
-        if ($now > $endWindowTs) {
-            $tomorrow = date('Y-m-d', strtotime('+1 day', $now));
-            $startWindowTs = strtotime($tomorrow . ' ' . $winStart);
-            $endWindowTs = strtotime($tomorrow . ' ' . $winEnd);
-        } elseif ($now > $startWindowTs) {
-            $startWindowTs = $now;
+        if ($baseTs > $endWindowTs) {
+            $nextDate = $baseDt->modify('+1 day')->format('Y-m-d');
+            $startWindowTs = (new DateTimeImmutable("{$nextDate} {$winStart}:00", $tzObj))->getTimestamp();
+            $endWindowTs = (new DateTimeImmutable("{$nextDate} {$winEnd}:00", $tzObj))->getTimestamp();
+        } elseif ($baseTs > $startWindowTs) {
+            $startWindowTs = $baseTs;
         }
 
         $windowDuration = max(60, $endWindowTs - $startWindowTs);
         $step = ($count > 1) ? floor($windowDuration / $count) : 0;
 
         for ($i = 0; $i < $count; $i++) {
-            $ts = $startWindowTs + ($i * $step);
-            $timePart = date('h:i A', $ts);
-            $datePart = date('Y-m-d', $ts);
-            $schedules[] = ($datePart === $todayDate) ? "Today, {$timePart}" : "{$datePart} {$timePart}";
+            $ts = (int)round($startWindowTs + ($i * $step));
+            $schedules[] = formatCanonicalCallTime($ts, $tz);
         }
     } elseif ($strategy === 'batch') {
         for ($i = 0; $i < $count; $i++) {
-            $batchIndex = floor($i / $batchSize) + 1;
-            $ts = $baseTs + ($batchIndex * $intervalMins * 60);
-            $timePart = date('h:i A', $ts);
-            $datePart = date('Y-m-d', $ts);
-            $schedules[] = ($datePart === $todayDate) ? "Today, {$timePart}" : "{$datePart} {$timePart}";
+            $batchIdx = intdiv($i, $batchSize);
+            $step = $includeZeroSlot ? $batchIdx : ($batchIdx + 1);
+            $ts = $baseTs + ($step * $intervalMins * 60);
+            $schedules[] = formatCanonicalCallTime($ts, $tz);
         }
     } else {
-        // Interval Staggering: first contact is scheduled intervalMins after import time, then each next +intervalMins
+        // Interval Staggering: wait $intervalMins before first slot (or start directly at explicit future start time)
         for ($i = 0; $i < $count; $i++) {
-            $ts = $baseTs + (($i + 1) * $intervalMins * 60);
-            $timePart = date('h:i A', $ts);
-            $datePart = date('Y-m-d', $ts);
-            $schedules[] = ($datePart === $todayDate) ? "Today, {$timePart}" : "{$datePart} {$timePart}";
+            $step = $includeZeroSlot ? $i : ($i + 1);
+            $ts = $baseTs + ($step * $intervalMins * 60);
+            $schedules[] = formatCanonicalCallTime($ts, $tz);
         }
     }
 

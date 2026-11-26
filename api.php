@@ -17,6 +17,7 @@ require_once __DIR__ . '/telephony/esl_client.php';
 $dbInstance = DialerDB::getInstance();
 $db = $dbInstance->getPdo();
 $dbDriver = $dbInstance->getDriver();
+refreshDialerTimezone($db);
 $action = $_REQUEST['action'] ?? '';
 
 
@@ -137,205 +138,7 @@ function sanitizePhone(string $raw, ?string $defaultCc = null): string {
     return $info['valid'] ? $info['formatted'] : '';
 }
 
-function extractLeadDate(?string $callTime, ?string $createdAt): string {
-    $timeStr = trim((string)$callTime);
-    // 1. ISO date: YYYY-MM-DD
-    if (preg_match('/(\d{4}-\d{2}-\d{2})/', $timeStr, $m)) {
-        return $m[1];
-    }
-    // 2. Month format: "Sep 18, 2026" or "18 Sep 2026"
-    $parsed = @strtotime($timeStr);
-    if ($parsed !== false && $parsed > 0 && !preg_match('/^\d{1,2}:\d{2}/', $timeStr)) {
-        $year = (int)date('Y', $parsed);
-        if ($year >= 2020 && $year <= 2040) {
-            return date('Y-m-d', $parsed);
-        }
-    }
-    // 3. Fallback to record creation date
-    if (!empty($createdAt)) {
-        $ts = @strtotime($createdAt);
-        if ($ts !== false && $ts > 0) {
-            return date('Y-m-d', $ts);
-        }
-    }
-    return date('Y-m-d');
-}
-
-function isLeadDateTimePassed(?string $callTime, ?string $createdAt): bool {
-    $s = trim((string)$callTime);
-    if (empty($s) || strtolower($s) === 'immediate' || strtolower($s) === 'now') {
-        return false;
-    }
-
-    $today = date('Y-m-d');
-    $now = time();
-
-    // 1. Check if effective date is in the past
-    $effDate = extractLeadDate($s, $createdAt);
-    if ($effDate < $today) {
-        return true;
-    }
-    if ($effDate > $today) {
-        return false;
-    }
-
-    // 2. Effective date is TODAY. Check time component.
-    if (preg_match('/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)/i', $s, $m)) {
-        $hours = (int)$m[1];
-        $minutes = (int)$m[2];
-        $seconds = isset($m[3]) && $m[3] !== '' ? (int)$m[3] : 0;
-        $ampm = strtoupper($m[4]);
-        if ($ampm === 'PM' && $hours < 12) $hours += 12;
-        elseif ($ampm === 'AM' && $hours === 12) $hours = 0;
-
-        $target = strtotime(sprintf('%s %02d:%02d:%02d', $today, $hours, $minutes, $seconds));
-        if ($target !== false) {
-            return $now >= ($target + 60);
-        }
-    }
-
-    if (preg_match('/(\d{1,2}):(\d{2})(?::(\d{2}))?/', $s, $m)) {
-        $hours = (int)$m[1];
-        $minutes = (int)$m[2];
-        $seconds = isset($m[3]) && $m[3] !== '' ? (int)$m[3] : 0;
-        $target = strtotime(sprintf('%s %02d:%02d:%02d', $today, $hours, $minutes, $seconds));
-        if ($target !== false) {
-            return $now >= ($target + 60);
-        }
-    }
-
-    return false;
-}
-
-
-/**
- * Intelligent System Auto-Scheduler
- * Dynamically computes sequential, collision-free future call slots for leads.
- */
-function calculateSystemAutoSchedules(PDO $db, int $campaignId, int $count, array $override = []): array {
-    if ($count <= 0) return [];
-
-    $tz = !empty($override['client_timezone']) ? $override['client_timezone'] : (getenv('APP_TIMEZONE') ?: 'Africa/Addis_Ababa');
-    @date_default_timezone_set($tz);
-
-    $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ?");
-    $stmt->execute([$campaignId]);
-    $camp = $stmt->fetch() ?: [];
-
-    $strategy = $override['schedule_strategy'] ?? $camp['schedule_strategy'] ?? 'interval';
-    $intervalMins = (int)($override['schedule_interval_mins'] ?? $camp['schedule_interval_mins'] ?? 2);
-    if ($intervalMins <= 0) $intervalMins = 2;
-    $winStart = $override['schedule_window_start'] ?? $camp['schedule_window_start'] ?? '09:00';
-    $winEnd = $override['schedule_window_end'] ?? $camp['schedule_window_end'] ?? '17:00';
-    $batchSize = (int)($override['schedule_batch_size'] ?? $camp['schedule_batch_size'] ?? 5);
-    if ($batchSize <= 0) $batchSize = 5;
-
-    // Start at the present moment!
-    $now = !empty($override['client_time']) ? (int)$override['client_time'] : time();
-    $todayDate = date('Y-m-d', $now);
-    $baseTs = $now;
-
-    $schedules = [];
-
-    if ($strategy === 'smart') {
-        $lines = 2;
-        try {
-            $stmtLines = $db->query("SELECT value FROM settings WHERE key = 'available_lines'");
-            $linesVal = (int)$stmtLines->fetchColumn();
-            if ($linesVal > 0) $lines = $linesVal;
-        } catch (Exception $e) {}
-
-        $startParts = explode(':', $winStart);
-        $startH = (int)($startParts[0] ?? 9);
-        $startM = (int)($startParts[1] ?? 0);
-
-        $endParts = explode(':', $winEnd);
-        $endH = (int)($endParts[0] ?? 17);
-        $endM = (int)($endParts[1] ?? 0);
-
-        $curH = (int)date('G', $baseTs);
-        $curM = (int)date('i', $baseTs);
-        $curTotalMin = $curH * 60 + $curM;
-        $startTotalMin = $startH * 60 + $startM;
-        $endTotalMin = $endH * 60 + $endM;
-
-        if ($curTotalMin < $startTotalMin) {
-            $cursorTs = strtotime(date('Y-m-d', $baseTs) . ' ' . $winStart);
-        } else {
-            // Prioritize dialing today starting from current time
-            $cursorTs = (int)(ceil(($baseTs + 30) / 60) * 60);
-        }
-
-        $slotIntervalSecs = 60;
-        $lineCounter = 0;
-        // Extend evening calling window for today up to 21:00 (9 PM) so late afternoon batches dial today
-        $effectiveDayEnd = max($endTotalMin, 21 * 60);
-
-        for ($i = 0; $i < $count; $i++) {
-            if ((int)date('w', $cursorTs) === 0) {
-                $nextDay = strtotime('+1 day', $cursorTs);
-                $cursorTs = strtotime(date('Y-m-d', $nextDay) . ' ' . $winStart);
-            }
-
-            $dayDate = date('Y-m-d', $cursorTs);
-            $dayEndTs = strtotime($dayDate . ' ' . sprintf('%02d:%02d', floor($effectiveDayEnd / 60), $effectiveDayEnd % 60));
-            if ($cursorTs >= $dayEndTs) {
-                $nextDay = strtotime('+1 day', $cursorTs);
-                if ((int)date('w', $nextDay) === 0) $nextDay = strtotime('+1 day', $nextDay);
-                $cursorTs = strtotime(date('Y-m-d', $nextDay) . ' ' . $winStart);
-                $dayDate = date('Y-m-d', $cursorTs);
-            }
-
-            $timePart = date('h:i A', $cursorTs);
-            $schedules[] = ($dayDate === $todayDate) ? "Today, {$timePart}" : "{$dayDate} {$timePart}";
-
-            $lineCounter++;
-            if ($lineCounter >= $lines) {
-                $lineCounter = 0;
-                $cursorTs += $slotIntervalSecs;
-            }
-        }
-    } elseif ($strategy === 'window') {
-        $startWindowTs = strtotime($todayDate . ' ' . $winStart);
-        $endWindowTs = strtotime($todayDate . ' ' . $winEnd);
-
-        if ($now > $endWindowTs) {
-            $tomorrow = date('Y-m-d', strtotime('+1 day', $now));
-            $startWindowTs = strtotime($tomorrow . ' ' . $winStart);
-            $endWindowTs = strtotime($tomorrow . ' ' . $winEnd);
-        } elseif ($now > $startWindowTs) {
-            $startWindowTs = $now;
-        }
-
-        $windowDuration = max(60, $endWindowTs - $startWindowTs);
-        $step = ($count > 1) ? floor($windowDuration / $count) : 0;
-
-        for ($i = 0; $i < $count; $i++) {
-            $ts = $startWindowTs + ($i * $step);
-            $timePart = date('h:i A', $ts);
-            $datePart = date('Y-m-d', $ts);
-            $schedules[] = ($datePart === $todayDate) ? "Today, {$timePart}" : "{$datePart} {$timePart}";
-        }
-    } elseif ($strategy === 'batch') {
-        for ($i = 0; $i < $count; $i++) {
-            $batchIndex = floor($i / $batchSize) + 1;
-            $ts = $baseTs + ($batchIndex * $intervalMins * 60);
-            $timePart = date('h:i A', $ts);
-            $datePart = date('Y-m-d', $ts);
-            $schedules[] = ($datePart === $todayDate) ? "Today, {$timePart}" : "{$datePart} {$timePart}";
-        }
-    } else {
-        // Interval Staggering: starts at present ($baseTs = $now), +intervalMins each
-        for ($i = 0; $i < $count; $i++) {
-            $ts = $baseTs + (($i + 1) * $intervalMins * 60);
-            $timePart = date('h:i A', $ts);
-            $datePart = date('Y-m-d', $ts);
-            $schedules[] = ($datePart === $todayDate) ? "Today, {$timePart}" : "{$datePart} {$timePart}";
-        }
-    }
-
-    return $schedules;
-}
+// extractLeadDate(), isLeadFromPastDay(), isLeadDateTimePassed(), and calculateSystemAutoSchedules() live canonically in data/scheduler.php.
 
 /**
  * Calculates live real-time telephony metrics for automated dialer:
@@ -481,10 +284,18 @@ if ($action === 'create_campaign') {
         ]
     ]);
 
-    $callingMethod = trim($_POST['calling_method'] ?? 'manual');
-    if (!in_array($callingMethod, ['manual', 'auto_schedule'])) $callingMethod = 'manual';
-    $scheduleStrategy = trim($_POST['schedule_strategy'] ?? 'smart');
-    if (!in_array($scheduleStrategy, ['smart', 'interval', 'window'])) $scheduleStrategy = 'smart';
+    $rawMethod = trim($_POST['calling_method'] ?? 'manual');
+    $rawStrategy = trim($_POST['schedule_strategy'] ?? 'smart');
+    if ($rawStrategy === 'auto_schedule' || $rawStrategy === 'scheduled_date') {
+        $callingMethod = 'auto_schedule';
+        $scheduleStrategy = 'interval';
+    } elseif ($rawStrategy === 'immediate') {
+        $callingMethod = 'manual';
+        $scheduleStrategy = 'immediate';
+    } else {
+        $callingMethod = in_array($rawMethod, ['manual', 'auto_schedule'], true) ? $rawMethod : 'manual';
+        $scheduleStrategy = in_array($rawStrategy, ['smart', 'interval', 'window', 'batch', 'immediate'], true) ? $rawStrategy : 'smart';
+    }
     $scheduleIntervalMins = max(1, (int)($_POST['schedule_interval_mins'] ?? 5));
     $scheduleWindowStart = trim($_POST['schedule_window_start'] ?? '09:00');
     $scheduleWindowEnd = trim($_POST['schedule_window_end'] ?? '17:00');
@@ -586,10 +397,19 @@ if ($action === 'save_settings') {
     if ($dbDriver === 'sqlite') {
         $stmt = $db->prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)");
     }
+    if (isset($_POST['timezone'])) {
+        $candTz = trim((string)$_POST['timezone']);
+        if (!isValidTimezoneId($candTz)) {
+            jsonOut(['success' => false, 'error' => "Invalid timezone identifier: {$candTz}"], 400);
+        }
+    }
     foreach ($allowedKeys as $k) {
         if (isset($_POST[$k])) {
             $stmt->execute([$k, trim($_POST[$k])]);
         }
+    }
+    if (isset($_POST['timezone'])) {
+        refreshDialerTimezone($db, trim((string)$_POST['timezone']));
     }
     jsonOut(['success' => true, 'message' => 'Settings updated successfully.']);
 }
@@ -785,14 +605,15 @@ if ($action === 'accept_smart_schedule_plan') {
 
         $updateLeadStmt = $db->prepare("UPDATE leads SET call_time = ? WHERE id = ?");
         $leadIdx = 0;
-        $todayDate = date('Y-m-d');
+        $tz = getDialerTimezone($db);
+        $todayDate = (new DateTimeImmutable('now', new DateTimeZone($tz)))->format('Y-m-d');
 
         foreach ($plan['batches'] as $batch) {
             $batchCount = (int)($batch['contacts_count'] ?? 0);
             $batchDate = $batch['date'] ?? $todayDate;
             $batchTimeStart = $batch['time_start'] ?? '09:00';
-            $ts = strtotime($batchDate . ' ' . $batchTimeStart);
-            $formattedTime = ($batchDate === $todayDate) ? ("Today, " . date('h:i A', $ts)) : date('Y-m-d h:i A', $ts);
+            $ts = parseAnyDateTime($batchDate . ' ' . $batchTimeStart, $tz) ?? strtotime($batchDate . ' ' . $batchTimeStart);
+            $formattedTime = formatCanonicalCallTime((int)$ts, $tz);
 
             for ($b = 0; $b < $batchCount && $leadIdx < count($leadIds); $b++) {
                 $leadId = $leadIds[$leadIdx++];
@@ -1215,22 +1036,24 @@ if ($action === 'save_agent_outcome') {
 
             // If no answer, busy, or failed, enforce max_attempts and retry_after
             $retryCount = (int)($lead['retry_count'] ?? 0);
+            $updatedCallTime = $lead['call_time'] ?? 'Immediate';
             if ($disposition === 'no_answer' || $disposition === 'busy' || $disposition === 'wrong_number') {
                 $retryCount++;
                 if ($retryCount >= $maxRetries) {
                     $leadStatus = 'exhausted';
                     $combinedNotes .= ($combinedNotes ? " | " : "") . "Max attempts reached ({$retryCount}/{$maxRetries})";
                 } else {
-                    $leadStatus = 'pending'; // re-queue for next retry attempt
-                    $nextRetryTs = strtotime("+{$retryDelayMin} minutes");
-                    $nextCallTime = date('Y-m-d h:i A', $nextRetryTs);
-                    $combinedNotes .= ($combinedNotes ? " | " : "") . "Retry attempt {$retryCount}/{$maxRetries} scheduled for " . date('h:i A', $nextRetryTs);
+                    $leadStatus = 'pending'; // re-queue for next retry attempt after retry_delay_min
+                    $tz = getDialerTimezone($db);
+                    $nextRetryTs = time() + (max(1, $retryDelayMin) * 60);
+                    $updatedCallTime = formatCanonicalCallTime($nextRetryTs, $tz);
+                    $combinedNotes .= ($combinedNotes ? " | " : "") . "Retry attempt {$retryCount}/{$maxRetries} scheduled for {$updatedCallTime}";
                 }
             }
 
-            // Update lead
-            $updLead = $db->prepare("UPDATE leads SET status = ?, retry_count = ?, duration_sec = ?, notes = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
-            $updLead->execute([$leadStatus, $retryCount, $duration, $combinedNotes, $leadId]);
+            // Update lead (persisting rescheduled call_time when retrying)
+            $updLead = $db->prepare("UPDATE leads SET status = ?, call_time = ?, retry_count = ?, duration_sec = ?, notes = ?, last_attempt_at = CURRENT_TIMESTAMP WHERE id = ?");
+            $updLead->execute([$leadStatus, $updatedCallTime, $retryCount, $duration, $combinedNotes, $leadId]);
 
             // Insert CDR call_log
             $insLog = $db->prepare("INSERT INTO call_logs (lead_id, campaign_id, customer_name, phone_number, call_time, agent_extension, status, duration_sec, dtmf_pressed, cost_etb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -1729,16 +1552,7 @@ if ($action === 'reschedule_callback') {
     jsonOut(['success' => true]);
 }
 
-// Phase 4: Reschedule Lead
-if ($action === 'reschedule_lead') {
-    $leadId = (int)($_POST['lead_id'] ?? 0);
-    $newDate = trim($_POST['new_date'] ?? date('Y-m-d'));
-    $newTime = trim($_POST['new_time'] ?? '09:00');
-    $callTimeStr = "$newDate $newTime";
-    $stmt = $db->prepare("UPDATE leads SET call_time = ?, status = 'pending' WHERE id = ?");
-    $stmt->execute([$callTimeStr, $leadId]);
-    jsonOut(['success' => true, 'message' => "Lead rescheduled for $newDate at $newTime"]);
-}
+// (Unified reschedule_lead handler lives below in section 12)
 
 // Phase 4: Re-queue Lead
 if ($action === 'requeue_lead') {
@@ -1875,7 +1689,11 @@ if ($action === 'get_campaign_data') {
     $stmtLeads->execute($campaignIds);
     $rawLeads = $stmtLeads->fetchAll();
 
-    $today = date('Y-m-d');
+    $tz = getDialerTimezone($db);
+    $tzObj = new DateTimeZone($tz);
+    $isSqlite = ($dbDriver === 'sqlite');
+    $serverNowMs = (int)round(microtime(true) * 1000);
+    $today = (new DateTimeImmutable('now', $tzObj))->format('Y-m-d');
     $leads = [];
     $historyDatesMap = [$today => true];
     $remainingCount = 0;
@@ -1893,7 +1711,11 @@ if ($action === 'get_campaign_data') {
     $totalDuration = 0;
 
     foreach ($rawLeads as $l) {
-        $effDate = extractLeadDate($l['call_time'] ?? '', $l['created_at'] ?? '');
+        $rawCt = (string)($l['call_time'] ?? '');
+        $createdAtRaw = $l['created_at'] ?? null;
+        $effDate = extractLeadDate($rawCt, $createdAtRaw, $tz, $isSqlite);
+        $schedTs = parseAnyDateTime($rawCt, $tz, $createdAtRaw, $isSqlite);
+        $createdTs = parseDbTimestamp($createdAtRaw, $tz, $isSqlite);
         $historyDatesMap[$effDate] = true;
 
         $isToday = ($effDate === $today);
@@ -1906,7 +1728,10 @@ if ($action === 'get_campaign_data') {
         $l['effective_date'] = $effDate;
         $l['is_today'] = $isToday;
         $l['is_past'] = $isPast;
+        $l['is_past_day'] = $isPast;
         $l['is_remaining'] = $isRemaining;
+        $l['scheduled_ts_ms'] = ($schedTs !== null) ? ($schedTs * 1000) : null;
+        $l['created_at_ms'] = ($createdTs !== null) ? ($createdTs * 1000) : null;
 
         $st = $l['status'];
         if ($st === 'pending') {
@@ -1947,9 +1772,13 @@ if ($action === 'get_campaign_data') {
 
     $logs = [];
     foreach ($rawLogs as $lg) {
-        $logDate = !empty($lg['timestamp']) ? date('Y-m-d', strtotime($lg['timestamp'])) : $today;
+        $logTs = !empty($lg['timestamp']) ? parseDbTimestamp($lg['timestamp'], $tz, $isSqlite) : null;
+        $logDate = ($logTs !== null)
+            ? (new DateTimeImmutable('@' . $logTs))->setTimezone($tzObj)->format('Y-m-d')
+            : $today;
         $historyDatesMap[$logDate] = true;
         $lg['log_date'] = $logDate;
+        $lg['timestamp_ms'] = ($logTs !== null) ? ($logTs * 1000) : null;
         $logs[] = $lg;
     }
 
@@ -1960,6 +1789,8 @@ if ($action === 'get_campaign_data') {
         'success' => true,
         'db_driver' => $dbDriver,
         'server_today' => $today,
+        'server_now_ms' => $serverNowMs,
+        'server_timezone' => $tz,
         'available_dates' => $availableDates,
         'remaining_count' => $remainingCount,
         'campaign' => $campaign,
@@ -1993,120 +1824,7 @@ function colLetterToIdx(string $letters): int {
     return max(0, $idx - 1);
 }
 
-function normalizeScheduledTime(string $rawTime): string {
-    $s = trim($rawTime);
-    if (empty($s) || in_array(strtolower($s), ['immediate', 'now', 'none', '-'])) {
-        return 'Immediate';
-    }
-
-    // 1. Numeric Excel serial time / date
-    if (is_numeric($s)) {
-        $num = (float)$s;
-        if ($num > 0 && $num < 1) {
-            $totalSec = (int)round($num * 86400);
-            $hrs = (int)floor($totalSec / 3600);
-            $mins = (int)floor(($totalSec % 3600) / 60);
-            $ampm = ($hrs >= 12) ? 'PM' : 'AM';
-            $hrs12 = ($hrs % 12);
-            if ($hrs12 === 0) $hrs12 = 12;
-            return sprintf('%02d:%02d %s', $hrs12, $mins, $ampm);
-        }
-        if ($num >= 30000 && $num < 70000) {
-            $ts = ($num - 25569) * 86400;
-            return gmdate('Y-m-d h:i A', (int)round($ts));
-        }
-    }
-
-    // 2. Full Date + Time: "2026-10-26 09:10 AM", "2026-10-28 05:00 PM", "2026-10-26 14:30"
-    if (preg_match('/^(\d{4}[-\/]\d{1,2}[-\/]\d{1,2})\s+(\d{1,2})[:.](\d{2})(?:[:.]\d{2})?\s*(AM|PM)?/i', $s, $m)) {
-        $datePart = str_replace('/', '-', $m[1]);
-        $hrs = (int)$m[2];
-        $mins = (int)$m[3];
-        $ampm = isset($m[4]) ? strtoupper($m[4]) : '';
-        if ($ampm === '') {
-            $ampm = ($hrs >= 12) ? 'PM' : 'AM';
-            $hrs = ($hrs % 12);
-            if ($hrs === 0) $hrs = 12;
-        } else {
-            if ($hrs > 12) {
-                $ampm = 'PM';
-                $hrs = $hrs - 12;
-            } elseif ($hrs === 0) {
-                $hrs = 12;
-            }
-        }
-        return sprintf('%s %02d:%02d %s', $datePart, $hrs, $mins, $ampm);
-    }
-
-    // 3. Format: "DD/MM/YYYY HH:MM AM/PM"
-    if (preg_match('/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})\s+(\d{1,2})[:.](\d{2})(?:[:.]\d{2})?\s*(AM|PM)?/i', $s, $m)) {
-        $hrs = (int)$m[4];
-        $mins = (int)$m[5];
-        $ampm = isset($m[6]) ? strtoupper($m[6]) : '';
-        if ($ampm === '') {
-            $ampm = ($hrs >= 12) ? 'PM' : 'AM';
-            $hrs = ($hrs % 12);
-            if ($hrs === 0) $hrs = 12;
-        } else {
-            if ($hrs > 12) {
-                $ampm = 'PM';
-                $hrs = $hrs - 12;
-            } elseif ($hrs === 0) {
-                $hrs = 12;
-            }
-        }
-        return sprintf('%04d-%02d-%02d %02d:%02d %s', (int)$m[3], (int)$m[2], (int)$m[1], $hrs, $mins, $ampm);
-    }
-
-    // 4. Format: "02:30 PM", "2:30 PM", "09:15 AM"
-    if (preg_match('/^(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?\s*(AM|PM)$/i', $s, $m)) {
-        $hrs = (int)$m[1];
-        $mins = (int)$m[2];
-        $ampm = strtoupper($m[4]);
-        if ($hrs > 12) {
-            $ampm = 'PM';
-            $hrs = $hrs - 12;
-        } elseif ($hrs === 0) {
-            $hrs = 12;
-        }
-        return sprintf('%02d:%02d %s', $hrs, $mins, $ampm);
-    }
-
-    // 5. Format: "14:30" or "14:30:00" or "9:15"
-    if (preg_match('/^(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?$/', $s, $m)) {
-        $hrs = (int)$m[1];
-        $mins = (int)$m[2];
-        $ampm = ($hrs >= 12) ? 'PM' : 'AM';
-        $hrs = ($hrs % 12);
-        if ($hrs === 0) $hrs = 12;
-        return sprintf('%02d:%02d %s', $hrs, $mins, $ampm);
-    }
-
-    // 6. Today / Tomorrow prefix: "Today, 14:30", "Today 02:30 PM"
-    if (preg_match('/^(Today|Tomorrow)[,\s]+(.*)$/i', $s, $m)) {
-        $sub = normalizeScheduledTime($m[2]);
-        if ($sub !== 'Immediate') {
-            return ucfirst(strtolower($m[1])) . ', ' . $sub;
-        }
-    }
-
-    // 7. Relative: "+5 mins", "+10 min"
-    if (preg_match('/^\+(\d+)\s*(mins?|minutes?|hours?|hrs?)$/i', $s)) {
-        return $s;
-    }
-
-    // 8. Fallback parse
-    $parsed = strtotime($s);
-    if ($parsed !== false && $parsed > 0) {
-        if (preg_match('/\b20\d{2}\b/', $s)) {
-            return date('Y-m-d h:i A', $parsed);
-        } else {
-            return date('h:i A', $parsed);
-        }
-    }
-
-    return $s;
-}
+// normalizeScheduledTime() is defined canonically in data/scheduler.php.
 
 function extractRowsFromUploadedFile(string $filePath, string $origName): array {
     $ext = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
@@ -2231,7 +1949,7 @@ function extractRowsFromUploadedFile(string $filePath, string $origName): array 
 }
 
 // 2. Upload Leads File (CSV / XLSX / XLS / TXT / TSV)
-if ($action === 'upload_leads') {
+if ($action === 'upload_leads' || $action === 'upload_leads_file') {
     $campaignId = (int)($_POST['campaign_id'] ?? 0);
     if ($campaignId <= 0) {
         $firstId = $db->query("SELECT id FROM campaigns ORDER BY id DESC LIMIT 1")->fetchColumn();
@@ -2246,18 +1964,22 @@ if ($action === 'upload_leads') {
     $campStmt->execute([$campaignId]);
     $camp = $campStmt->fetch() ?: [];
 
-    $forceAutoSchedule = (isset($_POST['auto_schedule']) && in_array(strtolower(trim($_POST['auto_schedule'])), ['1', 'true', 'yes', 'on']));
-    $isAutoScheduleCampaign = (($camp['calling_method'] ?? 'manual') === 'auto_schedule') || $forceAutoSchedule;
+    $forceImmediate = (isset($_POST['force_immediate']) && in_array(strtolower(trim($_POST['force_immediate'])), ['1', 'true', 'yes', 'on']));
+    $forceAutoSchedule = !$forceImmediate && (isset($_POST['auto_schedule']) && in_array(strtolower(trim($_POST['auto_schedule'])), ['1', 'true', 'yes', 'on']));
+    $isAutoScheduleCampaign = !$forceImmediate && ((($camp['calling_method'] ?? 'manual') === 'auto_schedule') || $forceAutoSchedule);
 
     $overrideOptions = [];
-    if (!empty($_POST['schedule_strategy'])) $overrideOptions['schedule_strategy'] = trim($_POST['schedule_strategy']);
+    if (!empty($_POST['schedule_strategy'])) {
+        $rawStrat = trim($_POST['schedule_strategy']);
+        $overrideOptions['schedule_strategy'] = ($rawStrat === 'auto_schedule' || $rawStrat === 'scheduled_date') ? 'interval' : $rawStrat;
+    }
     if (!empty($_POST['schedule_interval_mins'])) $overrideOptions['schedule_interval_mins'] = (int)$_POST['schedule_interval_mins'];
     if (!empty($_POST['schedule_window_start'])) $overrideOptions['schedule_window_start'] = trim($_POST['schedule_window_start']);
     if (!empty($_POST['schedule_window_end'])) $overrideOptions['schedule_window_end'] = trim($_POST['schedule_window_end']);
     if (!empty($_POST['schedule_batch_size'])) $overrideOptions['schedule_batch_size'] = (int)$_POST['schedule_batch_size'];
-    if (!empty($_POST['client_time'])) $overrideOptions['client_time'] = (int)$_POST['client_time'];
+    if (!empty($_POST['schedule_start_time'])) $overrideOptions['schedule_start_time'] = trim($_POST['schedule_start_time']);
     if (!empty($_POST['client_timezone'])) $overrideOptions['client_timezone'] = trim($_POST['client_timezone']);
-    $overrideOptions['start_at_present'] = true;
+    $overrideOptions['append_queue'] = true;
 
     $filePath = $_FILES['lead_file']['tmp_name'];
     $origName = $_FILES['lead_file']['name'] ?? 'leads.csv';
@@ -2358,13 +2080,14 @@ if ($action === 'upload_leads') {
             }
         }
 
-        // Ensure rawCallTime parses as a datetime format; otherwise treat as Immediate
-        $parsedTs = parseAnyDateTime($rawCallTime);
-        if ($parsedTs === null && strcasecmp($rawCallTime, 'immediate') !== 0 && strcasecmp($rawCallTime, 'now') !== 0) {
+        // Ensure rawCallTime parses cleanly in dialer timezone; otherwise treat as Immediate
+        $tz = getDialerTimezone($db);
+        $parsedTs = parseAnyDateTime($rawCallTime, $tz);
+        if ($parsedTs === null && !isImmediateScheduleValue($rawCallTime)) {
             $rawCallTime = 'Immediate';
         }
 
-        $callTime = normalizeScheduledTime($rawCallTime);
+        $callTime = normalizeScheduledTime($rawCallTime, $tz);
         $notes = ($notesIdx >= 0 && isset($cols[$notesIdx])) ? trim($cols[$notesIdx]) : 'Imported';
         $account = ($accountIdx >= 0 && isset($cols[$accountIdx])) ? trim($cols[$accountIdx]) : '';
         $debt = ($debtIdx >= 0 && isset($cols[$debtIdx])) ? floatval(preg_replace('/[^\d.]/', '', $cols[$debtIdx])) : 0.00;
@@ -2448,18 +2171,22 @@ if ($action === 'save_manual_leads') {
     $campStmt->execute([$campaignId]);
     $camp = $campStmt->fetch() ?: [];
 
-    $forceAutoSchedule = (isset($_POST['auto_schedule']) && in_array(strtolower(trim($_POST['auto_schedule'])), ['1', 'true', 'yes', 'on']));
-    $isAutoScheduleCampaign = (($camp['calling_method'] ?? 'manual') === 'auto_schedule') || $forceAutoSchedule;
+    $forceImmediate = (isset($_POST['force_immediate']) && in_array(strtolower(trim($_POST['force_immediate'])), ['1', 'true', 'yes', 'on']));
+    $forceAutoSchedule = !$forceImmediate && (isset($_POST['auto_schedule']) && in_array(strtolower(trim($_POST['auto_schedule'])), ['1', 'true', 'yes', 'on']));
+    $isAutoScheduleCampaign = !$forceImmediate && ((($camp['calling_method'] ?? 'manual') === 'auto_schedule') || $forceAutoSchedule);
 
     $overrideOptions = [];
-    if (!empty($_POST['schedule_strategy'])) $overrideOptions['schedule_strategy'] = trim($_POST['schedule_strategy']);
+    if (!empty($_POST['schedule_strategy'])) {
+        $rawStrat = trim($_POST['schedule_strategy']);
+        $overrideOptions['schedule_strategy'] = ($rawStrat === 'auto_schedule' || $rawStrat === 'scheduled_date') ? 'interval' : $rawStrat;
+    }
     if (!empty($_POST['schedule_interval_mins'])) $overrideOptions['schedule_interval_mins'] = (int)$_POST['schedule_interval_mins'];
     if (!empty($_POST['schedule_window_start'])) $overrideOptions['schedule_window_start'] = trim($_POST['schedule_window_start']);
     if (!empty($_POST['schedule_window_end'])) $overrideOptions['schedule_window_end'] = trim($_POST['schedule_window_end']);
     if (!empty($_POST['schedule_batch_size'])) $overrideOptions['schedule_batch_size'] = (int)$_POST['schedule_batch_size'];
-    if (!empty($_POST['client_time'])) $overrideOptions['client_time'] = (int)$_POST['client_time'];
+    if (!empty($_POST['schedule_start_time'])) $overrideOptions['schedule_start_time'] = trim($_POST['schedule_start_time']);
     if (!empty($_POST['client_timezone'])) $overrideOptions['client_timezone'] = trim($_POST['client_timezone']);
-    $overrideOptions['start_at_present'] = true;
+    $overrideOptions['append_queue'] = true;
 
     $lines = preg_split('/\r\n|\r|\n/', $text);
     $imported = 0;
@@ -2505,8 +2232,8 @@ if ($action === 'save_manual_leads') {
             continue;
         }
 
-        $callTime = normalizeScheduledTime($callTime);
-        $isImmediate = ($callTime === 'Immediate' || empty($callTime) || stripos($callTime, 'immediate') !== false);
+        $callTime = normalizeScheduledTime($callTime, getDialerTimezone($db));
+        $isImmediate = isImmediateScheduleValue($callTime);
         // Preserve user manual explicit schedule time (e.g. 14:30)
         $needsSchedule = $isImmediate && ($isAutoScheduleCampaign || $forceAutoSchedule);
 
@@ -2591,12 +2318,18 @@ if ($action === 'add_single_lead') {
         $name = 'Customer (' . substr($phone, -4) . ')';
     }
 
-    $campStmt = $db->prepare("SELECT calling_method, schedule_strategy, schedule_interval_mins FROM campaigns WHERE id = ?");
+    $tz = getDialerTimezone($db);
+    $campStmt = $db->prepare("SELECT calling_method, schedule_strategy, schedule_interval_mins, schedule_start_time FROM campaigns WHERE id = ?");
     $campStmt->execute([$campaignId]);
     $camp = $campStmt->fetch() ?: [];
 
-    if (($callTime === 'Immediate' || empty($callTime) || stripos($callTime, 'immediate') !== false) && (($camp['calling_method'] ?? '') === 'auto_schedule' || !empty($_POST['auto_schedule']))) {
-        $singleTimes = calculateSystemAutoSchedules($db, $campaignId, 1);
+    $callTime = normalizeScheduledTime($callTime, $tz);
+    if (isImmediateScheduleValue($callTime) && (($camp['calling_method'] ?? '') === 'auto_schedule' || !empty($_POST['auto_schedule']))) {
+        $singleOpts = ['append_queue' => true];
+        if (!empty($_POST['schedule_strategy'])) $singleOpts['schedule_strategy'] = trim($_POST['schedule_strategy']);
+        if (!empty($_POST['schedule_interval_mins'])) $singleOpts['schedule_interval_mins'] = (int)$_POST['schedule_interval_mins'];
+        if (!empty($_POST['schedule_start_time'])) $singleOpts['schedule_start_time'] = trim($_POST['schedule_start_time']);
+        $singleTimes = calculateSystemAutoSchedules($db, $campaignId, 1, $singleOpts);
         if (!empty($singleTimes[0])) {
             $callTime = $singleTimes[0];
         }
@@ -2617,9 +2350,22 @@ if ($action === 'add_single_lead') {
     $stmtLead = $db->prepare("SELECT * FROM leads WHERE id = ?");
     $stmtLead->execute([$newId]);
     $newLead = $stmtLead->fetch();
+    if ($newLead) {
+        $isSqlite = ($dbDriver === 'sqlite');
+        $effDate = extractLeadDate($newLead['call_time'] ?? '', $newLead['created_at'] ?? null, $tz, $isSqlite);
+        $schedTs = parseAnyDateTime((string)($newLead['call_time'] ?? ''), $tz, $newLead['created_at'] ?? null, $isSqlite);
+        $todayStr = (new DateTimeImmutable('now', new DateTimeZone($tz)))->format('Y-m-d');
+        $newLead['effective_date'] = $effDate;
+        $newLead['is_today'] = ($effDate === $todayStr);
+        $newLead['is_past'] = ($effDate < $todayStr);
+        $newLead['is_past_day'] = ($effDate < $todayStr);
+        $newLead['scheduled_ts_ms'] = ($schedTs !== null) ? ($schedTs * 1000) : null;
+    }
 
     jsonOut([
         'success' => true,
+        'server_now_ms' => (int)round(microtime(true) * 1000),
+        'server_timezone' => $tz,
         'message' => "Contact {$name} ({$phone}) added successfully!",
         'lead' => $newLead
     ]);
@@ -2946,7 +2692,8 @@ if ($action === 'reset_leads') {
         $firstId = $db->query("SELECT id FROM campaigns ORDER BY id DESC LIMIT 1")->fetchColumn();
         $campaignId = (int)$firstId;
     }
-    $today = date('Y-m-d');
+    $tz = getDialerTimezone($db);
+    $isSqlite = ($dbDriver === 'sqlite');
 
     $stmt = $db->prepare("SELECT id, call_time, created_at FROM leads WHERE campaign_id = ?");
     $stmt->execute([$campaignId]);
@@ -2958,7 +2705,7 @@ if ($action === 'reset_leads') {
     $db->beginTransaction();
     try {
         foreach ($leads as $l) {
-            if (isLeadDateTimePassed($l['call_time'] ?? '', $l['created_at'] ?? '')) {
+            if (isLeadDateTimePassed($l['call_time'] ?? '', $l['created_at'] ?? null, 60, $tz, $isSqlite)) {
                 // Scheduled date or time has passed -> set to Immediate so it calls immediately!
                 $stmtMakeImmediate->execute([$l['id']]);
             } else {
@@ -3007,6 +2754,8 @@ if ($action === 'requeue_unanswered') {
         $unansweredLeads = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    $tz = getDialerTimezone($db);
+    $tzObj = new DateTimeZone($tz);
     $now = time();
     $updatedCount = 0;
     $stmtUpd = $db->prepare("UPDATE leads SET status = 'pending', call_time = ?, duration_sec = 0, retry_count = retry_count + 1, error_message = ? WHERE id = ?");
@@ -3014,12 +2763,14 @@ if ($action === 'requeue_unanswered') {
     foreach ($unansweredLeads as $i => $u) {
         if ($applyRules) {
             if ($retryMode === 'next_day') {
-                $callTime = 'Tomorrow, ' . date('h:i A', $now + ($i * 60));
+                $targetTs = $now + 86400 + ($i * 60);
+                $callTime = formatCanonicalCallTime($targetTs, $tz);
             } elseif ($retryMode === 'custom_date' && !empty($retryCustomDate)) {
-                $callTime = $retryCustomDate . ' ' . date('h:i A', $now + ($i * 60));
+                $timeStr = (new DateTimeImmutable('@' . ($now + ($i * 60))))->setTimezone($tzObj)->format('h:i:s A');
+                $callTime = normalizeScheduledTime("{$retryCustomDate} {$timeStr}", $tz);
             } else {
                 $delaySec = max(60, ($retryDelayMin * 60) + ($i * 60));
-                $callTime = 'Today, ' . date('h:i A', $now + $delaySec);
+                $callTime = formatCanonicalCallTime($now + $delaySec, $tz);
             }
             $note = "Re-queued via Retry Policy ({$callTime})";
         } else {
@@ -3053,15 +2804,18 @@ if ($action === 'requeue_single_lead') {
     $retryDelayMin = max(1, (int)($camp['retry_delay_min'] ?? 15));
     $retryCustomDate = $camp['retry_custom_date'] ?? '';
 
+    $tz = getDialerTimezone($db);
+    $tzObj = new DateTimeZone($tz);
     $now = time();
     if ($applyRules) {
         if ($retryMode === 'next_day') {
-            $callTime = 'Tomorrow, ' . date('h:i A', $now);
+            $callTime = formatCanonicalCallTime($now + 86400, $tz);
         } elseif ($retryMode === 'custom_date' && !empty($retryCustomDate)) {
-            $callTime = $retryCustomDate . ' ' . date('h:i A', $now);
+            $timeStr = (new DateTimeImmutable('@' . $now))->setTimezone($tzObj)->format('h:i:s A');
+            $callTime = normalizeScheduledTime("{$retryCustomDate} {$timeStr}", $tz);
         } else {
             $delaySec = max(60, $retryDelayMin * 60);
-            $callTime = 'Today, ' . date('h:i A', $now + $delaySec);
+            $callTime = formatCanonicalCallTime($now + $delaySec, $tz);
         }
         $note = "Re-queued via Retry Policy ({$callTime})";
     } else {
@@ -3206,14 +2960,26 @@ if ($action === 'save_sip_settings') {
 // 12. Reschedule Lead (Redial with new date & time)
 if ($action === 'reschedule_lead') {
     $leadId = (int)($_POST['lead_id'] ?? 0);
-    $newDate = trim($_POST['new_date'] ?? date('Y-m-d'));
+    $tz = getDialerTimezone($db);
+    $tzObj = new DateTimeZone($tz);
+    $todayStr = (new DateTimeImmutable('now', $tzObj))->format('Y-m-d');
+    $newDate = trim($_POST['new_date'] ?? $todayStr);
     $newTime = trim($_POST['new_time'] ?? 'Immediate');
 
     if ($leadId <= 0) {
         jsonOut(['success' => false, 'error' => 'Invalid lead ID'], 400);
     }
 
-    $fullCallTime = ($newTime === 'Immediate' || empty($newTime)) ? "{$newDate} Immediate" : "{$newDate} {$newTime}";
+    if (isImmediateScheduleValue($newTime)) {
+        if ($newDate > $todayStr) {
+            $fullCallTime = normalizeScheduledTime("{$newDate} 09:00:00", $tz);
+        } else {
+            $fullCallTime = 'Immediate';
+        }
+    } else {
+        $combined = preg_match('/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/', $newTime) ? $newTime : "{$newDate} {$newTime}";
+        $fullCallTime = normalizeScheduledTime($combined, $tz);
+    }
 
     $stmt = $db->prepare("UPDATE leads SET call_time = ?, status = 'pending', duration_sec = 0, error_message = '' WHERE id = ?");
     $stmt->execute([$fullCallTime, $leadId]);
@@ -3222,9 +2988,21 @@ if ($action === 'reschedule_lead') {
     $stmtGet = $db->prepare("SELECT * FROM leads WHERE id = ?");
     $stmtGet->execute([$leadId]);
     $updatedLead = $stmtGet->fetch();
+    if ($updatedLead) {
+        $isSqlite = ($dbDriver === 'sqlite');
+        $effDate = extractLeadDate($updatedLead['call_time'] ?? '', $updatedLead['created_at'] ?? null, $tz, $isSqlite);
+        $schedTs = parseAnyDateTime((string)($updatedLead['call_time'] ?? ''), $tz, $updatedLead['created_at'] ?? null, $isSqlite);
+        $updatedLead['effective_date'] = $effDate;
+        $updatedLead['is_today'] = ($effDate === $todayStr);
+        $updatedLead['is_past'] = ($effDate < $todayStr);
+        $updatedLead['is_past_day'] = ($effDate < $todayStr);
+        $updatedLead['scheduled_ts_ms'] = ($schedTs !== null) ? ($schedTs * 1000) : null;
+    }
 
     jsonOut([
         'success' => true,
+        'server_now_ms' => (int)round(microtime(true) * 1000),
+        'server_timezone' => $tz,
         'message' => "Contact scheduled for {$fullCallTime} and added to active queue!",
         'lead' => $updatedLead
     ]);
@@ -3237,26 +3015,37 @@ if ($action === 'bulk_rollover_to_today') {
         $firstId = $db->query("SELECT id FROM campaigns ORDER BY id DESC LIMIT 1")->fetchColumn();
         $campaignId = (int)$firstId;
     }
-    $targetDate = trim($_POST['target_date'] ?? date('Y-m-d'));
+    $tz = getDialerTimezone($db);
+    $tzObj = new DateTimeZone($tz);
+    $isSqlite = ($dbDriver === 'sqlite');
+    $today = (new DateTimeImmutable('now', $tzObj))->format('Y-m-d');
+    $targetDate = trim($_POST['target_date'] ?? $today);
     $targetTime = trim($_POST['target_time'] ?? 'Immediate');
 
     $stmtLeads = $db->prepare("SELECT id, call_time, created_at, status FROM leads WHERE campaign_id = ?");
     $stmtLeads->execute([$campaignId]);
     $all = $stmtLeads->fetchAll();
 
-    $today = date('Y-m-d');
     $rolloverIds = [];
     foreach ($all as $l) {
-        $d = extractLeadDate($l['call_time'] ?? '', $l['created_at'] ?? '');
+        $d = extractLeadDate($l['call_time'] ?? '', $l['created_at'] ?? null, $tz, $isSqlite);
         if ($d < $today && in_array($l['status'], ['pending', 'no_answer', 'busy', 'failed'])) {
-            $rolloverIds[] = $l['id'];
+            $rolloverIds[] = (int)$l['id'];
         }
     }
 
     if (!empty($rolloverIds)) {
-        $fullCallTime = ($targetTime === 'Immediate' || empty($targetTime)) ? "{$targetDate} Immediate" : "{$targetDate} {$targetTime}";
-        $inClause = implode(',', array_map('intval', $rolloverIds));
-        $db->exec("UPDATE leads SET call_time = '{$fullCallTime}', status = 'pending', duration_sec = 0, error_message = '' WHERE id IN ({$inClause})");
+        if (isImmediateScheduleValue($targetTime)) {
+            $fullCallTime = ($targetDate > $today)
+                ? normalizeScheduledTime("{$targetDate} 09:00:00", $tz)
+                : 'Immediate';
+        } else {
+            $combined = preg_match('/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/', $targetTime) ? $targetTime : "{$targetDate} {$targetTime}";
+            $fullCallTime = normalizeScheduledTime($combined, $tz);
+        }
+        $inClause = implode(',', array_fill(0, count($rolloverIds), '?'));
+        $stmtUpdRollover = $db->prepare("UPDATE leads SET call_time = ?, status = 'pending', duration_sec = 0, error_message = '' WHERE id IN ({$inClause})");
+        $stmtUpdRollover->execute(array_merge([$fullCallTime], $rolloverIds));
     }
 
     jsonOut([
@@ -3615,8 +3404,18 @@ if ($action === 'dispatch_sms_campaign') {
     $batchLimit = min(200, max(1, (int)($_POST['batch_size'] ?? 50)));
     $isDueOnly = (!empty($_POST['only_due']) || !empty($_POST['scheduled_only']));
 
+    $filterLeadIds = [];
+    if (!empty($_POST['lead_ids'])) {
+        $rawIds = is_array($_POST['lead_ids']) ? $_POST['lead_ids'] : explode(',', (string)$_POST['lead_ids']);
+        foreach ($rawIds as $rid) {
+            $idInt = (int)trim((string)$rid);
+            if ($idInt > 0) $filterLeadIds[$idInt] = true;
+        }
+    }
+
     $pendingLeads = [];
-    $tz = function_exists('getDialerTimezone') ? getDialerTimezone() : 'Africa/Addis_Ababa';
+    $tz = getDialerTimezone($db);
+    $isSqlite = ($dbDriver === 'sqlite');
     @date_default_timezone_set($tz);
     $now = time();
 
@@ -3626,13 +3425,16 @@ if ($action === 'dispatch_sms_campaign') {
         $candidates = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($candidates as $cand) {
-            $rawTime = trim($cand['call_time'] ?? '');
-            $isImmediate = (empty($rawTime) || strcasecmp($rawTime, 'immediate') === 0 || strcasecmp($rawTime, 'now') === 0);
-            if ($isImmediate) {
+            if (!empty($filterLeadIds) && !isset($filterLeadIds[(int)$cand['id']])) {
+                continue;
+            }
+            $rawTime = trim((string)($cand['call_time'] ?? ''));
+            if (isImmediateScheduleValue($rawTime)) {
                 $pendingLeads[] = $cand;
             } else {
-                $ts = function_exists('parseAnyDateTime') ? parseAnyDateTime($rawTime, $tz) : strtotime($rawTime);
-                if ($ts !== null && $ts <= ($now + 30)) {
+                $ts = parseAnyDateTime($rawTime, $tz, $cand['created_at'] ?? null, $isSqlite);
+                // Strict server check: never dispatch before scheduled second arrives
+                if ($ts !== null && $ts <= $now) {
                     $pendingLeads[] = $cand;
                 }
             }
@@ -3708,11 +3510,15 @@ if ($action === 'reschedule_campaign_pending_leads') {
     }
 
     $overrideOptions = [];
-    if (!empty($_POST['schedule_strategy'])) $overrideOptions['schedule_strategy'] = trim($_POST['schedule_strategy']);
+    if (!empty($_POST['schedule_strategy'])) {
+        $rawStrat = trim($_POST['schedule_strategy']);
+        $overrideOptions['schedule_strategy'] = ($rawStrat === 'auto_schedule' || $rawStrat === 'scheduled_date') ? 'interval' : $rawStrat;
+    }
     if (!empty($_POST['schedule_interval_mins'])) $overrideOptions['schedule_interval_mins'] = (int)$_POST['schedule_interval_mins'];
     if (!empty($_POST['schedule_window_start'])) $overrideOptions['schedule_window_start'] = trim($_POST['schedule_window_start']);
     if (!empty($_POST['schedule_window_end'])) $overrideOptions['schedule_window_end'] = trim($_POST['schedule_window_end']);
-    if (!empty($_POST['client_time'])) $overrideOptions['client_time'] = (int)$_POST['client_time'];
+    if (!empty($_POST['schedule_batch_size'])) $overrideOptions['schedule_batch_size'] = (int)$_POST['schedule_batch_size'];
+    if (!empty($_POST['schedule_start_time'])) $overrideOptions['schedule_start_time'] = trim($_POST['schedule_start_time']);
     if (!empty($_POST['client_timezone'])) $overrideOptions['client_timezone'] = trim($_POST['client_timezone']);
 
     $pendingIds = $db->query("SELECT id FROM leads WHERE campaign_id = {$campaignId} AND status = 'pending' ORDER BY id ASC")->fetchAll(PDO::FETCH_COLUMN);
@@ -3731,21 +3537,24 @@ if ($action === 'reschedule_campaign_pending_leads') {
     jsonOut([
         'success' => true,
         'updated' => $totalPending,
+        'server_now_ms' => (int)round(microtime(true) * 1000),
+        'server_timezone' => getDialerTimezone($db),
         'message' => "Successfully rescheduled {$totalPending} pending contacts!"
     ]);
 }
 
-// Global Due SMS Dispatcher across SMS Campaigns
+// Global Due SMS Dispatcher across running SMS Campaigns
 if ($action === 'dispatch_due_sms') {
     $campaignId = (int)($_POST['campaign_id'] ?? $_GET['campaign_id'] ?? 0);
     $limit = min(100, max(1, (int)($_POST['limit'] ?? $_GET['limit'] ?? 30)));
 
     $campFilter = ($campaignId > 0) ? "AND c.id = {$campaignId}" : "AND c.type = 'sms_only'";
-    $camps = $db->query("SELECT c.* FROM campaigns c WHERE 1=1 {$campFilter}")->fetchAll(PDO::FETCH_ASSOC);
+    $camps = $db->query("SELECT c.* FROM campaigns c WHERE c.status = 'running' {$campFilter}")->fetchAll(PDO::FETCH_ASSOC);
 
     $totalDispatched = 0;
     $smsSvc = SmsService::getInstance();
-    $tz = function_exists('getDialerTimezone') ? getDialerTimezone() : 'Africa/Addis_Ababa';
+    $tz = getDialerTimezone($db);
+    $isSqlite = ($dbDriver === 'sqlite');
     @date_default_timezone_set($tz);
     $now = time();
 
@@ -3756,15 +3565,14 @@ if ($action === 'dispatch_due_sms') {
 
         $leads = $db->query("SELECT * FROM leads WHERE campaign_id = {$cId} AND status = 'pending' ORDER BY id ASC LIMIT 200")->fetchAll(PDO::FETCH_ASSOC);
         foreach ($leads as $l) {
-            $rawTime = trim($l['call_time'] ?? '');
-            $isImmediate = (empty($rawTime) || strcasecmp($rawTime, 'immediate') === 0 || strcasecmp($rawTime, 'now') === 0);
+            $rawTime = trim((string)($l['call_time'] ?? ''));
             $isDue = false;
 
-            if ($isImmediate) {
+            if (isImmediateScheduleValue($rawTime)) {
                 $isDue = true;
             } else {
-                $ts = function_exists('parseAnyDateTime') ? parseAnyDateTime($rawTime, $tz) : strtotime($rawTime);
-                if ($ts !== null && $ts <= ($now + 30)) {
+                $ts = parseAnyDateTime($rawTime, $tz, $l['created_at'] ?? null, $isSqlite);
+                if ($ts !== null && $ts <= $now) {
                     $isDue = true;
                 }
             }
