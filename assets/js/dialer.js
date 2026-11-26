@@ -5610,12 +5610,15 @@ class SkyKinDialerApp {
         return;
       }
 
+      const now = this.getServerNow();
       filtered.forEach((l, idx) => {
         const tr = document.createElement('tr');
+        const isPending = (l.status || '').toLowerCase() === 'pending';
         const isImmediate = this.isImmediateCallTime(l.call_time);
         const targetTs = this.getLeadScheduledTimestamp(l);
-        const isFuture = !isImmediate && targetTs > Date.now();
-        const isDue = this.isLeadDueForCall(l);
+        const isFuture = !isImmediate && targetTs > now;
+        const isPastDue = isPending && this.isLeadPastDue(l);
+        const isDue = isPending && !isPastDue && this.isLeadDueForCall(l);
         const stBadge = this.getStatusBadge(l.status, l);
         const callTime = l.call_time || 'Immediate';
         const dur = l.duration_sec ? `${l.duration_sec}s` : '-';
@@ -5623,15 +5626,15 @@ class SkyKinDialerApp {
         let timeBadgeHtml = '';
         if (isImmediate) {
           timeBadgeHtml = `<span style="background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;">Immediate</span>`;
-        } else if (isFuture) {
-          const diffSec = Math.max(0, Math.round((targetTs - Date.now()) / 1000));
+        } else if (isPending && isFuture) {
+          const diffSec = Math.max(0, Math.ceil((targetTs - now) / 1000));
           const diffM = Math.floor(diffSec / 60);
           const diffH = Math.floor(diffM / 60);
           const relStr = diffH > 0 ? `in ${diffH}h ${diffM % 60}m` : `in ${diffM}m`;
           timeBadgeHtml = `<span style="background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;" title="Scheduled call time">${this.escapeHtml(callTime)} <span style="font-size:10px;color:#2563eb;font-weight:600;">(${relStr})</span></span>`;
         } else if (isDue) {
           timeBadgeHtml = `<span style="background:#ecfdf5;color:#15803d;border:1px solid #86efac;padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;" title="Scheduled call time - Arrived">${this.escapeHtml(callTime)} <span style="font-size:10px;color:#16a34a;font-weight:600;">(Due Now)</span></span>`;
-        } else if (targetTs > 0) {
+        } else if (isPastDue || (isPending && targetTs > 0 && now >= targetTs + 60000)) {
           timeBadgeHtml = `<span style="background:#fefce8;color:#854d0e;border:1px solid #fef08a;padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;" title="Scheduled call time has passed">${this.escapeHtml(callTime)} <span style="font-size:10px;color:#a16207;font-weight:600;">(Past Due)</span></span>`;
         } else {
           timeBadgeHtml = `<span style="background:#f8fafc;color:#475569;border:1px solid #cbd5e1;padding:3px 9px;border-radius:12px;font-size:11px;font-weight:700;" title="Scheduled call time">${this.escapeHtml(callTime)}</span>`;
@@ -7114,8 +7117,8 @@ class SkyKinDialerApp {
 
   isLeadDueForCall(lead) {
     if (!lead || (lead.status || '').toLowerCase() !== 'pending') return false;
-    // Exclude previous-day historical leads unless rolled over to today
-    if (this.isLeadFromPastDay(lead)) return false;
+    // Never auto-dial Past Due numbers (both previous-day and >60s elapsed)
+    if (this.isLeadPastDue(lead)) return false;
     if (this.isImmediateCallTime(lead.call_time)) {
       return true; // Immediate calls are always ready
     }
@@ -7123,7 +7126,7 @@ class SkyKinDialerApp {
     const scheduledTs = this.getLeadScheduledTimestamp(lead);
     if (scheduledTs <= 0) return false;
 
-    // Dial once the scheduled second has arrived; same-day delayed calls remain eligible
+    // Due once the scheduled second has arrived (and before becoming Past Due)
     return this.getServerNow() >= scheduledTs;
   }
 
@@ -7246,7 +7249,7 @@ class SkyKinDialerApp {
       };
     }
 
-    // 3. Past due call (scheduled time has passed by > 60 seconds or is from a past day)
+      // 3. Past due call (scheduled time has passed by > 60 seconds or is from a past day)
     if (isPastDay || targetTs > 0) {
       return {
         type: 'past_due',
@@ -7256,7 +7259,7 @@ class SkyKinDialerApp {
         fullLabel: `${displayTime} · Past due`,
         displayTime: displayTime,
         formatted: displayTime,
-        isDue: !isPastDay && targetTs > 0 && now >= targetTs,
+        isDue: false,
         isFuture: false,
         isPast: true
       };
@@ -7726,7 +7729,7 @@ class SkyKinDialerApp {
 
   getNextLeadInQueue() {
     const now = this.getServerNow();
-    let pending = (this.leads || []).filter(l => l.status === 'pending' && !this.isLeadFromPastDay(l));
+    let pending = (this.leads || []).filter(l => l.status === 'pending' && !this.isLeadPastDue(l));
     if (pending.length === 0) return null;
 
     // Filter to active campaign if activeCampaignId is set
@@ -8123,10 +8126,10 @@ class SkyKinDialerApp {
           this.channelsContainer.innerHTML = `
             <div style="grid-column:1/-1;background:#fffbeb;border:1.5px solid #fde68a;border-radius:10px;padding:16px;text-align:center;">
               <div style="font-weight:700;color:#92400e;font-size:14px;margin-bottom:4px;">
-                Auto-Dialer Active &bull; Historical Leads Remaining
+                Auto-Dialer Active &bull; Waiting for Scheduled Contacts
               </div>
               <div style="font-size:12.5px;color:#a16207;">
-                ${pendingCount} pending contact(s) belong to previous calendar days. Click Rollover to Today, Reset Leads, or click "Call" on a row to dial manually.
+                ${pendingCount} pending contact(s) have past scheduled call times (Past Due). The auto-dialer will not auto-call them when their time has passed. Click "Call" on any row to dial manually.
               </div>
             </div>
           `;
